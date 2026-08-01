@@ -142,7 +142,10 @@ _ATOL = 1.0
 _RTOL = 0.2
 
 
-@pytest.mark.parametrize("M,N", [(64, 64), (128, 256), (256, 512)])
+# (8, 16640) crosses _KV_GROUP_MIN_N, so it runs the KV_GROUP=8 grouped path
+# with a partial final group (16640 = 16 * 1024 + 256); every smaller N runs
+# the ungrouped specialization.
+@pytest.mark.parametrize("M,N", [(64, 64), (128, 256), (256, 512), (8, 16640)])
 @pytest.mark.parametrize("num_heads", [16, 32])
 @pytest.mark.parametrize("partial_mask", [False, True])
 @pytest.mark.parametrize("clean_logits", [True, False])

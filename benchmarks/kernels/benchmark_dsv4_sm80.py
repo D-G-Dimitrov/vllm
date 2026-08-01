@@ -618,7 +618,12 @@ _LOGITS_BLOCK_N = 128  # production autotune space is BLOCK_N=128 only
 
 
 def _launch_indexer_logits(
-    inp: dict, grid: tuple[int, int], n_ctx: int, maxnreg: int, num_stages: int
+    inp: dict,
+    grid: tuple[int, int],
+    n_ctx: int,
+    maxnreg: int,
+    num_stages: int,
+    kv_group: int,
 ) -> None:
     from vllm.v1.attention.ops.mqa_logits_triton import _fp8_mqa_logits_kernel
 
@@ -648,6 +653,7 @@ def _launch_indexer_logits(
         BLOCK_H=max(16, triton.next_power_of_2(CFG_INDEX_N_HEADS)),
         BLOCK_D=triton.next_power_of_2(CFG_INDEX_HEAD_DIM),
         BLOCK_N=_LOGITS_BLOCK_N,
+        KV_GROUP=kv_group,
         num_warps=4,
         num_stages=num_stages,
         **extra,
@@ -659,6 +665,7 @@ def bench_indexer_logits(
     ctx_ns: list[int],
     maxnregs: list[int],
     stages: list[int],
+    kv_groups: list[int],
     device: torch.device,
 ) -> None:
     rows = []
@@ -685,11 +692,20 @@ def bench_indexer_logits(
             ke=torch.full((m_tokens,), n_ctx, dtype=torch.int32, device=device),
             logits=torch.empty(m_tokens, n_ctx, dtype=torch.float32, device=device),
         )
-        grid = (m_tokens, triton.cdiv(n_ctx, _LOGITS_BLOCK_N))
-
-        for maxnreg, num_stages in itertools.product(maxnregs, stages):
+        for maxnreg, num_stages, kv_group in itertools.product(
+            maxnregs, stages, kv_groups
+        ):
+            grid = (m_tokens, triton.cdiv(n_ctx, _LOGITS_BLOCK_N * kv_group))
             us = _time_us(
-                partial(_launch_indexer_logits, inp, grid, n_ctx, maxnreg, num_stages)
+                partial(
+                    _launch_indexer_logits,
+                    inp,
+                    grid,
+                    n_ctx,
+                    maxnreg,
+                    num_stages,
+                    kv_group,
+                )
             )
             ns_per_cta = float("nan") if us != us else us * 1e3 / (grid[0] * grid[1])
             rows.append(
@@ -698,6 +714,7 @@ def bench_indexer_logits(
                     str(n_ctx),
                     str(maxnreg) if maxnreg else "-",
                     str(num_stages),
+                    str(kv_group),
                     _fmt(us),
                     _fmt(ns_per_cta, ".1f"),
                 ]
@@ -705,7 +722,7 @@ def bench_indexer_logits(
     _print_table(
         f"indexer MQA logits (H={CFG_INDEX_N_HEADS}, D={CFG_INDEX_HEAD_DIM}, "
         f"BLOCK_N={_LOGITS_BLOCK_N}, num_warps=4)",
-        ["M", "N", "maxnreg", "stages", "us", "ns/CTA"],
+        ["M", "N", "maxnreg", "stages", "G", "us", "ns/CTA"],
         rows,
     )
 
@@ -1326,6 +1343,12 @@ def main() -> None:
         default=[2],
         help="num_stages values (production autotunes over 2 and 4)",
     )
+    parser.add_argument(
+        "--logits-groups",
+        type=_int_list,
+        default=[1, 4],
+        help="KV_GROUP values: BLOCK_N tiles per CTA sharing one q-tile load",
+    )
     parser.add_argument("--gemv-ms", type=_int_list, default=[1])
     parser.add_argument("--gemv-block-ns", type=_int_list, default=[16, 32, 64])
     args = parser.parse_args()
@@ -1350,7 +1373,12 @@ def main() -> None:
         )
     if "indexer-logits" in selected:
         bench_indexer_logits(
-            args.logits_ms, args.logits_ns, args.maxnreg, args.logits_stages, device
+            args.logits_ms,
+            args.logits_ns,
+            args.maxnreg,
+            args.logits_stages,
+            args.logits_groups,
+            device,
         )
     if "dense-gemv" in selected:
         bench_dense_gemv(args.gemv_ms, args.gemv_block_ns, device)
