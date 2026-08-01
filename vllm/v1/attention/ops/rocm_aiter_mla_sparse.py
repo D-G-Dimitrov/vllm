@@ -2187,7 +2187,10 @@ def _rocm_sparse_attn_decode_ragged_triton(
         BLOCK_K=block_k,
         NUM_SPLITS=num_splits,
         NUM_STAGES=1,
-        num_warps=4,
+        # 8 warps rather than 4: the [BLOCK_H, 512] fp32 accumulators spill
+        # ~1.7 KB/thread at 4 warps. At batch 1 only ~16 CTAs exist, so
+        # warps-per-CTA is the only occupancy lever available.
+        num_warps=8,
     )
 
     _sparse_attn_decode_reduce_kernel[(num_queries, num_heads)](
