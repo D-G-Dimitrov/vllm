@@ -1173,21 +1173,25 @@ def bench_dense_gemv(ms: list[int], block_ns: list[int], device: torch.device) -
                 ("marlin", run_marlin, run_marlin()),
                 ("cublas-bf16", run_cublas, run_cublas()),
             ]
-            for block_n, use_lut in itertools.product(block_ns, (True, False)):
+            # The Triton GEMV arms are M<=16 kernels by construction (the dot
+            # tile and the split partial buffer are 16 rows); past that they
+            # write garbage or fault, so only the library arms run.
+            gemv_block_ns = block_ns if m_tokens <= 16 else []
+            for block_n, use_lut in itertools.product(gemv_block_ns, (True, False)):
                 label = f"gemv-{'lut' if use_lut else 'alu'}-bn{block_n}"
                 fn = partial(
                     _launch_gemv, kernel, x, w_u8, scales, out, lut, block_n, 4, use_lut
                 )
                 fn()
                 variants.append((label, fn, out.clone()))
-            for block_n in block_ns:
+            for block_n in gemv_block_ns:
                 label = f"gemv-dot-bn{block_n}"
                 fn = partial(
                     _launch_gemv_dot, dot_kernel, x, w_u8, scales, out, block_n, 4
                 )
                 fn()
                 variants.append((label, fn, out.clone()))
-            for block_n, split_k in itertools.product(block_ns, (2, 4, 8)):
+            for block_n, split_k in itertools.product(gemv_block_ns, (2, 4, 8)):
                 if k // split_k % CFG_WEIGHT_BLOCK_SIZE != 0:
                     continue
                 part = torch.empty(split_k, 16, n, dtype=torch.float32, device=device)
