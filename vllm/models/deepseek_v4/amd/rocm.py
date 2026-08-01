@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import cast
 
 import torch
@@ -305,6 +305,25 @@ def _copy_ragged_to_graph_buffers(
 
 
 @dataclass
+class _PrefillChunkSlices:
+    """Prefill metadata slices for one request chunk.
+
+    Every DSv4 layer of a given type re-derives identical slices from the step's
+    metadata, so they are built once per step and cached on the SWA metadata.
+    """
+
+    chunk_size: int
+    query_start: int
+    query_end: int
+    seq_lens: torch.Tensor
+    gather_lens: torch.Tensor
+    swa_block_table: torch.Tensor
+    query_start_loc: torch.Tensor
+    compressed_seq_lens: torch.Tensor | None
+    compressed_block_table: torch.Tensor | None
+
+
+@dataclass
 class DeepseekV4ROCMAiterMLASparseMetadata(DeepseekV4FlashMLAMetadata):
     """ROCm-specific DeepSeek V4 metadata carrying ragged decode topk."""
 
@@ -316,6 +335,11 @@ class DeepseekV4ROCMAiterMLASparseMetadata(DeepseekV4FlashMLAMetadata):
 class DeepseekV4ROCMAiterSparseSWAMetadata(DeepseekSparseSWAMetadata):
     decode_swa_ragged_indices: torch.Tensor | None = None
     decode_swa_ragged_indptr: torch.Tensor | None = None
+    # Per-step prefill metadata slices, keyed by DSv4 layer type. Fresh instance per
+    # build(), so the cache never outlives the metadata it was derived from.
+    prefill_chunk_slices: dict[str, list[_PrefillChunkSlices]] = field(
+        default_factory=dict
+    )
 
 
 class DeepseekV4ROCMAiterMLASparseMetadataBuilder(DeepseekV4FlashMLAMetadataBuilder):
@@ -675,6 +699,71 @@ class DeepseekV4ROCMAiterMLAAttention(DeepseekV4Attention):
             output=output,
         )
 
+    def _prefill_chunk_slices(
+        self,
+        attn_metadata: DeepseekV4ROCMAiterMLASparseMetadata | None,
+        swa_metadata: DeepseekV4ROCMAiterSparseSWAMetadata,
+    ) -> list[_PrefillChunkSlices]:
+        cache_key = (
+            _LAYER_TYPE_SWAONLY
+            if attn_metadata is None
+            else (_LAYER_TYPE_C128A if self.compress_ratio == 128 else _LAYER_TYPE_C4A)
+        )
+        cached = swa_metadata.prefill_chunk_slices.get(cache_key)
+        if cached is not None:
+            return cached
+
+        seq_lens = swa_metadata.prefill_seq_lens
+        gather_lens = swa_metadata.prefill_gather_lens
+        query_start_loc_cpu = swa_metadata.query_start_loc_cpu
+        query_start_loc = swa_metadata.query_start_loc
+        assert seq_lens is not None
+        assert gather_lens is not None
+        assert query_start_loc_cpu is not None
+        assert query_start_loc is not None
+
+        num_decodes = swa_metadata.num_decodes
+        prefill_token_base = int(query_start_loc_cpu[num_decodes])
+        swa_block_table = swa_metadata.block_table[num_decodes:]
+        compressed_block_table = (
+            None if attn_metadata is None else attn_metadata.block_table[num_decodes:]
+        )
+
+        chunks: list[_PrefillChunkSlices] = []
+        for chunk_start in range(0, swa_metadata.num_prefills, self.PREFILL_CHUNK_SIZE):
+            chunk_end = min(
+                chunk_start + self.PREFILL_CHUNK_SIZE, swa_metadata.num_prefills
+            )
+            chunk_seq_lens = seq_lens[chunk_start:chunk_end]
+            chunks.append(
+                _PrefillChunkSlices(
+                    chunk_size=chunk_end - chunk_start,
+                    query_start=int(query_start_loc_cpu[num_decodes + chunk_start])
+                    - prefill_token_base,
+                    query_end=int(query_start_loc_cpu[num_decodes + chunk_end])
+                    - prefill_token_base,
+                    seq_lens=chunk_seq_lens,
+                    gather_lens=gather_lens[chunk_start:chunk_end],
+                    swa_block_table=swa_block_table[chunk_start:chunk_end],
+                    query_start_loc=query_start_loc[
+                        num_decodes + chunk_start : num_decodes + chunk_end + 1
+                    ],
+                    compressed_seq_lens=(
+                        None
+                        if compressed_block_table is None
+                        else chunk_seq_lens // self.compress_ratio
+                    ),
+                    compressed_block_table=(
+                        None
+                        if compressed_block_table is None
+                        else compressed_block_table[chunk_start:chunk_end]
+                    ),
+                )
+            )
+
+        swa_metadata.prefill_chunk_slices[cache_key] = chunks
+        return chunks
+
     def _forward_prefill(
         self,
         q: torch.Tensor,
@@ -687,94 +776,69 @@ class DeepseekV4ROCMAiterMLAAttention(DeepseekV4Attention):
     ) -> None:
         swa_only = attn_metadata is None
 
-        num_prefills = swa_metadata.num_prefills
         num_prefill_tokens = swa_metadata.num_prefill_tokens
-        num_decodes = swa_metadata.num_decodes
         num_decode_tokens = swa_metadata.num_decode_tokens
 
-        seq_lens = swa_metadata.prefill_seq_lens
-        gather_lens = swa_metadata.prefill_gather_lens
-        assert seq_lens is not None
-        assert gather_lens is not None
-
-        query_start_loc_cpu = swa_metadata.query_start_loc_cpu
-        query_start_loc = swa_metadata.query_start_loc
-        assert query_start_loc_cpu is not None
-        assert query_start_loc is not None
-        prefill_token_base = query_start_loc_cpu[num_decodes]
-
         if not swa_only:
+            assert attn_metadata is not None
             if self.compress_ratio == 4:
                 assert self.topk_indices_buffer is not None
                 topk_indices = self.topk_indices_buffer[num_decode_tokens:]
                 topk_indices = topk_indices[:num_prefill_tokens]
             else:
-                assert attn_metadata is not None
                 topk_indices = attn_metadata.c128a_prefill_topk_indices
             assert topk_indices is not None
             top_k = topk_indices.shape[-1]
             N = (self.max_model_len + self.compress_ratio - 1) // self.compress_ratio
+            compressed_block_size = attn_metadata.block_size // self.compress_ratio
         else:
             assert self.topk_indices_buffer is not None
             topk_indices = self.topk_indices_buffer[num_decode_tokens:]
             top_k = 0
             N = 0
+            compressed_block_size = 0
 
         M = N + self.window_size + self.max_num_batched_tokens
-        num_chunks = (num_prefills + self.PREFILL_CHUNK_SIZE - 1) // (
-            self.PREFILL_CHUNK_SIZE
-        )
 
         workspace_manager = current_workspace_manager()
         kv = workspace_manager.get_simultaneous(
             ((self.PREFILL_CHUNK_SIZE, M, q.shape[-1]), torch.bfloat16),
         )[0]
-        for chunk_idx in range(num_chunks):
-            chunk_start = chunk_idx * self.PREFILL_CHUNK_SIZE
-            chunk_end = min(chunk_start + self.PREFILL_CHUNK_SIZE, num_prefills)
-            chunk_size = chunk_end - chunk_start
+        for chunk in self._prefill_chunk_slices(attn_metadata, swa_metadata):
+            query_start = chunk.query_start
+            query_end = chunk.query_end
             if not swa_only:
-                assert attn_metadata is not None
                 assert compressed_k_cache is not None
-                block_table = attn_metadata.block_table[num_decodes:]
+                assert chunk.compressed_seq_lens is not None
+                assert chunk.compressed_block_table is not None
                 # compressed_k_cache is OCP on every platform (Triton encoder).
                 dequantize_and_gather_k_cache(
-                    kv[:chunk_size],
+                    kv[: chunk.chunk_size],
                     compressed_k_cache,
-                    seq_lens=seq_lens[chunk_start:chunk_end] // self.compress_ratio,
+                    seq_lens=chunk.compressed_seq_lens,
                     gather_lens=None,
-                    block_table=block_table[chunk_start:chunk_end],
-                    block_size=attn_metadata.block_size // self.compress_ratio,
+                    block_table=chunk.compressed_block_table,
+                    block_size=compressed_block_size,
                     offset=0,
                     use_fnuz=False,
                 )
 
-            swa_block_table = swa_metadata.block_table[num_decodes:]
             dequantize_and_gather_k_cache(
-                kv[:chunk_size],
+                kv[: chunk.chunk_size],
                 swa_k_cache,
-                seq_lens=seq_lens[chunk_start:chunk_end],
-                gather_lens=gather_lens[chunk_start:chunk_end],
-                block_table=swa_block_table[chunk_start:chunk_end],
+                seq_lens=chunk.seq_lens,
+                gather_lens=chunk.gather_lens,
+                block_table=chunk.swa_block_table,
                 block_size=swa_metadata.block_size,
                 offset=N,
                 use_fnuz=current_platform.is_fp8_fnuz(),
             )
 
-            query_start = (
-                query_start_loc_cpu[num_decodes + chunk_start] - prefill_token_base
-            )
-            query_end = (
-                query_start_loc_cpu[num_decodes + chunk_end] - prefill_token_base
-            )
-
             combined_indices, combined_lens = combine_topk_swa_indices(
                 topk_indices[query_start:query_end],
-                query_start_loc[
-                    num_decodes + chunk_start : num_decodes + chunk_end + 1
-                ],
-                seq_lens[chunk_start:chunk_end],
-                gather_lens[chunk_start:chunk_end],
+                chunk.query_start_loc,
+                chunk.seq_lens,
+                chunk.gather_lens,
                 self.window_size,
                 self.compress_ratio,
                 top_k,
