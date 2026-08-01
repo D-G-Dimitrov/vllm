@@ -7,6 +7,7 @@ import vllm.model_executor.kernels.mhc  # noqa: F401
 from vllm.model_executor.kernels.mhc.tilelang import (
     _tilelang_hc_prenorm_gemm,
     _torch_hc_prenorm_gemm,
+    mhc_pre_broadcast_tilelang,
 )
 from vllm.model_executor.layers.mhc import HAS_TILELANG_MHC
 from vllm.platforms import current_platform
@@ -168,6 +169,84 @@ def test_mhc_pre_tilelang(num_tokens, hidden_size, hc_mult, fuse_norm):
     ref = (post_mix_ref, res_mix_ref, layer_input_ref)
     for actual, expected in zip(out, ref, strict=True):
         torch.testing.assert_close(actual, expected, atol=5e-2, rtol=1e-2)
+
+
+@pytest.mark.skipif(
+    not HAS_TILELANG_MHC,
+    reason="TileLang MHC support required",
+)
+@pytest.mark.parametrize("num_tokens", [1, 4, 8, 128])
+@pytest.mark.parametrize("hidden_size", [4096, 7168])
+@pytest.mark.parametrize("hc_mult", [4])
+def test_mhc_pre_broadcast_tilelang(num_tokens, hidden_size, hc_mult):
+    """First-layer variant: the (T, H) residual is broadcast across the
+    hc_mult streams, so the result must match ``mhc_pre_ref`` on the
+    explicitly expanded residual. RMSNorm fusion is mandatory here (the
+    wrapper asserts ``norm_weight``), matching how the model calls it."""
+    torch.set_default_device(DEVICE)
+    set_random_seed(0)
+
+    x = torch.randn((num_tokens, hidden_size), dtype=torch.bfloat16)
+    hc_mult2 = hc_mult * hc_mult
+    hc_mult3 = 2 * hc_mult + hc_mult2
+    fn = (
+        torch.randn((hc_mult3, hc_mult, hidden_size), dtype=torch.float)
+        * 1e-4
+        * (1 + torch.arange(hc_mult).mul(0.01).view(1, -1, 1))
+    ).flatten(1, 2)
+    # The model precomputes fn_broadcast this way in
+    # finalize_mhc_broadcast_weights: summing fn over the hc_mult axis is
+    # exactly the GEMM against a residual that is identical in every stream.
+    fn_broadcast = fn.view(hc_mult3, hc_mult, hidden_size).sum(dim=1)
+    hc_scale = torch.randn((3,), dtype=torch.float) * 0.1
+    hc_base = torch.randn((hc_mult3,), dtype=torch.float) * 0.1
+
+    hc_sinkhorn_eps = hc_pre_eps = rms_eps = 1e-6
+    sinkhorn_repeat = 20
+    hc_post_alpha = 1.0
+    norm_eps = 1e-5
+    norm_weight = torch.randn((hidden_size,), dtype=torch.bfloat16) * 0.1 + 1.0
+
+    residual_ref = x.unsqueeze(-2).expand(num_tokens, hc_mult, hidden_size)
+    post_mix_ref, res_mix_ref, layer_input_ref = mhc_pre_ref(
+        residual_ref,
+        fn,
+        hc_scale,
+        hc_base,
+        rms_eps,
+        hc_pre_eps,
+        hc_sinkhorn_eps,
+        hc_post_alpha,
+        sinkhorn_repeat,
+    )
+    li = layer_input_ref.float()
+    layer_input_ref = (
+        li
+        * torch.rsqrt(li.square().mean(-1, keepdim=True) + norm_eps)
+        * norm_weight.float()
+    ).bfloat16()
+
+    residual_out, post_mix, res_mix, layer_input = mhc_pre_broadcast_tilelang(
+        x,
+        fn,
+        hc_scale,
+        hc_base,
+        rms_eps,
+        hc_pre_eps,
+        hc_sinkhorn_eps,
+        hc_post_alpha,
+        sinkhorn_repeat,
+        1,
+        norm_weight,
+        norm_eps,
+        fn_broadcast=fn_broadcast,
+    )
+
+    # The materialized broadcast must be an exact copy of the input rows.
+    torch.testing.assert_close(residual_out, residual_ref.contiguous(), rtol=0, atol=0)
+    torch.testing.assert_close(post_mix, post_mix_ref, atol=5e-2, rtol=1e-2)
+    torch.testing.assert_close(res_mix, res_mix_ref, atol=5e-2, rtol=1e-2)
+    torch.testing.assert_close(layer_input, layer_input_ref, atol=5e-2, rtol=1e-2)
 
 
 @pytest.mark.skipif(
