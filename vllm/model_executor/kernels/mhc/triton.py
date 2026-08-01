@@ -63,6 +63,67 @@ def rmsnorm_nw(x: Tensor, eps: float) -> Tensor:
 
 
 @triton.jit
+def _row_sqrsum_kernel(
+    x_ptr,
+    out_ptr,
+    stride_row,
+    K,
+    BLOCK_K: tl.constexpr,
+):
+    """out[row] = sum(x[row].float() ** 2): the fp32 sqrsum the prenorm GEMM
+    kernels produce as a side output, as a standalone one-pass reduction."""
+    row = tl.program_id(0)
+    offs = tl.arange(0, BLOCK_K)
+    acc = tl.zeros([BLOCK_K], dtype=tl.float32)
+    for k0 in range(0, K, BLOCK_K):
+        x = tl.load(
+            x_ptr + row * stride_row + k0 + offs,
+            mask=k0 + offs < K,
+            other=0.0,
+            eviction_policy="evict_first",
+        ).to(tl.float32)
+        acc += x * x
+    tl.store(out_ptr + row, tl.sum(acc))
+
+
+def hc_prenorm_gemm_cublas(
+    x: Tensor,
+    fn: Tensor,
+    out: Tensor,
+    sqrsum: Tensor,
+) -> None:
+    """Prenorm GEMM as cuBLAS bf16 plus a companion sqrsum reduction.
+
+    The tilelang prenorm kernels re-read ``fn`` from every token tile, which
+    makes them L2-bound at large T; here cuBLAS reads ``x`` once for the GEMM
+    and ``_row_sqrsum_kernel`` reads it a second time — two passes total
+    instead of the fused kernel's fn re-reads.
+
+    Numerics: ``fn`` is rounded to bf16 (~3 mantissa bits below the fp32/tf32
+    reference) and the GEMM result is rounded to bf16 before the fp32 upcast
+    into ``out`` (cuBLAS will not emit fp32 from bf16 inputs via torch.mm).
+    The parity test in tests/kernels/test_mhc_kernels.py bounds both.
+    """
+    assert out.shape[0] == 1 and sqrsum.shape[0] == 1
+    fn_bf16 = getattr(fn, "_hc_prenorm_bf16", None)
+    if fn_bf16 is None:
+        # Cached on the weight tensor itself so lifetime and identity track
+        # the weight; inference weights are never mutated in place.
+        fn_bf16 = fn.to(torch.bfloat16)
+        fn._hc_prenorm_bf16 = fn_bf16
+    out[0].copy_(x @ fn_bf16.t())
+    num_rows, k = x.shape
+    _row_sqrsum_kernel[(num_rows,)](
+        x,
+        sqrsum[0],
+        x.stride(0),
+        k,
+        BLOCK_K=1024,
+        num_warps=4,
+    )
+
+
+@triton.jit
 def _hc_head_reduce_store_kernel(
     pre_ptr,
     x_ptr,
