@@ -433,6 +433,16 @@ def bench_prenorm_gemm(
             ("torch", "fp32", partial(_torch_prenorm, x, fn, out, sqrsum)),
             ("torch", "bf16", partial(_torch_prenorm, x, fn_bf16, out, sqrsum)),
         ]
+        # The production cuBLAS route: bf16 GEMM + one-pass Triton sqrsum.
+        from vllm.model_executor.kernels.mhc.triton import hc_prenorm_gemm_cublas
+
+        variants += [
+            (
+                "cublas",
+                "gemm+sqrsum",
+                partial(hc_prenorm_gemm_cublas, x, fn, out, sqrsum),
+            )
+        ]
         for impl, cfg, fn_ in variants:
             us = _time_us(fn_)
             gbs = float("nan") if us != us else bytes_min / (us * 1e-6) / 1e9

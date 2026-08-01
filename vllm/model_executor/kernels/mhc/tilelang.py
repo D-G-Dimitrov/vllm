@@ -16,11 +16,16 @@ from vllm.utils.torch_utils import direct_register_custom_op
 _PRENORM_BLOCK_M = 8
 _PRENORM_BLOCK_M_TILE_N = 6
 
-# Below this many tokens the one-CTA-per-token kernel wins on launch latency
-# (7.0 us at T=1 vs 21.3 for the block_m path); above it the block_m path's
-# fn-reuse wins (31.8 vs 26.2 us at T=64, 58.9 vs 26.9 at T=127). Measured
-# crossover between T=32 and T=64.
-_PRENORM_SMALL_T = 64
+# Below this many tokens the one-CTA-per-token tilelang kernel wins on launch
+# latency (7.0 us at T=1 vs 10.5 for cuBLAS); at and above it the cuBLAS
+# route wins (T=32 is a dead heat at 16.8 vs 16.7 us, then 31.8 vs 17.4 at
+# T=64 and 442 vs 85 at T=2048). Measured crossover at T=32.
+_PRENORM_SMALL_T = 32
+
+# Escape hatch: routing back to the fused tilelang (8, 6) kernel if the
+# cuBLAS route misbehaves on some stack. Numerics differ between the two
+# (bf16 fn vs fp32 fn); the parity test covers both.
+_PRENORM_USE_CUBLAS = True
 
 
 def _torch_hc_prenorm_gemm(
@@ -80,6 +85,16 @@ def _tilelang_hc_prenorm_gemm(
             4,
             n_splits,
         )
+        return
+    if n_splits == 1 and x.dtype == torch.bfloat16 and _PRENORM_USE_CUBLAS:
+        # cuBLAS bf16 GEMM + one-pass sqrsum: 17.4 us at T=64, 85 at T=2048
+        # vs 26.2 / 442 for the best fused tilelang config (8, 6) — the fused
+        # kernels re-read fn per token tile and are L2-bound at large T. The
+        # block_m tilelang route below stays in-tree (tested and benched) as
+        # the escape.
+        from vllm.model_executor.kernels.mhc.triton import hc_prenorm_gemm_cublas
+
+        hc_prenorm_gemm_cublas(x, fn, out, sqrsum)
         return
     if n_splits == 1 and use_default_config:
         # No upper token-count gate: num_tokens is dynamic and the kernel guards

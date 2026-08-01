@@ -256,20 +256,34 @@ def test_mhc_pre_broadcast_tilelang(num_tokens, hidden_size, hc_mult):
 @pytest.mark.parametrize(
     ("num_tokens", "hidden_size"),
     [
+        # T crosses the routing boundary (_PRENORM_SMALL_T = 32): below it the
+        # one-CTA-per-token tilelang kernel runs (fp32 fn, strict tolerance);
+        # at and above it the cuBLAS bf16 route runs, whose fn and output are
+        # rounded to bf16, bounded at rel 5e-3 directly on `out` — the
+        # downstream mhc_pre tolerance alone cannot distinguish bf16-fn
+        # rounding from a broken kernel.
         (1, 1280),
+        (31, 1280),
+        (32, 1280),
         (512, 1280),
         (2048, 1280),
         (1, 4096),
+        (31, 4096),
+        (32, 4096),
         (64, 4096),
         (512, 4096),
         (2048, 4096),
         (1, 7168),
+        (31, 7168),
+        (32, 7168),
         (64, 7168),
         (512, 7168),
         (2048, 7168),
     ],
 )
 def test_hc_prenorm_gemm_tilelang(num_tokens, hidden_size):
+    from vllm.model_executor.kernels.mhc.tilelang import _PRENORM_SMALL_T
+
     torch.set_default_device(DEVICE)
     set_random_seed(0)
 
@@ -285,7 +299,12 @@ def test_hc_prenorm_gemm_tilelang(num_tokens, hidden_size):
     _torch_hc_prenorm_gemm(x, fn, out_ref, sqrsum_ref)
     _tilelang_hc_prenorm_gemm(x, fn, out, sqrsum, hidden_size, hc_mult)
 
-    torch.testing.assert_close(out, out_ref, atol=1e-5, rtol=1e-4)
+    if num_tokens < _PRENORM_SMALL_T:
+        torch.testing.assert_close(out, out_ref, atol=1e-5, rtol=1e-4)
+    else:
+        # bf16 fn plus bf16 GEMM output: rel 5e-3 against the tensor scale.
+        scale = float(out_ref.abs().max())
+        torch.testing.assert_close(out, out_ref, atol=5e-3 * scale, rtol=5e-3)
     torch.testing.assert_close(sqrsum, sqrsum_ref, atol=8.0, rtol=5e-4)
 
 
