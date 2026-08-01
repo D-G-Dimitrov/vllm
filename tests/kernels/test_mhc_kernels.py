@@ -103,7 +103,10 @@ def hc_head_ref(
 @pytest.mark.parametrize("num_tokens", [1, 4, 8, 128])
 @pytest.mark.parametrize("hidden_size", [4096, 7168])
 @pytest.mark.parametrize("hc_mult", [4])
-def test_mhc_pre_tilelang(num_tokens, hidden_size, hc_mult):
+@pytest.mark.parametrize("fuse_norm", [False, True])
+def test_mhc_pre_tilelang(num_tokens, hidden_size, hc_mult, fuse_norm):
+    """``fuse_norm`` selects the RMSNorm-fused kernel, which is the variant
+    DeepSeek V4 actually runs (the model always passes ``norm_weight``)."""
     torch.set_default_device(DEVICE)
     set_random_seed(0)
 
@@ -121,8 +124,14 @@ def test_mhc_pre_tilelang(num_tokens, hidden_size, hc_mult):
     hc_sinkhorn_eps = hc_pre_eps = rms_eps = 1e-6
     sinkhorn_repeat = 20
     hc_post_alpha = 1.0
+    norm_eps = 1e-5
+    norm_weight = (
+        torch.randn((hidden_size,), dtype=torch.bfloat16) * 0.1 + 1.0
+        if fuse_norm
+        else None
+    )
 
-    ref = mhc_pre_ref(
+    post_mix_ref, res_mix_ref, layer_input_ref = mhc_pre_ref(
         residual,
         fn,
         hc_scale,
@@ -133,6 +142,14 @@ def test_mhc_pre_tilelang(num_tokens, hidden_size, hc_mult):
         hc_post_alpha,
         sinkhorn_repeat,
     )
+    if norm_weight is not None:
+        li = layer_input_ref.float()
+        layer_input_ref = (
+            li
+            * torch.rsqrt(li.square().mean(-1, keepdim=True) + norm_eps)
+            * norm_weight.float()
+        ).bfloat16()
+
     out = torch.ops.vllm.mhc_pre_tilelang(
         residual,
         fn,
@@ -143,8 +160,12 @@ def test_mhc_pre_tilelang(num_tokens, hidden_size, hc_mult):
         hc_sinkhorn_eps,
         hc_post_alpha,
         sinkhorn_repeat,
+        1,
+        norm_weight,
+        norm_eps,
     )
 
+    ref = (post_mix_ref, res_mix_ref, layer_input_ref)
     for actual, expected in zip(out, ref, strict=True):
         torch.testing.assert_close(actual, expected, atol=5e-2, rtol=1e-2)
 
