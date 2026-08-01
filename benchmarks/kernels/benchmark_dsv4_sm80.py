@@ -36,6 +36,8 @@ CFG_HC_MULT = 4  # hc_mult
 CFG_HC_SINKHORN_ITERS = 20  # hc_sinkhorn_iters
 CFG_SLIDING_WINDOW = 128  # sliding_window
 CFG_INDEX_TOPK = 512  # index_topk
+CFG_INDEX_N_HEADS = 64  # index_n_heads (replicated, not TP-sharded)
+CFG_INDEX_HEAD_DIM = 128  # index_head_dim
 
 TP_SIZE = 8
 
@@ -598,7 +600,118 @@ def bench_dequant_gather(
     )
 
 
-KERNELS = ("sparse-decode", "prenorm-gemm", "mhc-pre", "dequant-gather")
+# ---------------------------------------------------------------------------
+# Indexer MQA logits (prefill). Register-limited: 132 regs/thread caps 3 CTAs/SM
+# and Compute Warps in Flight sits at ~96% of that ceiling, so `maxnreg` is the
+# knob this sweep exposes (128 is exactly the 4th-CTA/SM boundary at 128
+# threads). Per-CTA cost is context-independent, so one long-N point per M is
+# representative of any context length.
+# ---------------------------------------------------------------------------
+
+
+_LOGITS_BLOCK_N = 128  # production autotune space is BLOCK_N=128 only
+
+
+def _launch_indexer_logits(
+    inp: dict, grid: tuple[int, int], n_ctx: int, maxnreg: int, num_stages: int
+) -> None:
+    from vllm.v1.attention.ops.mqa_logits_triton import _fp8_mqa_logits_kernel
+
+    # Bypass @triton.autotune via .fn so maxnreg is an explicit knob.
+    extra = {"maxnreg": maxnreg} if maxnreg else {}
+    q, k, weights, logits = inp["q"], inp["k"], inp["weights"], inp["logits"]
+    _fp8_mqa_logits_kernel.fn[grid](
+        q,
+        k,
+        inp["k_scales"],
+        weights,
+        inp["ks"],
+        inp["ke"],
+        logits,
+        q.stride(0),
+        q.stride(1),
+        q.stride(2),
+        k.stride(0),
+        k.stride(1),
+        weights.stride(0),
+        weights.stride(1),
+        logits.stride(0),
+        logits.stride(1),
+        num_heads=CFG_INDEX_N_HEADS,
+        head_dim=CFG_INDEX_HEAD_DIM,
+        N=n_ctx,
+        BLOCK_H=max(16, triton.next_power_of_2(CFG_INDEX_N_HEADS)),
+        BLOCK_D=triton.next_power_of_2(CFG_INDEX_HEAD_DIM),
+        BLOCK_N=_LOGITS_BLOCK_N,
+        num_warps=4,
+        num_stages=num_stages,
+        **extra,
+    )
+
+
+def bench_indexer_logits(
+    ms: list[int],
+    ctx_ns: list[int],
+    maxnregs: list[int],
+    stages: list[int],
+    device: torch.device,
+) -> None:
+    rows = []
+    for m_tokens, n_ctx in itertools.product(ms, ctx_ns):
+        inp = dict(
+            q=torch.randn(
+                m_tokens,
+                CFG_INDEX_N_HEADS,
+                CFG_INDEX_HEAD_DIM,
+                dtype=torch.bfloat16,
+                device=device,
+            ),
+            k=torch.randn(
+                n_ctx, CFG_INDEX_HEAD_DIM, dtype=torch.bfloat16, device=device
+            ),
+            k_scales=torch.rand(n_ctx, dtype=torch.float32, device=device) + 0.5,
+            weights=torch.rand(
+                m_tokens, CFG_INDEX_N_HEADS, dtype=torch.float32, device=device
+            ),
+            # Full [0, N) range per row: at long context nearly every chunk row
+            # attends the whole compressed prefix, so this is the loaded case
+            # the trace measured, not an adversarial one.
+            ks=torch.zeros(m_tokens, dtype=torch.int32, device=device),
+            ke=torch.full((m_tokens,), n_ctx, dtype=torch.int32, device=device),
+            logits=torch.empty(m_tokens, n_ctx, dtype=torch.float32, device=device),
+        )
+        grid = (m_tokens, triton.cdiv(n_ctx, _LOGITS_BLOCK_N))
+
+        for maxnreg, num_stages in itertools.product(maxnregs, stages):
+            us = _time_us(
+                partial(_launch_indexer_logits, inp, grid, n_ctx, maxnreg, num_stages)
+            )
+            ns_per_cta = float("nan") if us != us else us * 1e3 / (grid[0] * grid[1])
+            rows.append(
+                [
+                    str(m_tokens),
+                    str(n_ctx),
+                    str(maxnreg) if maxnreg else "-",
+                    str(num_stages),
+                    _fmt(us),
+                    _fmt(ns_per_cta, ".1f"),
+                ]
+            )
+    _print_table(
+        f"indexer MQA logits (H={CFG_INDEX_N_HEADS}, D={CFG_INDEX_HEAD_DIM}, "
+        f"BLOCK_N={_LOGITS_BLOCK_N}, num_warps=4)",
+        ["M", "N", "maxnreg", "stages", "us", "ns/CTA"],
+        rows,
+    )
+
+
+KERNELS = (
+    "sparse-decode",
+    "prenorm-gemm",
+    "mhc-pre",
+    "dequant-gather",
+    "indexer-logits",
+)
 
 # What a batch-1 decode step is made of, and where each part can be timed. This
 # exists so that summing the sweeps above is never mistaken for a decomposition
@@ -610,7 +723,7 @@ _DECODE_COVERAGE = [
     ("dense Marlin fp8", "~26%", "benchmarks/kernels/benchmark_marlin.py"),
     ("MoE", "~10%", "benchmarks/kernels/benchmark_moe.py"),
     ("cuBLAS GEMV", "~13%", "not covered: plain torch matmul at M=1"),
-    ("indexer MQA logits", "~11%", "NOT COVERED - needs a paged indexer cache"),
+    ("indexer MQA logits", "~11%", "here: --kernel indexer-logits (prefill path)"),
     ("mHC post / fused-post-pre", "~3%", "NOT COVERED"),
     ("norms, RoPE, elementwise", "rest", "NOT COVERED - ~235 small launches"),
 ]
@@ -668,6 +781,25 @@ def main() -> None:
     parser.add_argument(
         "--gather-workers", type=_int_list, default=[128, 256, 512, 1024, 2048]
     )
+    parser.add_argument("--logits-ms", type=_int_list, default=[256, 2048])
+    parser.add_argument(
+        "--logits-ns",
+        type=_int_list,
+        default=[7168, 28672],
+        help="compressed context lengths (= context/compress_ratio)",
+    )
+    parser.add_argument(
+        "--maxnreg",
+        type=_int_list,
+        default=[0, 128],
+        help="maxnreg values; 0 means unconstrained (today's 132 regs)",
+    )
+    parser.add_argument(
+        "--logits-stages",
+        type=_int_list,
+        default=[2],
+        help="num_stages values (production autotunes over 2 and 4)",
+    )
     args = parser.parse_args()
 
     if args.coverage:
@@ -687,6 +819,10 @@ def main() -> None:
     if "dequant-gather" in selected:
         bench_dequant_gather(
             args.gather_lens, args.gather_reqs, args.gather_workers, device
+        )
+    if "indexer-logits" in selected:
+        bench_indexer_logits(
+            args.logits_ms, args.logits_ns, args.maxnreg, args.logits_stages, device
         )
 
 
