@@ -23,21 +23,17 @@ pytestmark = pytest.mark.skipif(
 
 
 def _on_split_decode_arch() -> bool:
-    if not current_platform.is_rocm():
-        return False
-    try:
-        from vllm.platforms.rocm import _ON_GFX942, _ON_GFX950
+    """Mirrors _use_split_k_decode(): CUDA plus the tuned gfx9 arches."""
+    from vllm.v1.attention.ops.rocm_aiter_mla_sparse import _use_split_k_decode
 
-        return bool(_ON_GFX942 or _ON_GFX950)
-    except Exception:
-        return False
+    return _use_split_k_decode()
 
 
 # The flash-decode split-K decode path is only tuned for AMD gfx942/gfx950; other
 # architectures take the fallback decode kernel, so its tests are skipped there.
 requires_split_decode_arch = pytest.mark.skipif(
     not _on_split_decode_arch(),
-    reason="split-K decode kernel is only tuned for AMD gfx942/gfx950",
+    reason="split-K decode path not selected on this arch",
 )
 
 NOPE_HEAD_DIM = 448

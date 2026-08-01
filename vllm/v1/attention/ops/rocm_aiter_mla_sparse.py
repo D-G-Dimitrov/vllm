@@ -1897,6 +1897,20 @@ def _rocm_sparse_attn_prefill_triton(
 
 
 @functools.lru_cache
+def _use_split_k_decode() -> bool:
+    """Whether decode takes the split-K path instead of the single-pass one.
+
+    Split-K exists for the low-batch regime: the single-pass grid is
+    ``num_queries x heads_blocks``, so a single-query decode occupies 4 of an
+    A100's 108 SMs. The split-count heuristic reads the real CU/SM count, so
+    it adapts off gfx950 even though ``mu`` was tuned there.
+    """
+    if current_platform.is_cuda():
+        return True
+    return _ON_GFX942 or _ON_GFX950
+
+
+@functools.lru_cache
 def _decode_cu_count() -> int:
     try:
         return torch.cuda.get_device_properties(0).multi_processor_count
@@ -2073,7 +2087,7 @@ def _rocm_sparse_attn_decode_ragged_triton(
     # hardware fp8 convert exists.
     fp8_lut = get_e4m3fn_bf16_lut(q.device)
 
-    if not (_ON_GFX942 or _ON_GFX950):  # Fallback path for un-tuned architectures.
+    if not _use_split_k_decode():  # Single-pass fallback for un-tuned archs.
         block_k = 16 if head_dim >= 256 else 32
         _sparse_attn_decode_ragged_kernel[(num_queries, heads_blocks)](
             q,
