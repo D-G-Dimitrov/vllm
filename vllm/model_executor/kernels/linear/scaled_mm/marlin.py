@@ -6,6 +6,7 @@ from collections.abc import Sequence
 import torch
 
 import vllm.envs as envs
+from vllm.logger import init_logger
 from vllm.model_executor.layers.quantization.utils.fp8_utils import (
     process_fp8_weight_block_strategy,
 )
@@ -24,6 +25,8 @@ from .ScaledMMLinearKernel import (
     FP8ScaledMMLinearKernel,
     FP8ScaledMMLinearLayerConfig,
 )
+
+logger = init_logger(__name__)
 
 
 class MarlinFP8ScaledMMLinearKernel(FP8ScaledMMLinearKernel):
@@ -84,11 +87,54 @@ class MarlinFP8ScaledMMLinearKernel(FP8ScaledMMLinearKernel):
             # Same exemption the deep_gemm and xpu kernels make.
             return
 
+        if envs.VLLM_MARLIN_FP8_DEQUANT_BF16:
+            if self.block_quant:
+                self._dequantize_layer_for_cublas(layer)
+                return
+            logger.warning_once(
+                "VLLM_MARLIN_FP8_DEQUANT_BF16 applies only to block-quantized "
+                "FP8 layers; falling back to Marlin for this layer."
+            )
+
         layer.input_scale = None
         prepare_fp8_layer_for_marlin(
             layer, self.size_k_first, input_dtype=self.marlin_input_dtype
         )
         del layer.input_scale
+
+    def _dequantize_layer_for_cublas(self, layer: torch.nn.Module) -> None:
+        """Dequantize the block-fp8 weight to the model dtype once at load
+        and drop the fp8 copy, so apply_weights can run plain cuBLAS.
+
+        On A100 (DSv4-Flash TP=8 shapes) cuBLAS on the bf16 weight beats
+        Marlin at every M measured, 1 through 2048 — Marlin's 145 KB
+        smem-staging structure buys nothing when weights stream once at
+        M=1, and its in-kernel dequant loses at prefill M too. Costs the
+        fp8-vs-bf16 byte difference in VRAM; the freed/allocated sizes are
+        logged so the trade is visible in the load logs rather than assumed.
+        """
+        weight = layer.weight
+        scale_inv = layer.weight_scale_inv
+        block_n, block_k = layer.weight_block_size
+        n, k = weight.shape
+        scale_full = (
+            scale_inv.to(torch.float32)
+            .repeat_interleave(block_n, 0)[:n]
+            .repeat_interleave(block_k, 1)[:, :k]
+        )
+        weight_dq = (weight.to(torch.float32) * scale_full).to(layer.orig_dtype)
+        freed = weight.nbytes + scale_inv.nbytes
+        replace_parameter(layer, "weight", weight_dq)
+        del layer.weight_scale_inv
+        layer.marlin_fp8_dequant = True
+        logger.debug(
+            "fp8->%s dequant for cuBLAS: (%d, %d) freed %d B, allocated %d B",
+            layer.orig_dtype,
+            n,
+            k,
+            freed,
+            weight_dq.nbytes,
+        )
 
     def apply_weights(
         self,
@@ -96,6 +142,8 @@ class MarlinFP8ScaledMMLinearKernel(FP8ScaledMMLinearKernel):
         x: torch.Tensor,
         bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        if getattr(layer, "marlin_fp8_dequant", False):
+            return torch.nn.functional.linear(x, layer.weight, bias)
         if self.block_quant:
             weight_scale = layer.weight_scale_inv
         else:

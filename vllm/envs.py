@@ -176,6 +176,7 @@ if TYPE_CHECKING:
     VLLM_RAY_EXTRA_ENV_VAR_PREFIXES_TO_COPY: str = ""
     VLLM_RAY_EXTRA_ENV_VARS_TO_COPY: str = ""
     VLLM_MARLIN_USE_ATOMIC_ADD: bool = False
+    VLLM_MARLIN_FP8_DEQUANT_BF16: bool = False
     VLLM_MARLIN_INPUT_DTYPE: Literal["int8", "fp8"] | None = None
     VLLM_HUMMING_ONLINE_QUANT_CONFIG: dict[str, Any] | None = None
     VLLM_HUMMING_INPUT_QUANT_CONFIG: dict[str, Any] | None = None
@@ -1450,6 +1451,13 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Whether to use atomicAdd reduce in gptq/awq marlin kernel.
     "VLLM_MARLIN_USE_ATOMIC_ADD": lambda: (
         os.environ.get("VLLM_MARLIN_USE_ATOMIC_ADD", "0") == "1"
+    ),
+    # On GPUs without native FP8 (where block-quantized FP8 linear layers fall
+    # back to weight-only Marlin), dequantize those weights to the model dtype
+    # once at load and run them through cuBLAS instead. Trades weight VRAM
+    # (2x the fp8 bytes; the fp8 copy is freed) for dense-linear speed.
+    "VLLM_MARLIN_FP8_DEQUANT_BF16": lambda: (
+        os.environ.get("VLLM_MARLIN_FP8_DEQUANT_BF16", "0") == "1"
     ),
     # The activation dtype for marlin kernel
     "VLLM_MARLIN_INPUT_DTYPE": env_with_choices(
