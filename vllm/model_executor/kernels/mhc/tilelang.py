@@ -4,6 +4,24 @@ import torch
 
 from vllm.utils.torch_utils import direct_register_custom_op
 
+# The prenorm GEMM is L2-bound on re-reads of `fn`, not CUDA-core bound: at
+# (block_m=2, tile_n=12) it moves 1.745 GB in 472.7 us = 3.69 TB/s, near the L2
+# read ceiling, with only 18.2% of the fp32 pipe busy. `fn` traffic scales
+# 1/block_m and `x` traffic scales 1/tile_n, and `fn` is 12x larger, so raising
+# block_m is the lever — but the traffic model alone does not pick the winner.
+# Swept on A100 (benchmark_dsv4_sm80.py --kernel prenorm-gemm): (8, 4) is
+# fastest at T<=256 yet collapses above 1024 (620 us at T=2048 vs 459 for the
+# old (2, 12)); (8, 6) is within 5% of the best measured config at every T from
+# 64 to 2048 (26.9 us @128, 201.6 @1024, 442.2 @2048) and is the keeper.
+_PRENORM_BLOCK_M = 8
+_PRENORM_BLOCK_M_TILE_N = 6
+
+# Below this many tokens the one-CTA-per-token kernel wins on launch latency
+# (7.0 us at T=1 vs 21.3 for the block_m path); above it the block_m path's
+# fn-reuse wins (31.8 vs 26.2 us at T=64, 58.9 vs 26.9 at T=127). Measured
+# crossover between T=32 and T=64.
+_PRENORM_SMALL_T = 64
+
 
 def _torch_hc_prenorm_gemm(
     x: torch.Tensor,
@@ -44,24 +62,10 @@ def _tilelang_hc_prenorm_gemm(
         _torch_hc_prenorm_gemm(x, fn, out, sqrsum)
         return
     use_default_config = tile_n == 12 and n_thr == 512
-    if n_splits == 1 and use_default_config and x.shape[0] >= 1024:
-        hc_prenorm_gemm_block_m_tilelang(
-            x,
-            fn,
-            out,
-            sqrsum,
-            hidden_size,
-            hc_mult,
-            fn.shape[0],
-            n_thr,
-            tile_n,
-            2,
-        )
-        return
     if (
         n_splits == 1
         and use_default_config
-        and x.shape[0] < 128
+        and x.shape[0] < _PRENORM_SMALL_T
         and x.shape[1] % 1024 == 0
     ):
         hc_prenorm_gemm_tilelang(
@@ -75,6 +79,22 @@ def _tilelang_hc_prenorm_gemm(
             1024,
             4,
             n_splits,
+        )
+        return
+    if n_splits == 1 and use_default_config:
+        # No upper token-count gate: num_tokens is dynamic and the kernel guards
+        # token_idx < num_tokens, so this is correct at any T.
+        hc_prenorm_gemm_block_m_tilelang(
+            x,
+            fn,
+            out,
+            sqrsum,
+            hidden_size,
+            hc_mult,
+            fn.shape[0],
+            n_thr,
+            _PRENORM_BLOCK_M_TILE_N,
+            _PRENORM_BLOCK_M,
         )
         return
     hc_prenorm_gemm_tilelang(
