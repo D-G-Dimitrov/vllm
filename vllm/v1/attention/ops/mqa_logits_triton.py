@@ -18,8 +18,20 @@ _PAGED_AUTOTUNE_CONFIGS = [
 # swept (M 1..2048, N 2048..131072) -- BN=64 is 1.25-1.40x worse, BN=32 up to
 # 2.41x. The autotune key is (num_heads, head_dim), both fixed for a model,
 # so a wider sweep cannot adapt per request; it only adds cold-cache JIT.
+#
+# maxnreg=128: unconstrained the kernel takes 132 regs/thread, which caps it at
+# 3 CTAs/SM with warps-in-flight at ~96% of that register ceiling (A100, DSv4
+# shape H=64 D=128). 128 is exactly the 4th-CTA boundary (4 x 128 thr x 128
+# regs = 65,536), measured 7.7-8.5% faster at every (M, N) from (8, 8192) to
+# (2048, 28672) with no spill regression (benchmark_dsv4_sm80.py --kernel
+# indexer-logits). Applied to every config rather than left for autotune to
+# choose: at the small warmup shape the deltas are ~3% and the tuner latched
+# onto the unconstrained variant on noise. A shape where the cap spilled would
+# still run, and every current caller is a DeepSeek-family indexer at H=64
+# D=128.
 _PREFILL_AUTOTUNE_CONFIGS = [
-    triton.Config({"BLOCK_N": 128}, num_warps=4, num_stages=ns) for ns in (2, 4)
+    triton.Config({"BLOCK_N": 128}, num_warps=4, num_stages=ns, maxnreg=128)
+    for ns in (2, 4)
 ]
 
 # Warmup shape mirrors the chunked-prefill regime (small M, long N) so
