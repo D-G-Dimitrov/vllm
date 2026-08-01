@@ -22,34 +22,51 @@ import torch
 
 from vllm.triton_utils import triton
 
-# DSv4-Flash MLA head geometry.
-NOPE_DIM = 448
-ROPE_DIM = 64
-HEAD_DIM = NOPE_DIM + ROPE_DIM  # 512
-CACHE_ENTRY_BYTES = 584  # 448 fp8 + 128 bf16 rope + 8 ue8m0 scales
-CACHE_TOKEN_BYTES = 576  # entry bytes minus the scales
-NUM_QUANT_BLOCKS = 7
+# Every value below that also exists in the checkpoint is named after its
+# config.json key, because guessing one has already produced a wrong conclusion
+# here: a placeholder sinkhorn count of 3 against the real 20 changed the mHC pre
+# per-launch cost from 5.2 to 8.3 us *and* changed which component dominated.
+# DeepSeek-V4-Flash-0731 config.json, verified 2026-08-01.
+CFG_HEAD_DIM = 512  # head_dim
+CFG_QK_ROPE_HEAD_DIM = 64  # qk_rope_head_dim
+CFG_HIDDEN_SIZE = 4096  # hidden_size
+CFG_NUM_ATTENTION_HEADS = 64  # num_attention_heads
+CFG_NUM_HIDDEN_LAYERS = 43  # num_hidden_layers
+CFG_HC_MULT = 4  # hc_mult
+CFG_HC_SINKHORN_ITERS = 20  # hc_sinkhorn_iters
+CFG_SLIDING_WINDOW = 128  # sliding_window
+CFG_INDEX_TOPK = 512  # index_topk
+
+TP_SIZE = 8
+
+# MLA head geometry. The nope width is the remainder, not an independent number.
+HEAD_DIM = CFG_HEAD_DIM
+ROPE_DIM = CFG_QK_ROPE_HEAD_DIM
+NOPE_DIM = HEAD_DIM - ROPE_DIM  # 448
+SCALE = HEAD_DIM**-0.5
+
+# fp8_ds_mla cache entry: nope as fp8, rope as bf16, one ue8m0 scale per
+# quantization block (7 real + 1 pad).
 QUANT_BLOCK = 64
 SCALE_DIM = 8
+CACHE_TOKEN_BYTES = NOPE_DIM + ROPE_DIM * 2  # 576
+CACHE_ENTRY_BYTES = CACHE_TOKEN_BYTES + SCALE_DIM  # 584
+CACHE_BLOCK_SIZE = 64  # vLLM paged block size, not a checkpoint value
 
-# TP=8 shard of the 64-head model.
-NUM_HEADS = 8
-HIDDEN_SIZE = 4096
-HC_MULT = 4
+NUM_HEADS = CFG_NUM_ATTENTION_HEADS // TP_SIZE  # 8 local heads
+HIDDEN_SIZE = CFG_HIDDEN_SIZE
+HC_MULT = CFG_HC_MULT
 HC_MULT3 = HC_MULT * (2 + HC_MULT)  # 24 prenorm GEMM outputs
+SINKHORN_ITERS = CFG_HC_SINKHORN_ITERS
 
-# Decode walks sliding_window=128 SWA tokens plus index_topk=512 compressed
-# tokens per query, independent of context length.
-SWA_LEN = 128
-TOPK_LEN = 512
-CACHE_BLOCK_SIZE = 64
+# Decode walks sliding_window SWA tokens plus index_topk compressed tokens per
+# query, independent of context length.
+SWA_LEN = CFG_SLIDING_WINDOW
+TOPK_LEN = CFG_INDEX_TOPK
 
-# From the checkpoint's config.json (`hc_sinkhorn_iters`). This is not a free
-# tuning knob: warp 0 walks these iterations serially and they are ~44% of the
-# mHC pre kernel at batch 1, so a placeholder value here misattributes the cost.
-SINKHORN_ITERS = 20
-
-SCALE = HEAD_DIM**-0.5
+# mHC pre runs twice per layer (attention and FFN) plus one broadcast variant for
+# the first layer, which is what per-step totals below are scaled by.
+MHC_PRE_LAUNCHES_PER_STEP = 2 * CFG_NUM_HIDDEN_LAYERS + 1  # 87
 
 
 def _time_us(fn: Callable[[], None]) -> float:
@@ -481,13 +498,13 @@ def bench_mhc_pre(
                     str(num_tokens),
                     label,
                     _fmt(us),
-                    _fmt(us * 87 / 1000, ".3f"),
+                    _fmt(us * MHC_PRE_LAUNCHES_PER_STEP / 1000, ".3f"),
                     _fmt(gbs, ".0f"),
                 ]
             )
     _print_table(
         f"mHC pre big-fuse + norm (hidden={HIDDEN_SIZE}, hc_mult={HC_MULT}); "
-        "ms/step assumes 87 launches/step",
+        f"ms/step assumes {MHC_PRE_LAUNCHES_PER_STEP} launches/step",
         ["tokens", "sinkhorn_iters", "us", "ms/step", "GB/s"],
         rows,
     )
@@ -528,7 +545,7 @@ def _launch_dequant_gather(
         block_stride=cache.stride(0),
         output_dim=512,
         fp8_max=448.0,
-        n_quant_blocks=NUM_QUANT_BLOCKS,
+        fp8_block=triton.next_power_of_2(NOPE_DIM),
         use_fnuz=False,
     )
 
@@ -583,6 +600,33 @@ def bench_dequant_gather(
 
 KERNELS = ("sparse-decode", "prenorm-gemm", "mhc-pre", "dequant-gather")
 
+# What a batch-1 decode step is made of, and where each part can be timed. This
+# exists so that summing the sweeps above is never mistaken for a decomposition
+# of the whole step: the covered rows are a minority of decode time, and a total
+# that silently omits Marlin and MoE would understate the step by roughly half.
+_DECODE_COVERAGE = [
+    ("sparse-MLA decode", "~18%", "here: --kernel sparse-decode"),
+    ("mHC pre big-fuse", "~6%", "here: --kernel mhc-pre"),
+    ("dense Marlin fp8", "~26%", "benchmarks/kernels/benchmark_marlin.py"),
+    ("MoE", "~10%", "benchmarks/kernels/benchmark_moe.py"),
+    ("cuBLAS GEMV", "~13%", "not covered: plain torch matmul at M=1"),
+    ("indexer MQA logits", "~11%", "NOT COVERED - needs a paged indexer cache"),
+    ("mHC post / fused-post-pre", "~3%", "NOT COVERED"),
+    ("norms, RoPE, elementwise", "rest", "NOT COVERED - ~235 small launches"),
+]
+
+
+def print_decode_coverage() -> None:
+    _print_table(
+        "batch-1 decode coverage (shares are relative, from the c1 decode trace)",
+        ["component", "share", "where to measure"],
+        [list(row) for row in _DECODE_COVERAGE],
+    )
+    print(
+        "\nDo not sum only the covered rows and call it a step budget -- see the\n"
+        "NOT COVERED entries above."
+    )
+
 
 def _int_list(value: str) -> list[int]:
     return [int(v) for v in value.split(",")]
@@ -600,6 +644,11 @@ def _pair_list(value: str) -> list[tuple[int, int]]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--kernel", choices=(*KERNELS, "all"), default="all")
+    parser.add_argument(
+        "--coverage",
+        action="store_true",
+        help="print what a batch-1 decode step is made of and exit",
+    )
     parser.add_argument("--batches", type=_int_list, default=[1, 8, 32])
     parser.add_argument("--block-h", type=_int_list, default=[16, 8, 4, 2])
     parser.add_argument("--splits", type=_int_list, default=[1, 4, 8, 16, 32, 64])
@@ -620,6 +669,10 @@ def main() -> None:
         "--gather-workers", type=_int_list, default=[128, 256, 512, 1024, 2048]
     )
     args = parser.parse_args()
+
+    if args.coverage:
+        print_decode_coverage()
+        return
 
     torch.manual_seed(0)
     device = torch.device("cuda")
