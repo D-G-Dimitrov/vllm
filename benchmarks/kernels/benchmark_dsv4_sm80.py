@@ -33,6 +33,7 @@ CFG_HIDDEN_SIZE = 4096  # hidden_size
 CFG_NUM_ATTENTION_HEADS = 64  # num_attention_heads
 CFG_NUM_HIDDEN_LAYERS = 43  # num_hidden_layers
 CFG_N_ROUTED_EXPERTS = 256  # n_routed_experts
+CFG_NUM_EXPERTS_PER_TOK = 6  # num_experts_per_tok
 CFG_HC_MULT = 4  # hc_mult
 CFG_HC_SINKHORN_ITERS = 20  # hc_sinkhorn_iters
 CFG_SLIDING_WINDOW = 128  # sliding_window
@@ -954,6 +955,104 @@ def bench_indexer_logits(
 
 
 # ---------------------------------------------------------------------------
+# The decode tail: ~130 launches/step of small elementwise/reduction kernels
+# running at 1-2 CTAs. Whether widening their grids can pay is decided by one
+# number -- how much of each launch sits above the floor that any kernel node
+# costs -- so this arm measures the floor first and reports every kernel as a
+# multiple of it. Timed under cudagraph replay because that is how decode runs
+# them; an eager loop measures host dispatch instead.
+# ---------------------------------------------------------------------------
+
+
+def _graph_time_us(fn: Callable[[], object], reps: int = 50) -> float:
+    for _ in range(10):
+        fn()
+    torch.accelerator.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        for _ in range(reps):
+            fn()
+    for _ in range(5):
+        graph.replay()
+    torch.accelerator.synchronize()
+    start, end = torch.cuda.Event(True), torch.cuda.Event(True)
+    start.record()
+    for _ in range(20):
+        graph.replay()
+    end.record()
+    torch.accelerator.synchronize()
+    return start.elapsed_time(end) / (20 * reps) * 1000
+
+
+def bench_tail_launch(ms: list[int], device: torch.device) -> None:
+    import vllm._custom_ops as ops
+
+    tiny = torch.zeros(1, device=device)
+    floor = _graph_time_us(lambda: tiny.add_(1.0))
+
+    rows = []
+    for m in ms:
+        for label, dim in (("hidden", CFG_HIDDEN_SIZE), ("q_lora", CFG_Q_LORA_RANK)):
+            x = torch.randn(m, dim, dtype=torch.bfloat16, device=device)
+            w = torch.randn(dim, dtype=torch.bfloat16, device=device)
+            out = torch.empty_like(x)
+            res = torch.randn_like(x)
+            # Call the fused ops directly: an RMSNorm module built outside a
+            # real engine silently falls back to the native PyTorch composite
+            # ("Priority not set for op rms_norm"), which is several kernels
+            # and ~10x slower than what production runs.
+            for name, fn in (
+                (
+                    f"rms_norm {label}",
+                    lambda out=out, x=x, w=w: ops.rms_norm(out, x, w, 1e-6),
+                ),
+                (
+                    f"fused_add_rms_norm {label}",
+                    lambda x=x, res=res, w=w: ops.fused_add_rms_norm(x, res, w, 1e-6),
+                ),
+            ):
+                us = _graph_time_us(fn)
+                rows.append(
+                    [
+                        str(m),
+                        name,
+                        _fmt(us, ".2f"),
+                        _fmt(us / floor, ".1f"),
+                        _fmt(us - floor, ".2f"),
+                    ]
+                )
+        src = torch.randn(
+            m,
+            CFG_NUM_EXPERTS_PER_TOK,
+            CFG_HIDDEN_SIZE,
+            dtype=torch.bfloat16,
+            device=device,
+        )
+        dst = torch.empty(m, CFG_HIDDEN_SIZE, dtype=torch.bfloat16, device=device)
+        us = _graph_time_us(lambda src=src, dst=dst: ops.moe_sum(src, dst))
+        rows.append(
+            [
+                str(m),
+                "moe_sum",
+                _fmt(us, ".2f"),
+                _fmt(us / floor, ".1f"),
+                _fmt(us - floor, ".2f"),
+            ]
+        )
+
+    _print_table(
+        f"decode tail vs launch floor ({floor:.2f} us for a 1-element add)",
+        ["M", "kernel", "us", "x floor", "above floor"],
+        rows,
+    )
+    print(
+        "\n'above floor' bounds what any grid change can win per launch: the\n"
+        "payload is 8 KB, so what sits above the floor is fixed kernel overhead\n"
+        "rather than a parallelism shortfall, and extra CTAs have nothing to do."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Unquantized bf16 GEMVs at M=1. These are the two narrow-N projections that
 # stay in bf16 while everything else is block-fp8: the indexer's weights_proj
 # and the MoE router gate. Both are latency items rather than bandwidth ones --
@@ -1565,6 +1664,7 @@ KERNELS = (
     "sparse-decode",
     "sparse-prefill",
     "bf16-gemv",
+    "tail-launch",
     "prenorm-gemm",
     "mhc-pre",
     "dequant-gather",
@@ -1755,6 +1855,8 @@ def main() -> None:
             args.logits_groups,
             device,
         )
+    if "tail-launch" in selected:
+        bench_tail_launch(args.gemv_ms, device)
     if "bf16-gemv" in selected:
         bench_bf16_gemv(args.gemv_ms, device)
     if "dense-gemv" in selected:
