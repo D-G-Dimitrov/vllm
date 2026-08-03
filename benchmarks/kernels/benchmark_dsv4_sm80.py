@@ -154,16 +154,35 @@ def _ragged_indices(
 # ---------------------------------------------------------------------------
 
 
-def _decode_inputs(batch: int, splits: list[int], device: torch.device) -> dict:
+def _decode_inputs(
+    batch: int,
+    splits: list[int],
+    device: torch.device,
+    topk_len: int = TOPK_LEN,
+    topk_rows: int = 26875,
+    swa_rows: int = 4096,
+) -> dict:
+    """Decode inputs matching the live caller: SWA is the *main* segment
+    (contiguous window) and the compressed top-k is *extra* (scattered) --
+    see `rocm_sparse_attn_decode`, which passes `main_cache=swa_k_cache,
+    main_lengths=swa_lens` and `extra_cache=kv_cache, extra_lengths=topk_lens`.
+
+    ``topk_rows`` is the row count the scattered gather indexes into, and it
+    is the single most misleading knob here. It used to be hardcoded at
+    128*1024 rows = 76.6 MB of fp8_ds_mla cache against an A100's 40 MB L2,
+    so every measurement was taken in a DRAM-bound regime the server never
+    enters: serving gathers out of ctx/compress_ratio rows, which is 4.8 MB
+    at 32k and 19.1 MB at 128k -- L2-resident throughout. That inflated the
+    kernel roughly 2.6x against the live 17.30 us and is why bench-derived
+    per-call numbers disagreed with the trace.
+    """
     from vllm.platforms import current_platform
     from vllm.v1.attention.ops.fp8_sm80 import get_e4m3fn_bf16_lut
 
-    swa_rows = 4096
-    topk_rows = 128 * 1024
     is_fnuz = current_platform.is_fp8_fnuz()
     main_indices, main_indptr = _ragged_indices(batch, SWA_LEN, swa_rows, False, device)
     extra_indices, extra_indptr = _ragged_indices(
-        batch, TOPK_LEN, topk_rows, True, device
+        batch, topk_len, topk_rows, True, device
     )
     q = torch.randn(batch, NUM_HEADS, HEAD_DIM, dtype=torch.bfloat16, device=device)
     part = {
@@ -316,6 +335,8 @@ def bench_sparse_decode(
     splits: list[int],
     warps: list[int],
     device: torch.device,
+    topk_len: int = TOPK_LEN,
+    topk_rows: int = 26875,
 ) -> None:
     from vllm.v1.attention.ops.rocm_aiter_mla_sparse import _decode_num_splits
 
@@ -328,10 +349,10 @@ def bench_sparse_decode(
             # default list leads with. Comparing arms at a split count serving
             # never uses reads a different delta, so mark the live one.
             live_splits = _decode_num_splits(
-                batch, heads_blocks, float(SWA_LEN), float(TOPK_LEN), 32
+                batch, heads_blocks, float(SWA_LEN), float(topk_len), 32
             )
             all_splits = sorted({*splits, live_splits})
-            inp = _decode_inputs(batch, all_splits, device)
+            inp = _decode_inputs(batch, all_splits, device, topk_len, topk_rows)
             variants: list[tuple[str, int, Callable[[], None]]] = [
                 (
                     "single-pass",
@@ -359,7 +380,9 @@ def bench_sparse_decode(
                     ]
                 )
     _print_table(
-        f"sparse MLA decode (heads={NUM_HEADS}, swa={SWA_LEN}, topk={TOPK_LEN})",
+        f"sparse MLA decode (heads={NUM_HEADS}, swa={SWA_LEN}, topk={topk_len}, "
+        f"gather pool={topk_rows} rows = "
+        f"{topk_rows * CACHE_ENTRY_BYTES / 2**20:.1f} MB)",
         ["batch", "block_h", "impl", "CTAs", "us"],
         rows,
     )
@@ -1557,6 +1580,19 @@ def main() -> None:
         help="KV_GROUP values: BLOCK_N tiles per CTA sharing one q-tile load",
     )
     parser.add_argument(
+        "--decode-topk-len",
+        type=int,
+        default=TOPK_LEN,
+        help="compressed top-k tokens per query (min(index_topk, ctx/ratio))",
+    )
+    parser.add_argument(
+        "--decode-pool-rows",
+        type=int,
+        default=26875,
+        help="rows the scattered top-k gather indexes into; keep this at the "
+        "live ctx/compress_ratio (L2-resident), not the cache capacity",
+    )
+    parser.add_argument(
         "--prefill-ms",
         type=_int_list,
         default=[2048],
@@ -1593,7 +1629,15 @@ def main() -> None:
     selected = KERNELS if args.kernel == "all" else (args.kernel,)
 
     if "sparse-decode" in selected:
-        bench_sparse_decode(args.batches, args.block_h, args.splits, args.warps, device)
+        bench_sparse_decode(
+            args.batches,
+            args.block_h,
+            args.splits,
+            args.warps,
+            device,
+            args.decode_topk_len,
+            args.decode_pool_rows,
+        )
     if "sparse-prefill" in selected:
         bench_sparse_prefill(
             args.prefill_ms,
