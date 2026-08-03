@@ -129,16 +129,38 @@ def _ragged_indices(
     num_rows: int,
     scattered: bool,
     device: torch.device,
+    live_rows: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Ragged (indices, indptr) with ``seg_len`` slots per query.
 
     ``scattered`` models the compressed top-k gather (random rows); contiguous
     models the SWA window.
+
+    ``live_rows`` separates *how much data the sequence owns* from *how far
+    apart it sits*. Serving gathers ctx/compress_ratio rows out of a cache pool
+    two orders of magnitude larger, in `block_size`-row pages handed out by a
+    free list, so the bytes are L2-sized while the addresses are not. Passing
+    live_rows < num_rows reproduces that; leaving it 0 keeps the old compact
+    behaviour where the pool IS the sequence.
     """
     if scattered:
-        indices = torch.randint(
-            0, num_rows, (num_queries * seg_len,), dtype=torch.int32, device=device
-        )
+        if live_rows and live_rows < num_rows:
+            page = CACHE_BLOCK_SIZE
+            n_pages = max(1, triton.cdiv(live_rows, page))
+            pool_pages = max(n_pages, num_rows // page)
+            pages = torch.randperm(pool_pages, device=device)[:n_pages]
+            slot = torch.randint(
+                0, page, (num_queries * seg_len,), dtype=torch.int64, device=device
+            )
+            pick = torch.randint(
+                0, n_pages, (num_queries * seg_len,), dtype=torch.int64, device=device
+            )
+            indices = (pages[pick] * page + slot).clamp_(max=num_rows - 1)
+            indices = indices.to(torch.int32)
+        else:
+            indices = torch.randint(
+                0, num_rows, (num_queries * seg_len,), dtype=torch.int32, device=device
+            )
     else:
         starts = torch.randint(
             0, max(1, num_rows - seg_len), (num_queries, 1), device=device
@@ -156,6 +178,31 @@ def _ragged_indices(
 # ---------------------------------------------------------------------------
 
 
+def _decode_operating_point(ctx: int, compress_ratio: int = 4) -> dict:
+    """Segment lengths and gather-pool size for a decode step at ``ctx`` tokens.
+
+    Every quantity here follows from the context length, which is the point:
+    a fixed pool measures one spot on a context-dependent curve, and a
+    node-granularity A/B put the live kernel on BOTH sides of the old fixed
+    pool (17% faster than the bench at ~94 tokens, 20% slower at 107k). The
+    bench cannot guide tuning in either direction until the operating point is
+    an input.
+
+    ``topk_len``/``swa_len`` are the *true* walked lengths, which is what the
+    kernel does via indptr. They are NOT what production's split heuristic
+    sees -- see `bench_sparse_decode`.
+    """
+    compressed = max(1, ctx // compress_ratio)
+    return dict(
+        ctx=ctx,
+        topk_len=min(TOPK_LEN, compressed),
+        # Rows the sequence owns; the pool it sits in is a separate knob,
+        # because bytes and address spread are separate effects.
+        topk_rows=max(1, compressed),
+        swa_len=min(SWA_LEN, ctx),
+    )
+
+
 def _decode_inputs(
     batch: int,
     splits: list[int],
@@ -163,6 +210,8 @@ def _decode_inputs(
     topk_len: int = TOPK_LEN,
     topk_rows: int = 26875,
     swa_rows: int = 4096,
+    swa_len: int = SWA_LEN,
+    pool_rows: int = 0,
 ) -> dict:
     """Decode inputs matching the live caller: SWA is the *main* segment
     (contiguous window) and the compressed top-k is *extra* (scattered) --
@@ -182,9 +231,13 @@ def _decode_inputs(
     from vllm.v1.attention.ops.fp8_sm80 import get_e4m3fn_bf16_lut
 
     is_fnuz = current_platform.is_fp8_fnuz()
-    main_indices, main_indptr = _ragged_indices(batch, SWA_LEN, swa_rows, False, device)
+    # The cache the gather indexes into is the pool when one is given, and the
+    # sequence's own rows otherwise; `live_rows` keeps the touched bytes the
+    # same either way, so the two arms isolate address spread from volume.
+    extra_cache_rows = max(topk_rows, pool_rows)
+    main_indices, main_indptr = _ragged_indices(batch, swa_len, swa_rows, False, device)
     extra_indices, extra_indptr = _ragged_indices(
-        batch, topk_len, topk_rows, True, device
+        batch, topk_len, extra_cache_rows, True, device, live_rows=topk_rows
     )
     q = torch.randn(batch, NUM_HEADS, HEAD_DIM, dtype=torch.bfloat16, device=device)
     part = {
@@ -201,7 +254,9 @@ def _decode_inputs(
         q=q,
         out=torch.empty_like(q),
         main_cache=_make_ds_mla_cache(swa_rows, CACHE_BLOCK_SIZE, is_fnuz, device),
-        extra_cache=_make_ds_mla_cache(topk_rows, CACHE_BLOCK_SIZE, False, device),
+        extra_cache=_make_ds_mla_cache(
+            extra_cache_rows, CACHE_BLOCK_SIZE, False, device
+        ),
         main_indices=main_indices,
         main_indptr=main_indptr,
         extra_indices=extra_indices,
@@ -339,6 +394,8 @@ def bench_sparse_decode(
     device: torch.device,
     topk_len: int = TOPK_LEN,
     topk_rows: int = 26875,
+    swa_len: int = SWA_LEN,
+    pool_rows: int = 0,
 ) -> None:
     from vllm.v1.attention.ops.rocm_aiter_mla_sparse import _decode_num_splits
 
@@ -346,15 +403,31 @@ def bench_sparse_decode(
     for batch in batches:
         for block_h in block_hs:
             heads_blocks = triton.cdiv(NUM_HEADS, block_h)
-            # Serving picks the split count from the same heuristic, off the
-            # real segment lengths; at batch 1 that is 16, not the 8 the
-            # default list leads with. Comparing arms at a split count serving
-            # never uses reads a different delta, so mark the live one.
+            # Serving picks the split count from this same heuristic, but it
+            # feeds it `main_indices.numel() / num_queries`, and both ragged
+            # buffers are allocated at their DENSE width (rocm.py:262 sizes the
+            # top-k pack at num_tokens * topk; :299 slices the SWA graph buffer
+            # at num_rows * window). So the heuristic always sees 128 and 512
+            # no matter how short the context is -- which is why the split
+            # count is context-independent in the traces. Mark that arm live,
+            # and mark the split the TRUE segment lengths would have chosen so
+            # the two can be compared directly.
             live_splits = _decode_num_splits(
-                batch, heads_blocks, float(SWA_LEN), float(topk_len), 32
+                batch, heads_blocks, float(SWA_LEN), float(TOPK_LEN), 32
             )
-            all_splits = sorted({*splits, live_splits})
-            inp = _decode_inputs(batch, all_splits, device, topk_len, topk_rows)
+            true_splits = _decode_num_splits(
+                batch, heads_blocks, float(swa_len), float(topk_len), 32
+            )
+            all_splits = sorted({*splits, live_splits, true_splits})
+            inp = _decode_inputs(
+                batch,
+                all_splits,
+                device,
+                topk_len,
+                topk_rows,
+                swa_len=swa_len,
+                pool_rows=pool_rows,
+            )
             variants: list[tuple[str, int, Callable[[], None]]] = [
                 (
                     "single-pass",
@@ -362,9 +435,18 @@ def bench_sparse_decode(
                     partial(_launch_single_pass, inp, block_h, 32),
                 )
             ]
+
+            def _tag(s: int, live: int = live_splits, true: int = true_splits) -> str:
+                marks = []
+                if s == live:
+                    marks.append("live")
+                if s == true and true != live:
+                    marks.append("true-len")
+                return f" ({'/'.join(marks)})" if marks else ""
+
             variants += [
                 (
-                    f"split-k s{s} w{w}" + (" (live)" if s == live_splits else ""),
+                    f"split-k s{s} w{w}{_tag(s)}",
                     batch * s * heads_blocks,
                     partial(_launch_split_k, inp, block_h, 32, s, w),
                 )
@@ -382,9 +464,13 @@ def bench_sparse_decode(
                     ]
                 )
     _print_table(
-        f"sparse MLA decode (heads={NUM_HEADS}, swa={SWA_LEN}, topk={topk_len}, "
-        f"gather pool={topk_rows} rows = "
-        f"{topk_rows * CACHE_ENTRY_BYTES / 2**20:.1f} MB)",
+        f"sparse MLA decode (heads={NUM_HEADS}, swa={swa_len}, topk={topk_len}, "
+        f"live rows={topk_rows} = {topk_rows * CACHE_ENTRY_BYTES / 2**20:.1f} MB"
+        + (
+            f", spread over a {pool_rows * CACHE_ENTRY_BYTES / 2**20:.0f} MB pool)"
+            if pool_rows > topk_rows
+            else ")"
+        ),
         ["batch", "block_h", "impl", "CTAs", "us"],
         rows,
     )
@@ -1976,6 +2062,25 @@ def main() -> None:
         "(short-context and 107k at compress_ratio 4)",
     )
     parser.add_argument(
+        "--decode-ctx",
+        type=_int_list,
+        default=None,
+        help="context lengths (raw tokens) for the sparse-decode sweep; each "
+        "derives its own top-k segment, SWA segment and gather-pool size, "
+        "which is the only way to place the bench at a live operating point "
+        "instead of between two of them. Overrides --decode-topk-len and "
+        "--decode-pool-rows.",
+    )
+    parser.add_argument(
+        "--decode-cache-rows",
+        type=int,
+        default=0,
+        help="total rows in the compressed KV pool the top-k gather scatters "
+        "through; the sequence still owns only ctx/compress_ratio of them, so "
+        "this separates address spread from touched bytes. 0 = the pool is the "
+        "sequence (compact). Serving's pool is ~48k blocks x 64 rows.",
+    )
+    parser.add_argument(
         "--decode-topk-len",
         type=int,
         default=TOPK_LEN,
@@ -2028,15 +2133,31 @@ def main() -> None:
     selected = KERNELS if args.kernel == "all" else (args.kernel,)
 
     if "sparse-decode" in selected:
-        bench_sparse_decode(
-            args.batches,
-            args.block_h,
-            args.splits,
-            args.warps,
-            device,
-            args.decode_topk_len,
-            args.decode_pool_rows,
+        points = (
+            [_decode_operating_point(ctx) for ctx in args.decode_ctx]
+            if args.decode_ctx
+            else [
+                dict(
+                    topk_len=args.decode_topk_len,
+                    topk_rows=args.decode_pool_rows,
+                    swa_len=SWA_LEN,
+                )
+            ]
         )
+        for point in points:
+            if "ctx" in point:
+                print(f"\n### context {point['ctx']} tokens")
+            bench_sparse_decode(
+                args.batches,
+                args.block_h,
+                args.splits,
+                args.warps,
+                device,
+                point["topk_len"],
+                point["topk_rows"],
+                point["swa_len"],
+                args.decode_cache_rows,
+            )
     if "sparse-prefill" in selected:
         bench_sparse_prefill(
             args.prefill_ms,
