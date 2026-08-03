@@ -317,11 +317,21 @@ def bench_sparse_decode(
     warps: list[int],
     device: torch.device,
 ) -> None:
+    from vllm.v1.attention.ops.rocm_aiter_mla_sparse import _decode_num_splits
+
     rows = []
     for batch in batches:
-        inp = _decode_inputs(batch, splits, device)
         for block_h in block_hs:
             heads_blocks = triton.cdiv(NUM_HEADS, block_h)
+            # Serving picks the split count from the same heuristic, off the
+            # real segment lengths; at batch 1 that is 16, not the 8 the
+            # default list leads with. Comparing arms at a split count serving
+            # never uses reads a different delta, so mark the live one.
+            live_splits = _decode_num_splits(
+                batch, heads_blocks, float(SWA_LEN), float(TOPK_LEN), 32
+            )
+            all_splits = sorted({*splits, live_splits})
+            inp = _decode_inputs(batch, all_splits, device)
             variants: list[tuple[str, int, Callable[[], None]]] = [
                 (
                     "single-pass",
@@ -331,11 +341,11 @@ def bench_sparse_decode(
             ]
             variants += [
                 (
-                    f"split-k s{s} w{w}",
+                    f"split-k s{s} w{w}" + (" (live)" if s == live_splits else ""),
                     batch * s * heads_blocks,
                     partial(_launch_split_k, inp, block_h, 32, s, w),
                 )
-                for s in splits
+                for s in all_splits
                 for w in warps
             ]
             for label, ctas, fn in variants:
