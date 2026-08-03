@@ -977,58 +977,23 @@ _BF16_GEMV_SHAPES = [
 ]
 
 
-@triton.jit
-def _bf16_gemv_kernel(
-    x_ptr,
-    w_ptr,
-    out_ptr,
-    K,
-    stride_wn,
-    BLOCK_K: tl.constexpr,
-):
-    """One CTA per output row: no split-K, so no second reduce launch."""
-    pid = tl.program_id(0)
-    acc = tl.zeros((BLOCK_K,), dtype=tl.float32)
-    for k0 in tl.range(0, K, BLOCK_K):
-        offs = k0 + tl.arange(0, BLOCK_K)
-        mask = offs < K
-        xv = tl.load(x_ptr + offs, mask=mask, other=0.0).to(tl.float32)
-        wv = tl.load(w_ptr + pid * stride_wn + offs, mask=mask, other=0.0).to(
-            tl.float32
-        )
-        acc += xv * wv
-    tl.store(out_ptr + pid, tl.sum(acc, axis=0).to(out_ptr.dtype.element_ty))
+def _launch_bf16_gemv(x: torch.Tensor, w: torch.Tensor, out_dtype):
+    """Exercise the shipped kernel, not a copy of it."""
+    from vllm.model_executor.kernels.linear.gemv_triton import bf16_gemv
+
+    return bf16_gemv(x, w, out_dtype)
 
 
-def _launch_bf16_gemv(
-    x: torch.Tensor,
-    w: torch.Tensor,
-    out: torch.Tensor,
-    block_k: int,
-    num_warps: int,
-) -> None:
-    _bf16_gemv_kernel[(w.shape[0],)](
-        x,
-        w,
-        out,
-        w.shape[1],
-        w.stride(0),
-        BLOCK_K=block_k,
-        num_warps=num_warps,
-    )
-
-
-def bench_bf16_gemv(
-    block_ks: list[int], warps: list[int], device: torch.device
-) -> None:
+def bench_bf16_gemv(ms: list[int], device: torch.device) -> None:
     import torch.nn.functional as F
 
     rows = []
     step_us: dict[str, dict[str, float]] = {}
-    for name, k, n, out_dtype, count in _BF16_GEMV_SHAPES:
+    for m_tokens, (name, k, n, out_dtype, count) in itertools.product(
+        ms, _BF16_GEMV_SHAPES
+    ):
         w = torch.randn(n, k, dtype=torch.bfloat16, device=device) * 0.02
-        x = torch.randn(1, k, dtype=torch.bfloat16, device=device)
-        out = torch.empty(n, dtype=out_dtype, device=device)
+        x = torch.randn(m_tokens, k, dtype=torch.bfloat16, device=device)
 
         def _baseline(x=x, w=w, out_dtype=out_dtype):
             y = F.linear(x, w)
@@ -1042,18 +1007,15 @@ def bench_bf16_gemv(
         exact = (x.float() @ w.float().T).flatten()
 
         variants: list[tuple[str, Callable[[], None]]] = [("production", _baseline)]
-        variants += [
-            (f"triton bK={bk} w={nw}", partial(_launch_bf16_gemv, x, w, out, bk, nw))
-            for bk in block_ks
-            for nw in warps
-        ]
+        variants += [("triton gemv", partial(_launch_bf16_gemv, x, w, out_dtype))]
         for label, fn in variants:
             us = _time_us(fn)
-            got = out if label.startswith("triton") else fn()
+            got = fn()
             torch.accelerator.synchronize()
             got = got.float().flatten()
             rows.append(
                 [
+                    str(m_tokens),
                     name,
                     f"{k}x{n}",
                     label,
@@ -1063,10 +1025,10 @@ def bench_bf16_gemv(
                     f"{(got - exact).abs().max().item():.1e}",
                 ]
             )
-            step_us.setdefault(label, {})[name] = us * count
+            step_us.setdefault(f"M={m_tokens} {label}", {})[name] = us * count
     _print_table(
         "unquantized bf16 GEMV at M=1 (per-step launch counts)",
-        ["layer", "KxN", "impl", "CTAs", "us", "vs prod", "vs fp32"],
+        ["M", "layer", "KxN", "impl", "CTAs", "us", "vs prod", "vs fp32"],
         rows,
     )
     print("\nPer-step totals (21 indexer layers + 43 gate layers):")
@@ -1163,7 +1125,6 @@ def _make_marlin_layer(
 
 
 def _import_gemv_triton():
-    from vllm.triton_utils import tl
     from vllm.v1.attention.ops.fp8_sm80 import _decode_fp8_f32, _decode_fp8_lut
 
     @triton.jit
@@ -1795,7 +1756,7 @@ def main() -> None:
             device,
         )
     if "bf16-gemv" in selected:
-        bench_bf16_gemv(args.gemv_block_ks, args.warps, device)
+        bench_bf16_gemv(args.gemv_ms, device)
     if "dense-gemv" in selected:
         bench_dense_gemv(args.gemv_ms, args.gemv_block_ns, device)
 
