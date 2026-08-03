@@ -29,9 +29,12 @@ import torch
 
 from vllm.config import VllmConfig
 from vllm.config.compilation import CUDAGraphMode
+from vllm.logger import init_logger
 from vllm.v1.worker.gpu.sample.gumbel import gumbel_sample
 from vllm.v1.worker.gpu.spec_decode.dflash.speculator import DFlashSpeculator
 from vllm.v1.worker.gpu.spec_decode.dspark.utils import load_dspark_model
+
+logger = init_logger(__name__)
 
 
 class DSparkSpeculator(DFlashSpeculator):
@@ -97,6 +100,35 @@ class DSparkSpeculator(DFlashSpeculator):
             )
         return model
 
+    def _validate_local_argmax_reduction(self) -> None:
+        # DSpark's greedy selection spans the SUM of two vocab-parallel heads
+        # (base draft logits + the Markov transition bias), so it needs a
+        # different pair of hooks than the base class's single get_top_tokens.
+        if not self.use_local_argmax_reduction:
+            return
+        if self.speculative_config.draft_sample_method == "probabilistic":
+            raise ValueError(
+                "use_local_argmax_reduction is not compatible with "
+                "draft_sample_method='probabilistic': verification needs whole "
+                "processed logit rows, which is exactly what the reduction "
+                "avoids materializing."
+            )
+        missing = [
+            name
+            for name in ("compute_draft_logits_shard", "select_draft_token_shard")
+            if not hasattr(self.model, name)
+        ]
+        if missing:
+            raise ValueError(
+                "use_local_argmax_reduction is enabled but DSpark draft model "
+                f"{self.model.__class__.__name__} does not implement "
+                f"{', '.join(missing)}()."
+            )
+        logger.info(
+            "DSpark: vocab-sharded Markov head with local argmax reduction "
+            "(communication: O(2*tp_size) vs O(vocab_size) per draft position)."
+        )
+
     def _sample_sequential(self, num_reqs: int, head_hidden: torch.Tensor) -> None:
         # Sequential Markov sampling over the backbone's output hidden states.
         n_spec = self.num_speculative_steps
@@ -104,7 +136,13 @@ class DSparkSpeculator(DFlashSpeculator):
         # Per-(req, position) head hidden, ordered (req, step).
         sample_hidden = head_hidden[self.sample_indices[:num_sample]]
         # Draft-vocab logits; sampled ids are remapped to target vocab below.
-        base_logits = self.model.compute_draft_logits(sample_hidden)
+        # Under the local-argmax reduction these are this rank's vocab columns
+        # only, so `vocab_size` below is the shard width -- nothing in this
+        # method reads it as a vocab id.
+        if self.use_local_argmax_reduction:
+            base_logits = self.model.compute_draft_logits_shard(sample_hidden)
+        else:
+            base_logits = self.model.compute_draft_logits(sample_hidden)
         vocab_size = base_logits.shape[-1]
         base_logits = base_logits.view(num_reqs, n_spec, vocab_size)
 
@@ -118,6 +156,16 @@ class DSparkSpeculator(DFlashSpeculator):
         for i in range(n_spec):
             # Sequential stage: Markov bias from the previously sampled token.
             markov_embed = self.model.markov_embed(prev)
+            if self.use_local_argmax_reduction:
+                # Greedy-only (enforced in _validate_local_argmax_reduction):
+                # the argmax over base + bias reduces to one (value, id) pair
+                # per rank, so neither head materializes a full-vocab row.
+                draft_sampled_i = self.model.map_draft_to_target(
+                    self.model.select_draft_token_shard(markov_embed, base_logits[:, i])
+                )
+                self.draft_tokens[:num_reqs, i] = draft_sampled_i
+                prev = draft_sampled_i
+                continue
             bias = self.model.markov_bias(markov_embed)
             logits_i = base_logits[:, i] + bias
             if self.draft_logits is not None:

@@ -19,7 +19,7 @@ from collections.abc import Iterable
 import torch
 import torch.nn as nn
 
-from vllm.config import VllmConfig
+from vllm.config import VllmConfig, get_current_vllm_config_or_none
 from vllm.logger import init_logger
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.quantization import QuantizationConfig
@@ -33,6 +33,22 @@ from .utils import AutoWeightsLoader, maybe_prefix, process_eagle_weight
 logger = init_logger(__name__)
 
 
+def dspark_vocab_shard_enabled() -> bool:
+    """Whether the Markov head shards ``markov_w2`` over the TP group.
+
+    Keyed on the existing ``use_local_argmax_reduction`` speculative-config
+    flag rather than a DSpark-private switch: that flag names exactly this
+    trade -- vocab-parallel local argmax instead of an all-gather of full
+    logits, greedy selection only -- and the weight layout has to be fixed
+    here, at construction, from the same switch the speculator dispatches on
+    later.
+    """
+    vllm_config = get_current_vllm_config_or_none()
+    if vllm_config is None or vllm_config.speculative_config is None:
+        return False
+    return vllm_config.speculative_config.use_local_argmax_reduction
+
+
 class DSparkMarkovHead(nn.Module):
     """Sequential transition-bias head (low-rank V x r, r x V).
 
@@ -41,9 +57,17 @@ class DSparkMarkovHead(nn.Module):
     (``draft_vocab_size``) added to the base draft logits. The two sizes
     coincide for full-vocab drafts.
 
-    Both weights are replicated because the head runs sequentially for every
-    draft position. Sharding them would add an all-reduce and a full-vocab
-    gather to each position.
+    ``markov_w1`` is always replicated: it is indexed by a token id, so
+    sharding it would buy nothing. ``markov_w2`` is replicated by default for
+    the reason the head's original docstring gives -- it runs once per draft
+    position, and sharding it would add a full-vocab gather to each. That
+    argument holds for the *probabilistic* path, which needs whole processed
+    logit rows to verify against, and fails for the greedy path, where the only
+    thing read off the vocab axis is an argmax, and an argmax reduces. So under
+    ``use_local_argmax_reduction`` (greedy only, validated by the speculator)
+    ``markov_w2`` becomes vocab-parallel and selection goes through
+    :meth:`select_top_tokens`, which exchanges one (value, id) pair per rank
+    instead of a [B, V] row.
     """
 
     def __init__(
@@ -55,6 +79,9 @@ class DSparkMarkovHead(nn.Module):
         quant_config: QuantizationConfig | None = None,
     ) -> None:
         super().__init__()
+        if shard_vocab is None:
+            shard_vocab = dspark_vocab_shard_enabled()
+        self.shard_vocab = shard_vocab
         self.markov_w1 = nn.Embedding(vocab_size, markov_rank)
         self.markov_w2 = ParallelLMHead(
             draft_vocab_size,
@@ -62,7 +89,7 @@ class DSparkMarkovHead(nn.Module):
             bias=False,
             quant_config=quant_config,
             prefix=maybe_prefix(prefix, "markov_w2"),
-            disable_tp=True,
+            disable_tp=not shard_vocab,
         )
 
     def embed(self, token_ids: torch.Tensor) -> torch.Tensor:
@@ -76,6 +103,24 @@ class DSparkMarkovHead(nn.Module):
     ) -> torch.Tensor:
         """Vocab-size transition bias from a Markov embedding ([B, r] -> [B, V])."""
         return logits_processor(self.markov_w2, markov_embed)
+
+    def select_top_tokens(
+        self,
+        markov_embed: torch.Tensor,
+        base_shard_logits: torch.Tensor,
+        logits_processor: LogitsProcessor,
+    ) -> torch.Tensor:
+        """Greedy draft ids from base logits + this head's transition bias.
+
+        ``base_shard_logits`` is this rank's slice of the base draft logits
+        ([B, V/TP], from ``LogitsProcessor.get_shard_logits``); the argmax runs
+        over the sum of the two heads, which share the shard layout because
+        both are ``ParallelLMHead``\\ s over the draft vocab. Returns draft-vocab
+        ids -- the caller still applies its draft-to-target mapping.
+        """
+        return logits_processor.get_top_tokens(
+            self.markov_w2, markov_embed, extra_logits=base_shard_logits
+        )
 
 
 class Qwen3DSparkModel(DFlashQwen3Model):
@@ -145,6 +190,17 @@ class Qwen3DSparkForCausalLM(DFlashQwen3ForCausalLM):
         # Draft-vocab logits without the d2t scatter: the speculator adds the
         # Markov bias in draft space, then remaps via map_draft_to_target.
         return self.logits_processor(self.lm_head, hidden_states)
+
+    def compute_draft_logits_shard(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        # Same logits, this rank's vocab columns only (no gather).
+        return self.logits_processor.get_shard_logits(self.lm_head, hidden_states)
+
+    def select_draft_token_shard(
+        self, markov_embed: torch.Tensor, base_shard_logits: torch.Tensor
+    ) -> torch.Tensor:
+        return self.model.markov_head.select_top_tokens(
+            markov_embed, base_shard_logits, self.logits_processor
+        )
 
     def map_draft_to_target(self, draft_ids: torch.Tensor) -> torch.Tensor:
         # Map draft-vocab ids to target ids (identity for full-vocab drafts).
