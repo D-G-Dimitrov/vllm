@@ -655,6 +655,13 @@ def sparse_attn_indexer(
             and current_platform.has_device_capability(90)
             and not current_platform.is_device_capability_family(120)
         )
+        # Deliberately NOT capability-gated, unlike the cooperative path
+        # above: persistent_topk is the portable non-cluster kernel, and an
+        # external report of k<n<2k corruption on SM8x (#50576) did not
+        # reproduce here — 183/183 direct kernel checks and 2x 286/286
+        # end-to-end, audited 2026-08-03 (the reporter ran a third-party
+        # vendored kernel, not this tree's topk.cu). Regression coverage:
+        # tests/kernels/test_persistent_topk_band.py.
         use_persistent_topk = current_platform.is_cuda() and topk_tokens in (
             512,
             1024,
