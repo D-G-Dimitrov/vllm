@@ -9,6 +9,7 @@ import vllm.envs as envs
 from vllm._aiter_ops import rocm_aiter_ops
 from vllm.distributed.device_communicators.all_reduce_utils import (
     NCCL_SYMM_MEM_ALL_REDUCE_CONFIG,
+    MiB,
     should_nccl_symm_mem_ag_rs,
     should_nccl_symm_mem_allreduce,
 )
@@ -116,12 +117,18 @@ class CudaCommunicator(DeviceCommunicatorBase):
 
         if use_custom_allreduce and self.aiter_ar_comm is None and self.world_size > 1:
             # Initialize a custom fast all-reduce implementation.
+            # The default cap (8 MB) is below a tensor-parallel prefill step's
+            # payload, so those all-reduces fall back to NCCL; raising it is
+            # opt-in because it costs an IPC-registered buffer of that size.
+            max_size_mb = envs.VLLM_MAX_SIZE_MB_CUSTOM_ALL_REDUCE
+            extra = {} if max_size_mb is None else {"max_size": max_size_mb * MiB}
             self.ca_comm = CustomAllreduce(
                 group=self.cpu_group,
                 device=self.device,
                 symm_mem_enabled=(
                     self.symm_mem_comm is not None and not self.symm_mem_comm.disabled
                 ),
+                **extra,
             )
 
         if use_custom_allreduce and self.world_size > 1 and current_platform.is_rocm():

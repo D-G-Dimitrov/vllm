@@ -237,6 +237,7 @@ if TYPE_CHECKING:
     VLLM_ROCM_QUICK_REDUCE_CAST_BF16_TO_FP16: bool = True
     VLLM_ROCM_QUICK_REDUCE_MAX_SIZE_BYTES_MB: int | None = None
     VLLM_ROCM_QUICK_REDUCE_MIN_SIZE_BYTES_MB: int | None = None
+    VLLM_MAX_SIZE_MB_CUSTOM_ALL_REDUCE: int | None = None
     VLLM_ROCM_QUICK_REDUCE_QUANTIZATION_MIN_SIZE_KB: int | None = None
     VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT: int = 480
     VLLM_ENABLE_CUDAGRAPH_GC: bool = False
@@ -1324,6 +1325,19 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # If unset, use the built-in threshold table.
     "VLLM_ROCM_QUICK_REDUCE_MIN_SIZE_BYTES_MB": lambda: maybe_convert_int(
         os.environ.get("VLLM_ROCM_QUICK_REDUCE_MIN_SIZE_BYTES_MB", None)
+    ),
+    # Largest payload (MB) that custom allreduce will handle; above it the
+    # collective falls back to NCCL. Unset keeps the 8 MB built-in default,
+    # which is small enough that a tensor-parallel PREFILL step (num_tokens x
+    # hidden x 2 B: 16.8 MB for a 2048-token chunk at hidden 4096) always
+    # falls back, while decode's few-KB payloads never do. Raising it trades
+    # one IPC-registered buffer of this size per rank for the custom kernel's
+    # two-shot path. Measured on 8xA100 NVLink at 16 MB: 1.35-1.42x faster
+    # than NCCL RING_LL across two harnesses, and ~3x more accurate (2.7e-3 vs
+    # 7.9e-3 relative to an fp32 reduction) because two-shot sums each chunk
+    # once instead of accumulating around a ring in bf16.
+    "VLLM_MAX_SIZE_MB_CUSTOM_ALL_REDUCE": lambda: maybe_convert_int(
+        os.environ.get("VLLM_MAX_SIZE_MB_CUSTOM_ALL_REDUCE", None)
     ),
     # Controls the minimum tensor size (KB, where 1 KB = 1024 bytes) required
     # to use the configured QuickReduce codec. Smaller tensors use FP
