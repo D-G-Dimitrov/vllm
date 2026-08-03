@@ -15,6 +15,10 @@ from transformers import DeepseekV2Config, DeepseekV3Config
 
 import vllm.envs as envs
 from vllm.compilation.breakable_cudagraph import eager_break_during_capture
+from vllm.model_executor.kernels.linear.gemv_triton import (
+    bf16_gemv,
+    should_use_triton_gemv,
+)
 from vllm.model_executor.layers.linear import (
     ColumnParallelLinear,
     MergedColumnParallelLinear,
@@ -429,6 +433,12 @@ class DeepseekV4Attention(nn.Module, AttentionLayerBase, ABC):
             indexer = self.indexer
 
             def indexer_weights_proj() -> torch.Tensor:
+                # N=64 is narrow enough that cuBLAS splits K and reduces --
+                # two launches for a 512 KB weight. One CTA per output row
+                # does it in one; measured 5.4 -> 2.8 us at M=1.
+                w = indexer.weights_proj.weight
+                if should_use_triton_gemv(hidden_states, w):
+                    return bf16_gemv(hidden_states, w)
                 # ReplicatedLinear returns (output, bias); bias is None.
                 weights, _ = indexer.weights_proj(hidden_states)
                 return weights
