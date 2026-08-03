@@ -183,6 +183,35 @@ def test_mhc_pre_broadcast_tilelang(num_tokens, hidden_size, hc_mult):
     hc_mult streams, so the result must match ``mhc_pre_ref`` on the
     explicitly expanded residual. RMSNorm fusion is mandatory here (the
     wrapper asserts ``norm_weight``), matching how the model calls it."""
+    _run_mhc_pre_broadcast_case(num_tokens, hidden_size, hc_mult)
+
+
+@pytest.mark.skipif(
+    not HAS_TILELANG_MHC,
+    reason="TileLang MHC support required",
+)
+@pytest.mark.parametrize("num_tokens", [1, 8, 128])
+@pytest.mark.parametrize("hidden_size", [4096])
+@pytest.mark.parametrize("hc_mult", [4])
+def test_mhc_pre_broadcast_tilelang_without_deep_gemm(
+    num_tokens, hidden_size, hc_mult, monkeypatch
+):
+    """Same case with DeepGEMM forced unavailable.
+
+    The broadcast variant is the one that reaches the prenorm GEMM through a
+    separate branch from its two siblings, and on a pre-Hopper device the
+    DeepGEMM branch aborts in ``hyperconnection.hpp`` rather than returning
+    wrong numbers. Below SM90 this is what the test above already runs, so
+    the point of forcing it is coverage on hardware where DeepGEMM *is*
+    supported and the fallback would otherwise never execute.
+    """
+    monkeypatch.setattr(
+        "vllm.utils.deep_gemm.is_deep_gemm_supported", lambda *a, **kw: False
+    )
+    _run_mhc_pre_broadcast_case(num_tokens, hidden_size, hc_mult)
+
+
+def _run_mhc_pre_broadcast_case(num_tokens, hidden_size, hc_mult):
     torch.set_default_device(DEVICE)
     set_random_seed(0)
 
