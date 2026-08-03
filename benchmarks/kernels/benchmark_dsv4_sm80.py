@@ -2041,6 +2041,25 @@ def bench_dense_gemv(ms: list[int], block_ns: list[int], device: torch.device) -
 # Weights are built through the production prep function
 # (`prepare_moe_mxfp4_layer_for_marlin`), not a hand-rolled repack, so the
 # layouts, the group size (32) and the e8m0 scale decode are the shipped ones.
+#
+# Measured shape of the cost curve (A100, TP=8 shapes above), because "the MoE
+# is bandwidth-bound" is true at exactly one place on it:
+#
+#     M       weight-streaming rate    what limits it
+#     1       245 GB/s                 latency: 6 blocks of work, DRAM 11-17%
+#                                      of peak, ~40 us of the 43 us call is
+#                                      fixed cost
+#     64      1310-1375 GB/s           bandwidth, against 1457 GB/s measured
+#                                      for a large streaming read on this box
+#     2048    ~450 GB/s                compute: gemm1 reaches 53% of the bf16
+#                                      tensor pipe, so weights amortize and
+#                                      the rate stops being the metric
+#
+# So a projection that carries one regime's achieved bandwidth into another is
+# wrong by up to 5.6x here, in both directions. The size sweep is what
+# separates the three, and it is cheap -- run it before believing any single
+# operating point. The same effect shows up whenever per-CTA work shrinks: the
+# DSpark Markov GEMM drops 1457 -> 807 GB/s purely from being sharded 8 ways.
 # ---------------------------------------------------------------------------
 
 CFG_SWIGLU_LIMIT = 10.0  # swiglu_limit
