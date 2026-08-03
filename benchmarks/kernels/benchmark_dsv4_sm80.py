@@ -955,6 +955,201 @@ def bench_indexer_logits(
 
 
 # ---------------------------------------------------------------------------
+# Indexer MQA logits (paged decode). Same math as the prefill kernel above but
+# one query token against a paged K cache, and it runs 21 times per decode step
+# (only the ratio-4 layers carry an indexer). A node-granularity trace measured
+# it at 7.59 us short-context and 15.94 us at 107k, so the sweep is over the
+# compressed context length -- which is what sets the CTA count, since the grid
+# is (B * next_n, cdiv(n_compressed, block_size)).
+# ---------------------------------------------------------------------------
+
+# The indexer cache holds `cache_config.block_size // compress_ratio` compressed
+# tokens per block (`kv_cache_interface.py:405`); this deployment runs 256 // 4,
+# and 64 is also what the DEEPSEEK_SPARSE_SWA preferred block size reduces to.
+# BLOCK_N follows block_size, so this is a shape constant, not a tuning knob.
+_PAGED_BLOCK_SIZE = 64
+_PAGED_COMPRESS_RATIO = 4
+
+
+def _paged_logits_inputs(batch: int, n_compressed: int, device: torch.device) -> dict:
+    """Decode inputs for `_fp8_paged_mqa_logits_kernel`, laid out exactly as
+    `fp8_paged_mqa_logits_triton` re-derives them from the paged cache.
+
+    The block table scatters each sequence's blocks over a pool several times
+    its size, because live block IDs come off a free list rather than being
+    consecutive; the pool is deliberately not the full 48k-block deployment
+    cache, whose 400 MB would measure a DRAM regime one decode never touches
+    (a 107k sequence reads 418 blocks = 3.5 MB).
+    """
+    from vllm.v1.attention.ops.fp8_sm80 import get_e4m3fn_bf16_lut
+
+    head_dim = CFG_INDEX_HEAD_DIM
+    block_size = _PAGED_BLOCK_SIZE
+    seq_blocks = triton.cdiv(n_compressed, block_size)
+    pool_blocks = max(2048, 4 * batch * seq_blocks)
+
+    kv_cache = torch.randint(
+        0,
+        256,
+        (pool_blocks, block_size, 1, head_dim + 4),
+        dtype=torch.uint8,
+        device=device,
+    )
+    kv_flat = kv_cache.view(pool_blocks, -1)
+    k_end = block_size * head_dim
+    kv_byte = kv_flat[:, :k_end].as_strided(
+        (pool_blocks, block_size, head_dim),
+        (kv_flat.stride(0), head_dim, 1),
+    )
+    kv_scale = kv_flat[:, k_end:].view(torch.float32)
+    # Random bytes would decode to arbitrary fp8 scales including NaN; overwrite
+    # the scale region with sane positive fp32 so the logits stay finite.
+    kv_scale.copy_(torch.rand_like(kv_scale) + 0.5)
+
+    block_tables = torch.stack(
+        [
+            torch.randperm(pool_blocks, device=device)[:seq_blocks].to(torch.int32)
+            for _ in range(batch)
+        ]
+    )
+    q = torch.randint(
+        0,
+        256,
+        (batch, 1, CFG_INDEX_N_HEADS, head_dim),
+        dtype=torch.uint8,
+        device=device,
+    )
+    return dict(
+        q=q,
+        kv_byte=kv_byte,
+        kv_scale=kv_scale,
+        weights=torch.rand(
+            batch, CFG_INDEX_N_HEADS, dtype=torch.float32, device=device
+        ),
+        fp8_lut=get_e4m3fn_bf16_lut(device, nan_value=480.0),
+        context_lens=torch.full(
+            (batch,), n_compressed, dtype=torch.int32, device=device
+        ),
+        block_tables=block_tables.contiguous(),
+        # clean_logits=False in serving: the buffer is left uninitialized and
+        # the top-k reads only [:context_len].
+        logits=torch.empty(batch, n_compressed, dtype=torch.float32, device=device),
+        seq_blocks=seq_blocks,
+    )
+
+
+def _launch_paged_logits(
+    inp: dict, grid: tuple[int, int], maxnreg: int, num_stages: int
+) -> object:
+    from vllm.v1.attention.ops.mqa_logits_triton import _fp8_paged_mqa_logits_kernel
+
+    # Bypass @triton.autotune via .fn so maxnreg is an explicit knob.
+    extra = {"maxnreg": maxnreg} if maxnreg else {}
+    q, kv_byte, kv_scale = inp["q"], inp["kv_byte"], inp["kv_scale"]
+    weights, block_tables, logits = inp["weights"], inp["block_tables"], inp["logits"]
+    return _fp8_paged_mqa_logits_kernel.fn[grid](
+        q,
+        kv_byte,
+        kv_scale,
+        weights,
+        inp["fp8_lut"],
+        inp["context_lens"],
+        block_tables,
+        logits,
+        q.stride(0),
+        q.stride(1),
+        q.stride(2),
+        q.stride(3),
+        kv_byte.stride(0),
+        kv_byte.stride(1),
+        kv_byte.stride(2),
+        kv_scale.stride(0),
+        kv_scale.stride(1),
+        weights.stride(0),
+        weights.stride(1),
+        block_tables.stride(0),
+        block_tables.stride(1),
+        logits.stride(0),
+        logits.stride(1),
+        next_n=1,
+        num_heads=CFG_INDEX_N_HEADS,
+        head_dim=CFG_INDEX_HEAD_DIM,
+        block_size=_PAGED_BLOCK_SIZE,
+        BLOCK_H=max(16, triton.next_power_of_2(CFG_INDEX_N_HEADS)),
+        BLOCK_D=triton.next_power_of_2(CFG_INDEX_HEAD_DIM),
+        BLOCK_N=triton.next_power_of_2(_PAGED_BLOCK_SIZE),
+        num_warps=4,
+        num_stages=num_stages,
+        **extra,
+    )
+
+
+def bench_indexer_paged(
+    batches: list[int],
+    n_compresseds: list[int],
+    maxnregs: list[int],
+    stages: list[int],
+    device: torch.device,
+) -> None:
+    rows = []
+    for batch, n_compressed in itertools.product(batches, n_compresseds):
+        inp = _paged_logits_inputs(batch, n_compressed, device)
+        grid = (batch, inp["seq_blocks"])
+        for maxnreg, num_stages in itertools.product(maxnregs, stages):
+            fn = partial(_launch_paged_logits, inp, grid, maxnreg, num_stages)
+            n_regs = n_spills = shared = 0
+            try:
+                compiled = fn()
+                torch.accelerator.synchronize()
+                n_regs = getattr(compiled, "n_regs", 0)
+                n_spills = getattr(compiled, "n_spills", 0)
+                shared = getattr(compiled, "metadata", None)
+                shared = getattr(shared, "shared", 0) if shared else 0
+            except Exception as exc:  # noqa: BLE001 - report and keep sweeping
+                print(f"  skipped ({type(exc).__name__}: {exc})")
+            ctas, binder, occ = _occupancy(n_regs, shared, 4)
+            us = _time_us(fn)
+            ns_per_cta = float("nan") if us != us else us * 1e3 / (grid[0] * grid[1])
+            rows.append(
+                [
+                    str(batch),
+                    str(n_compressed),
+                    str(n_compressed * _PAGED_COMPRESS_RATIO),
+                    str(grid[0] * grid[1]),
+                    str(maxnreg) if maxnreg else "-",
+                    str(num_stages),
+                    str(n_regs),
+                    str(n_spills),
+                    str(shared),
+                    f"{ctas} ({binder})",
+                    _fmt(occ),
+                    _fmt(us, ".2f"),
+                    _fmt(ns_per_cta, ".1f"),
+                ]
+            )
+    _print_table(
+        f"indexer MQA logits, paged decode (H={CFG_INDEX_N_HEADS}, "
+        f"D={CFG_INDEX_HEAD_DIM}, block_size={_PAGED_BLOCK_SIZE}, num_warps=4)",
+        [
+            "B",
+            "n_cmp",
+            "ctx",
+            "CTAs",
+            "maxnreg",
+            "stages",
+            "regs",
+            "spill",
+            "smem",
+            "CTA/SM",
+            "occ%",
+            "us",
+            "ns/CTA",
+        ],
+        rows,
+    )
+
+
+# ---------------------------------------------------------------------------
 # The decode tail: ~130 launches/step of small elementwise/reduction kernels
 # running at 1-2 CTAs. Whether widening their grids can pay is decided by one
 # number -- how much of each launch sits above the floor that any kernel node
@@ -1669,6 +1864,7 @@ KERNELS = (
     "mhc-pre",
     "dequant-gather",
     "indexer-logits",
+    "indexer-paged",
     "dense-gemv",
 )
 
@@ -1766,6 +1962,20 @@ def main() -> None:
         help="KV_GROUP values: BLOCK_N tiles per CTA sharing one q-tile load",
     )
     parser.add_argument(
+        "--paged-batches",
+        type=_int_list,
+        default=[1],
+        help="decode batch for the paged indexer sweep (grid is B x blocks)",
+    )
+    parser.add_argument(
+        "--paged-ns",
+        type=_int_list,
+        default=[940, 26750],
+        help="compressed context lengths for the paged indexer sweep; the "
+        "defaults are the two operating points the node trace measured "
+        "(short-context and 107k at compress_ratio 4)",
+    )
+    parser.add_argument(
         "--decode-topk-len",
         type=int,
         default=TOPK_LEN,
@@ -1853,6 +2063,14 @@ def main() -> None:
             args.maxnreg,
             args.logits_stages,
             args.logits_groups,
+            device,
+        )
+    if "indexer-paged" in selected:
+        bench_indexer_paged(
+            args.paged_batches,
+            args.paged_ns,
+            args.maxnreg,
+            args.logits_stages,
             device,
         )
     if "tail-launch" in selected:

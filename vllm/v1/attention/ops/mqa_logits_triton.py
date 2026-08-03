@@ -10,6 +10,24 @@ from vllm.v1.attention.ops.fp8_sm80 import get_e4m3fn_bf16_lut
 # Paged decode: num_warps=4 dominated on A100/SM80 across {2,4,8}; the others
 # were 1.5–1.7× slower at (num_heads=32, head_dim=128, block_size=64), so
 # narrow the sweep to keep autotune from latching onto a bad pick under noise.
+#
+# Deliberately NOT carrying the `maxnreg=128` cap the prefill configs below do,
+# measured on A100 at H=64 D=128 block_size=64 (benchmark_dsv4_sm80.py
+# --kernel indexer-paged). Unconstrained the decode kernel takes 136 regs =
+# 3 CTAs/SM; the cap reaches 4 CTAs/SM at 2 B of spill, and that trades one
+# regime against another rather than winning outright:
+#
+#   CTAs (B x blocks)  |  15    64   209   418   3344   13376
+#   vs uncapped        | +2.4% +1.7% +1.6% -3.7%  -3.4%  -3.5%
+#
+# The sign follows wave quantization, not latency hiding: 108 SMs hold 324
+# concurrent CTAs at 3/SM and 432 at 4/SM, so the cap only pays past ~1.3
+# waves (n_compressed >~ 20.7k at batch 1, i.e. >~83k context, or any batched
+# decode), and below that the spill and the lost ILP cost ~2%. At the 107k
+# batch-1 point that is 0.43 us on a 21-calls-per-step kernel = 0.009 ms/step
+# against a ~10.9 ms step, so the win is not worth the mid-context loss. The
+# autotune key carries no context length, so the choice cannot be made per
+# call site without dropping @triton.autotune here.
 _PAGED_AUTOTUNE_CONFIGS = [
     triton.Config({}, num_warps=4, num_stages=ns) for ns in (2, 4)
 ]
