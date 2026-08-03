@@ -596,6 +596,10 @@ class MarlinExpertsBase(mk.FusedMoEExpertsModular):
             or quant_config.use_int8_w8a16
             or quant_config.use_fp8_w8a16
         ), "Supports only {mxfp,nvfp,int}4_w4a16, int8_w8a16 or fp8_w8a16"
+        # Persistent Marlin workspace, allocated on first use (see
+        # _marlin_workspace). Without it every expert call runs a fresh
+        # torch.zeros.
+        self._marlin_workspace: torch.Tensor | None = None
         self.w13_g_idx = w13_g_idx
         self.w2_g_idx = w2_g_idx
         self.w13_g_idx_sort_indices = w13_g_idx_sort_indices
@@ -619,6 +623,27 @@ class MarlinExpertsBase(mk.FusedMoEExpertsModular):
             max_num_tokens=max_num_tokens,
             num_dispatchers=num_dispatchers,
         )
+
+    def marlin_workspace(self, device: torch.device) -> torch.Tensor:
+        """Workspace shared by every expert call on this device.
+
+        The Marlin workspace is a per-SM lock/counter array that the kernel
+        leaves back at zero, which is why every Marlin *linear* layer
+        allocates one in `process_weights_after_loading` and reuses it for the
+        lifetime of the process (see marlin_utils_fp8.py and
+        kernels/linear/scaled_mm/marlin.py, which passes `layer.workspace` on
+        every forward). The expert path was the only caller not doing that:
+        it left `workspace=None` and paid a `torch.zeros` per call.
+
+        Allocated on first use rather than in `__init__` because the device
+        is not known until a forward arrives. First use is a warmup forward,
+        so the address is fixed before any CUDA graph captures it.
+        """
+        ws = self._marlin_workspace
+        if ws is None or ws.device != device:
+            ws = marlin_make_workspace_new(device, 4)
+            self._marlin_workspace = ws
+        return ws
 
     @staticmethod
     def _supports_current_device() -> bool:
@@ -828,6 +853,7 @@ class MarlinExperts(LoRAExpertsMixin, MarlinExpertsBase):
                 clamp_limit=self.gemm1_clamp_limit,
                 gemm1_alpha=self.gemm1_alpha,
                 gemm1_beta=self.gemm1_beta,
+                workspace=self.marlin_workspace(hidden_states.device),
             )
             return
 
@@ -957,6 +983,7 @@ class MarlinExperts(LoRAExpertsMixin, MarlinExpertsBase):
             clamp_limit=self.gemm1_clamp_limit,
             gemm1_alpha=self.gemm1_alpha,
             gemm1_beta=self.gemm1_beta,
+            workspace=self.marlin_workspace(hidden_states.device),
         )
 
     def moe_sum(
@@ -1111,4 +1138,5 @@ class BatchedMarlinExperts(MarlinExpertsBase):
             activation_func=activation_func,
             activation_situ_beta=self.moe_config.activation_situ_beta,
             activation_situ_linear_beta=self.moe_config.activation_situ_linear_beta,
+            workspace=self.marlin_workspace(hidden_states.device),
         )
