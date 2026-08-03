@@ -2026,7 +2026,599 @@ def bench_dense_gemv(ms: list[int], block_ns: list[int], device: torch.device) -
         print(f"  {label:>12}: {total_ms:.2f} ms/step")
 
 
+# ---------------------------------------------------------------------------
+# Routed MoE experts (MXFP4 Marlin).
+#
+# What production dispatches, taken from the p6 server log rather than inferred:
+#   [mxfp4.py:626] Using 'MARLIN' Mxfp4 MoE backend.
+#   [mxfp4.py:1727] Using MarlinExperts
+# so the kernel family is `moe_wna16_marlin_gemm`, two calls per layer (w13 then
+# w2) sharing one workspace. MegaMoE is NOT live: it needs
+# --enable-expert-parallel plus moe_backend=deep_gemm_mega_moe, and the serve
+# command sets neither, so experts are TP-sharded over the intermediate
+# dimension (N = moe_intermediate_size / TP) with all E experts on every rank.
+#
+# Weights are built through the production prep function
+# (`prepare_moe_mxfp4_layer_for_marlin`), not a hand-rolled repack, so the
+# layouts, the group size (32) and the e8m0 scale decode are the shipped ones.
+# ---------------------------------------------------------------------------
+
+CFG_SWIGLU_LIMIT = 10.0  # swiglu_limit
+MOE_N_PER_RANK = CFG_MOE_INTERMEDIATE_SIZE // TP_SIZE  # 256
+
+
+def _make_mxfp4_marlin_experts(
+    num_experts: int, n: int, k: int, device: torch.device, dtype: torch.dtype
+):
+    """Production-shaped MXFP4 expert weights, repacked the production way."""
+    from vllm.model_executor.layers.quantization.utils.marlin_utils_fp4 import (
+        prepare_moe_mxfp4_layer_for_marlin,
+    )
+
+    w13 = torch.randint(
+        0, 255, (num_experts, 2 * n, k // 2), dtype=torch.uint8, device=device
+    )
+    w2 = torch.randint(
+        0, 255, (num_experts, k, n // 2), dtype=torch.uint8, device=device
+    )
+    # e8m0 scales around 1.0 (127) so dequantized weights stay in a sane range.
+    w13_scale = torch.randint(
+        120, 134, (num_experts, 2 * n, k // 32), dtype=torch.uint8, device=device
+    )
+    w2_scale = torch.randint(
+        120, 134, (num_experts, k, n // 32), dtype=torch.uint8, device=device
+    )
+
+    class _Layer:
+        params_dtype = dtype
+
+    return prepare_moe_mxfp4_layer_for_marlin(
+        _Layer(), w13, w2, w13_scale, w2_scale, None, None
+    )
+
+
+def _moe_routing(
+    m: int,
+    num_experts: int,
+    topk: int,
+    skew: str,
+    device: torch.device,
+    generator: torch.Generator,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """topk_ids/topk_weights with a controllable expert-load distribution.
+
+    The real distribution is not knowable from a microbench -- DSv4 routes
+    partly by a token-id hash table (`gate.tid2eid`, num_hash_layers=3) -- so
+    this parameterises it and the sweep reports the sensitivity instead of
+    asserting one shape. What the kernel actually sees is the block count from
+    `moe_align_block_size`: sum(ceil(tokens_e / block_m)), which grows with
+    skew because a lightly-loaded expert still costs a whole block.
+    """
+    if skew == "uniform":
+        # Every expert equally loaded (the best case for block packing).
+        flat = torch.arange(m * topk, device=device) % num_experts
+        topk_ids = flat.view(m, topk).to(torch.int32)
+    elif skew == "random":
+        topk_ids = torch.randint(
+            0,
+            num_experts,
+            (m, topk),
+            dtype=torch.int32,
+            device=device,
+            generator=generator,
+        )
+    elif skew == "zipf":
+        # Rank-frequency ~ 1/rank over experts, then a random permutation so no
+        # expert index is privileged.
+        ranks = torch.arange(1, num_experts + 1, device=device, dtype=torch.float32)
+        probs = 1.0 / ranks
+        probs = probs / probs.sum()
+        perm = torch.randperm(num_experts, device=device, generator=generator)
+        draw = torch.multinomial(probs, m * topk, replacement=True, generator=generator)
+        topk_ids = perm[draw].view(m, topk).to(torch.int32)
+    elif skew == "hot":
+        # Degenerate control: every token to the same expert.
+        topk_ids = torch.zeros((m, topk), dtype=torch.int32, device=device)
+    else:
+        raise ValueError(f"unknown skew {skew!r}")
+    topk_weights = torch.rand(
+        (m, topk), dtype=torch.float32, device=device, generator=generator
+    )
+    return topk_ids, topk_weights
+
+
+def _moe_block_stats(
+    topk_ids: torch.Tensor, num_experts: int, block_m: int
+) -> tuple[int, int]:
+    """(blocks the kernel will run, distinct experts touched)."""
+    counts = torch.bincount(topk_ids.flatten(), minlength=num_experts)
+    blocks = int(torch.ceil(counts.float() / block_m).sum().item())
+    return blocks, int((counts > 0).sum().item())
+
+
+def _moe_selected_block_m(m: int, topk: int, num_experts: int) -> int:
+    """Mirror of the ladder inside fused_marlin_moe (marlin_moe.py:330-333).
+
+    Copied rather than imported because the production function computes it
+    inline and does not expose it; the block_size_m sweep below prints which
+    rung the heuristic lands on so a drift shows up as a mislabelled row.
+    """
+    for block_size_m in [8, 16, 32, 48, 64]:
+        if m * topk / num_experts / block_size_m < 0.9:
+            break
+    return block_size_m
+
+
+def _bench_moe_decompose(
+    tokens,
+    skew,
+    num_experts,
+    topk,
+    n,
+    k,
+    w13,
+    w2,
+    w13_scale,
+    w2_scale,
+    workspace,
+    generator,
+    device,
+    dtype,
+) -> None:
+    """Split one expert call into its five ops.
+
+    At M=1 the whole call is nearly fixed cost (doubling the tokens adds a few
+    percent), so the interesting question is not the GEMM's efficiency but
+    which op holds the time. Everything here is timed on the same tensors the
+    fused path builds, so the parts are comparable to the whole.
+    """
+    rows = []
+    for m in tokens:
+        block_m = _moe_selected_block_m(m, topk, num_experts)
+        for name, fn in _moe_call_parts(
+            m,
+            block_m,
+            num_experts,
+            topk,
+            n,
+            k,
+            skew,
+            w13,
+            w2,
+            w13_scale,
+            w2_scale,
+            workspace,
+            generator,
+            device,
+            dtype,
+        ).items():
+            rows.append([str(m), str(block_m), name, _fmt(_time_us(fn))])
+    _print_table(
+        f"one expert call decomposed (skew={skew})",
+        ["M", "blk_m", "op", "us"],
+        rows,
+    )
+
+
+def _moe_call_parts(
+    m,
+    block_m,
+    num_experts,
+    topk,
+    n,
+    k,
+    skew,
+    w13,
+    w2,
+    w13_scale,
+    w2_scale,
+    workspace,
+    generator,
+    device,
+    dtype,
+):
+    """The five ops of one expert call, as separately timeable callables."""
+    from vllm import _custom_ops as ops
+    from vllm.model_executor.layers.fused_moe.activation import (
+        MoEActivation,
+        apply_moe_activation,
+    )
+    from vllm.model_executor.layers.fused_moe.fused_moe import moe_align_block_size
+    from vllm.scalar_type import scalar_types
+
+    quant_type = scalar_types.float4_e2m1f
+    ids, weights = _moe_routing(m, num_experts, topk, skew, device, generator)
+    x = torch.randn((m, k), dtype=dtype, device=device) / 10
+    sorted_ids, expert_ids, num_padded = moe_align_block_size(
+        ids, block_m, num_experts, None, ignore_invalid_experts=True
+    )
+    c1 = torch.empty((m * topk, 2 * n), device=device, dtype=dtype)
+    c2 = torch.empty((m * topk, n), device=device, dtype=dtype)
+    c3 = torch.empty((m * topk, k), device=device, dtype=dtype)
+    out = torch.empty((m, k), device=device, dtype=dtype)
+
+    def gemm1():
+        ops.moe_wna16_marlin_gemm(
+            x,
+            c1,
+            w13,
+            None,
+            w13_scale,
+            None,
+            None,
+            None,
+            None,
+            None,
+            workspace,
+            sorted_ids,
+            expert_ids,
+            num_padded,
+            weights,
+            moe_block_size=block_m,
+            top_k=topk,
+            mul_topk_weights=False,
+            b_q_type=quant_type,
+            size_m=m,
+            size_n=2 * n,
+            size_k=k,
+            is_k_full=True,
+            use_atomic_add=False,
+            use_fp32_reduce=True,
+            is_zp_float=False,
+        )
+
+    def gemm2():
+        ops.moe_wna16_marlin_gemm(
+            c2,
+            c3,
+            w2,
+            None,
+            w2_scale,
+            None,
+            None,
+            None,
+            None,
+            None,
+            workspace,
+            sorted_ids,
+            expert_ids,
+            num_padded,
+            weights,
+            moe_block_size=block_m,
+            top_k=1,
+            mul_topk_weights=True,
+            b_q_type=quant_type,
+            size_m=m * topk,
+            size_n=k,
+            size_k=n,
+            is_k_full=True,
+            use_atomic_add=False,
+            use_fp32_reduce=True,
+            is_zp_float=False,
+        )
+
+    return {
+        "moe_align_block_size": lambda: moe_align_block_size(
+            ids, block_m, num_experts, None, ignore_invalid_experts=True
+        ),
+        "gemm1 (w13)": gemm1,
+        "activation": lambda: apply_moe_activation(
+            MoEActivation.SILU, c2, c1, clamp_limit=CFG_SWIGLU_LIMIT
+        ),
+        "gemm2 (w2)": gemm2,
+        "moe_sum": lambda: torch.sum(c3.view(-1, topk, k), dim=1, out=out),
+    }
+
+
+def _moe_block_m_runner(
+    fused,
+    align,
+    scalar_types,
+    x,
+    ids,
+    weights,
+    block_m,
+    num_experts,
+    topk,
+    n,
+    k,
+    w13,
+    w2,
+    w13_scale,
+    w2_scale,
+    workspace,
+    cache13,
+    cache2,
+):
+    """One block_size_m arm, bound outside the sweep loop."""
+    sorted_ids, expert_ids, num_padded = align(
+        ids, block_m, num_experts, None, ignore_invalid_experts=True
+    )
+
+    def run():
+        fused(
+            hidden_states=x,
+            w1=w13,
+            w2=w2,
+            bias1=None,
+            bias2=None,
+            w1_scale=w13_scale,
+            w2_scale=w2_scale,
+            topk_weights=weights,
+            num_topk=topk,
+            quant_type=scalar_types.float4_e2m1f,
+            apply_router_weight_on_input=False,
+            expert_map=None,
+            block_size_m=block_m,
+            sorted_token_ids=sorted_ids,
+            expert_ids=expert_ids,
+            num_tokens_post_padded=num_padded,
+            topk_ids=ids,
+            workspace=workspace,
+            intermediate_cache13=cache13,
+            intermediate_cache2=cache2,
+            clamp_limit=CFG_SWIGLU_LIMIT,
+        )
+
+    return run
+
+
+def _bench_moe_block_m(
+    tokens,
+    skews,
+    num_experts,
+    topk,
+    n,
+    k,
+    w13,
+    w2,
+    w13_scale,
+    w2_scale,
+    workspace,
+    generator,
+    device,
+    dtype,
+) -> None:
+    """Sweep the block size the heuristic picks for us.
+
+    `fused_marlin_moe` chooses block_size_m from a fixed ladder with a
+    "TODO: tune this further for specific models" next to it, and the choice
+    sets the block count -- which the sweep above shows is what prefill time is
+    proportional to. Bigger blocks waste padding on a lightly loaded expert;
+    smaller blocks re-read that expert's weights once per block. Both sides are
+    real, so the crossover is a measurement.
+    """
+    from vllm.model_executor.layers.fused_moe.experts.marlin_moe import (
+        _fused_marlin_moe,
+    )
+    from vllm.model_executor.layers.fused_moe.fused_moe import moe_align_block_size
+    from vllm.scalar_type import scalar_types
+
+    rows = []
+    for m in tokens:
+        for skew in skews:
+            chosen = _moe_selected_block_m(m, topk, num_experts)
+            ids, weights = _moe_routing(m, num_experts, topk, skew, device, generator)
+            x = torch.randn((m, k), dtype=dtype, device=device) / 10
+            cache13 = torch.empty(
+                (m * topk * max(2 * n, k),), dtype=dtype, device=device
+            )
+            cache2 = torch.empty((m * topk, n), dtype=dtype, device=device)
+            for block_m in (8, 16, 32, 48, 64):
+                blocks, _ = _moe_block_stats(ids, num_experts, block_m)
+                run = _moe_block_m_runner(
+                    _fused_marlin_moe,
+                    moe_align_block_size,
+                    scalar_types,
+                    x,
+                    ids,
+                    weights,
+                    block_m,
+                    num_experts,
+                    topk,
+                    n,
+                    k,
+                    w13,
+                    w2,
+                    w13_scale,
+                    w2_scale,
+                    workspace,
+                    cache13,
+                    cache2,
+                )
+                rows.append(
+                    [
+                        str(m),
+                        skew,
+                        str(block_m) + ("*" if block_m == chosen else ""),
+                        str(blocks),
+                        _fmt(_time_us(run)),
+                    ]
+                )
+    _print_table(
+        "block_size_m sweep (* = what the in-tree heuristic picks)",
+        ["M", "skew", "blk_m", "blocks", "us"],
+        rows,
+    )
+
+
+def _moe_rotation_runner(
+    fused,
+    scalar_types,
+    routings,
+    hidden,
+    num_experts,
+    w13,
+    w2,
+    w13_scale,
+    w2_scale,
+    workspace,
+    cache13,
+    cache2,
+    out,
+):
+    """One timing arm over a rotation of routings, bound outside the loop."""
+
+    def run():
+        for (ids, weights), x in zip(routings, hidden):
+            fused(
+                hidden_states=x,
+                w1=w13,
+                w2=w2,
+                bias1=None,
+                bias2=None,
+                w1_scale=w13_scale,
+                w2_scale=w2_scale,
+                topk_weights=weights,
+                topk_ids=ids,
+                quant_type_id=scalar_types.float4_e2m1f.id,
+                global_num_experts=num_experts,
+                workspace=workspace,
+                intermediate_cache13=cache13,
+                intermediate_cache2=cache2,
+                output=out,
+                clamp_limit=CFG_SWIGLU_LIMIT,
+            )
+
+    return run
+
+
+def bench_moe_experts(
+    tokens: list[int],
+    skews: list[str],
+    num_experts: int,
+    topk: int,
+    n: int,
+    k: int,
+    rotations: int,
+    device: torch.device,
+) -> None:
+    from vllm.model_executor.layers.fused_moe.experts.marlin_moe import (
+        fused_marlin_moe,
+    )
+    from vllm.model_executor.layers.quantization.utils.marlin_utils import (
+        marlin_make_workspace_new,
+    )
+    from vllm.scalar_type import scalar_types
+
+    dtype = torch.bfloat16
+    w13, w2, w13_scale, w2_scale, _, _ = _make_mxfp4_marlin_experts(
+        num_experts, n, k, device, dtype
+    )
+    workspace = marlin_make_workspace_new(device, 4)
+    generator = torch.Generator(device=device).manual_seed(0)
+    # Bytes of packed weight per expert, both GEMMs: this is the quantity the
+    # weight-streaming hypothesis says the kernel is paying for.
+    bytes_per_expert = (2 * n * k + k * n) // 2 + (2 * n * k // 32 + k * n // 32) * 2
+
+    rows = []
+    for m in tokens:
+        for skew in skews:
+            # Rotate routings (trap #7): at M=1 a single routing touches ~6
+            # experts, a few MB, which sits in L2 across replays and reads
+            # far faster than the first touch ever does.
+            routings = [
+                _moe_routing(m, num_experts, topk, skew, device, generator)
+                for _ in range(rotations)
+            ]
+            hidden = [
+                torch.randn((m, k), dtype=dtype, device=device) / 10
+                for _ in range(rotations)
+            ]
+            block_m = _moe_selected_block_m(m, topk, num_experts)
+            stats = [_moe_block_stats(ids, num_experts, block_m) for ids, _ in routings]
+            blocks = sum(s[0] for s in stats) / len(stats)
+            touched = sum(s[1] for s in stats) / len(stats)
+
+            # Production hoists these: MarlinExperts sizes them in
+            # workspace_shapes() and the modular kernel hands them in, so a
+            # bench that leaves them None measures allocator work the server
+            # never does (8.8 of 44.1 us at M=1, measured).
+            cache13 = torch.empty(
+                (m * topk * max(2 * n, k),), dtype=dtype, device=device
+            )
+            cache2 = torch.empty((m * topk, n), dtype=dtype, device=device)
+            out = torch.empty((m, k), dtype=dtype, device=device)
+
+            run = _moe_rotation_runner(
+                fused_marlin_moe,
+                scalar_types,
+                routings,
+                hidden,
+                num_experts,
+                w13,
+                w2,
+                w13_scale,
+                w2_scale,
+                workspace,
+                cache13,
+                cache2,
+                out,
+            )
+
+            us = _time_us(run) / rotations
+            # Weights the kernel must read at least once per call.
+            gbs = touched * bytes_per_expert / (us * 1e-6) / 1e9 if us == us else 0.0
+            rows.append(
+                [
+                    str(m),
+                    skew,
+                    str(block_m),
+                    f"{touched:.0f}",
+                    f"{blocks:.0f}",
+                    _fmt(us),
+                    _fmt(gbs, ".0f"),
+                    _fmt(us * CFG_NUM_HIDDEN_LAYERS / 1e3, ".2f"),
+                ]
+            )
+    _print_table(
+        f"MXFP4 Marlin MoE experts (E={num_experts}, topk={topk}, "
+        f"N={n}, K={k}, per-rank TP={TP_SIZE})",
+        ["M", "skew", "blk_m", "experts", "blocks", "us", "wt GB/s", "ms/step x43"],
+        rows,
+    )
+    _bench_moe_decompose(
+        tokens,
+        skews[0],
+        num_experts,
+        topk,
+        n,
+        k,
+        w13,
+        w2,
+        w13_scale,
+        w2_scale,
+        workspace,
+        generator,
+        device,
+        dtype,
+    )
+    _bench_moe_block_m(
+        tokens,
+        skews,
+        num_experts,
+        topk,
+        n,
+        k,
+        w13,
+        w2,
+        w13_scale,
+        w2_scale,
+        workspace,
+        generator,
+        device,
+        dtype,
+    )
+    print(
+        "\n'experts' is how many distinct experts a call touches and 'wt GB/s'\n"
+        "prices only their packed weights, so it is the weight-streaming rate --\n"
+        "compare it against a large streaming read on this box, not against the\n"
+        "HBM datasheet number."
+    )
+
+
 KERNELS = (
+    "moe-experts",
     "sparse-decode",
     "sparse-prefill",
     "bf16-gemv",
@@ -2048,7 +2640,7 @@ _DECODE_COVERAGE = [
     ("sparse-MLA decode", "~18%", "here: --kernel sparse-decode"),
     ("mHC pre big-fuse", "~6%", "here: --kernel mhc-pre"),
     ("dense Marlin fp8", "~26%", "here: --kernel dense-gemv (vs GEMV routes)"),
-    ("MoE", "~10%", "benchmarks/kernels/benchmark_moe.py"),
+    ("MoE experts (Marlin)", "~10%", "here: --kernel moe-experts"),
     ("cuBLAS GEMV", "~13%", "not covered: plain torch matmul at M=1"),
     ("indexer MQA logits", "~11%", "here: --kernel indexer-logits (prefill path)"),
     ("mHC post / fused-post-pre", "~3%", "NOT COVERED"),
@@ -2203,6 +2795,32 @@ def main() -> None:
         default=[0],
         help="num_stages; 0 = omit the argument, which is what serving does",
     )
+    parser.add_argument(
+        "--moe-tokens",
+        type=_int_list,
+        default=[1, 2048],
+        help="M for --kernel moe-experts: 1 is decode, 2048 a prefill chunk.",
+    )
+    parser.add_argument(
+        "--moe-skew",
+        type=lambda v: v.split(","),
+        default=["uniform", "random", "zipf"],
+        help="expert-load distribution(s): uniform, random, zipf, hot.",
+    )
+    parser.add_argument("--moe-experts", type=int, default=CFG_N_ROUTED_EXPERTS)
+    parser.add_argument("--moe-topk", type=int, default=CFG_NUM_EXPERTS_PER_TOK)
+    parser.add_argument(
+        "--moe-n",
+        type=int,
+        default=MOE_N_PER_RANK,
+        help="intermediate size per rank (moe_intermediate_size / TP).",
+    )
+    parser.add_argument(
+        "--moe-rotations",
+        type=int,
+        default=8,
+        help="distinct routing+input sets per timing (weight-set rotation).",
+    )
     parser.add_argument("--gemv-ms", type=_int_list, default=[1])
     parser.add_argument("--gemv-block-ns", type=_int_list, default=[16, 32, 64])
     parser.add_argument(
@@ -2217,6 +2835,18 @@ def main() -> None:
     torch.manual_seed(0)
     device = torch.device("cuda")
     selected = KERNELS if args.kernel == "all" else (args.kernel,)
+
+    if "moe-experts" in selected:
+        bench_moe_experts(
+            args.moe_tokens,
+            args.moe_skew,
+            args.moe_experts,
+            args.moe_topk,
+            args.moe_n,
+            CFG_HIDDEN_SIZE,
+            args.moe_rotations,
+            device,
+        )
 
     if "sparse-decode" in selected:
         points = (
