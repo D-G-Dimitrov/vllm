@@ -20,7 +20,7 @@ from functools import partial
 
 import torch
 
-from vllm.triton_utils import triton
+from vllm.triton_utils import tl, triton
 
 # Every value below that also exists in the checkpoint is named after its
 # config.json key, because guessing one has already produced a wrong conclusion
@@ -32,6 +32,7 @@ CFG_QK_ROPE_HEAD_DIM = 64  # qk_rope_head_dim
 CFG_HIDDEN_SIZE = 4096  # hidden_size
 CFG_NUM_ATTENTION_HEADS = 64  # num_attention_heads
 CFG_NUM_HIDDEN_LAYERS = 43  # num_hidden_layers
+CFG_N_ROUTED_EXPERTS = 256  # n_routed_experts
 CFG_HC_MULT = 4  # hc_mult
 CFG_HC_SINKHORN_ITERS = 20  # hc_sinkhorn_iters
 CFG_SLIDING_WINDOW = 128  # sliding_window
@@ -953,6 +954,129 @@ def bench_indexer_logits(
 
 
 # ---------------------------------------------------------------------------
+# Unquantized bf16 GEMVs at M=1. These are the two narrow-N projections that
+# stay in bf16 while everything else is block-fp8: the indexer's weights_proj
+# and the MoE router gate. Both are latency items rather than bandwidth ones --
+# the weights are 512 KB and 2 MB -- so what matters is launch count and how
+# many CTAs the N dimension can supply.
+# ---------------------------------------------------------------------------
+
+# (name, K, N, out dtype, launches per step). Counts are per *step*, not per
+# layer, because these two do not run on the same layers: the indexer is built
+# only where compress_ratio == 4 (attention.py:277), which config.json puts at
+# 21 layers, while every layer's ffn is a DeepseekV4MoE, so the gate runs 43x.
+_BF16_GEMV_SHAPES = [
+    # ReplicatedLinear(hidden_size, index_n_heads), quant_config=None -> bf16
+    ("indexer.weights_proj", CFG_HIDDEN_SIZE, CFG_INDEX_N_HEADS, torch.bfloat16, 21),
+    # GateLinear(hidden_size, n_routed_experts, out_dtype=fp32). On SM80 every
+    # specialized tier is gated behind SM90+, so this lands on tier 6: F.linear
+    # in bf16 followed by a separate .to(fp32) cast -- two launches, and the
+    # fp32 output dtype is nominal because the accumulation has already been
+    # rounded through bf16.
+    ("moe.gate", CFG_HIDDEN_SIZE, CFG_N_ROUTED_EXPERTS, torch.float32, 43),
+]
+
+
+@triton.jit
+def _bf16_gemv_kernel(
+    x_ptr,
+    w_ptr,
+    out_ptr,
+    K,
+    stride_wn,
+    BLOCK_K: tl.constexpr,
+):
+    """One CTA per output row: no split-K, so no second reduce launch."""
+    pid = tl.program_id(0)
+    acc = tl.zeros((BLOCK_K,), dtype=tl.float32)
+    for k0 in tl.range(0, K, BLOCK_K):
+        offs = k0 + tl.arange(0, BLOCK_K)
+        mask = offs < K
+        xv = tl.load(x_ptr + offs, mask=mask, other=0.0).to(tl.float32)
+        wv = tl.load(w_ptr + pid * stride_wn + offs, mask=mask, other=0.0).to(
+            tl.float32
+        )
+        acc += xv * wv
+    tl.store(out_ptr + pid, tl.sum(acc, axis=0).to(out_ptr.dtype.element_ty))
+
+
+def _launch_bf16_gemv(
+    x: torch.Tensor,
+    w: torch.Tensor,
+    out: torch.Tensor,
+    block_k: int,
+    num_warps: int,
+) -> None:
+    _bf16_gemv_kernel[(w.shape[0],)](
+        x,
+        w,
+        out,
+        w.shape[1],
+        w.stride(0),
+        BLOCK_K=block_k,
+        num_warps=num_warps,
+    )
+
+
+def bench_bf16_gemv(
+    block_ks: list[int], warps: list[int], device: torch.device
+) -> None:
+    import torch.nn.functional as F
+
+    rows = []
+    step_us: dict[str, dict[str, float]] = {}
+    for name, k, n, out_dtype, count in _BF16_GEMV_SHAPES:
+        w = torch.randn(n, k, dtype=torch.bfloat16, device=device) * 0.02
+        x = torch.randn(1, k, dtype=torch.bfloat16, device=device)
+        out = torch.empty(n, dtype=out_dtype, device=device)
+
+        def _baseline(x=x, w=w, out_dtype=out_dtype):
+            y = F.linear(x, w)
+            # GateLinear tier 6 casts after the GEMM; that cast is a real
+            # launch and belongs in the baseline.
+            return y.to(out_dtype) if y.dtype != out_dtype else y
+
+        ref = _baseline()
+        # fp32 reference computed the way a specialized tier would, to show
+        # what the bf16 round-trip costs in accuracy rather than only in time.
+        exact = (x.float() @ w.float().T).flatten()
+
+        variants: list[tuple[str, Callable[[], None]]] = [("production", _baseline)]
+        variants += [
+            (f"triton bK={bk} w={nw}", partial(_launch_bf16_gemv, x, w, out, bk, nw))
+            for bk in block_ks
+            for nw in warps
+        ]
+        for label, fn in variants:
+            us = _time_us(fn)
+            got = out if label.startswith("triton") else fn()
+            torch.accelerator.synchronize()
+            got = got.float().flatten()
+            rows.append(
+                [
+                    name,
+                    f"{k}x{n}",
+                    label,
+                    str(n),
+                    _fmt(us, ".2f"),
+                    f"{(got - ref.float().flatten()).abs().max().item():.1e}",
+                    f"{(got - exact).abs().max().item():.1e}",
+                ]
+            )
+            step_us.setdefault(label, {})[name] = us * count
+    _print_table(
+        "unquantized bf16 GEMV at M=1 (per-step launch counts)",
+        ["layer", "KxN", "impl", "CTAs", "us", "vs prod", "vs fp32"],
+        rows,
+    )
+    print("\nPer-step totals (21 indexer layers + 43 gate layers):")
+    for label, per_shape in sorted(step_us.items()):
+        if len(per_shape) != len(_BF16_GEMV_SHAPES):
+            continue
+        print(f"  {label:>22}: {sum(per_shape.values()) / 1e3:.3f} ms/step")
+
+
+# ---------------------------------------------------------------------------
 # Dense Marlin fp8 at M=1: the largest single decode component (~3.22 ms/step,
 # 28%), streaming 26.2 MB/layer of weights at ~15% of DRAM peak. Marlin runs
 # 200 threads with 145 KB smem/CTA = 1 CTA/SM, and at M=1 the smem staging buys
@@ -1479,6 +1603,7 @@ def bench_dense_gemv(ms: list[int], block_ns: list[int], device: torch.device) -
 KERNELS = (
     "sparse-decode",
     "sparse-prefill",
+    "bf16-gemv",
     "prenorm-gemm",
     "mhc-pre",
     "dequant-gather",
@@ -1618,6 +1743,9 @@ def main() -> None:
     )
     parser.add_argument("--gemv-ms", type=_int_list, default=[1])
     parser.add_argument("--gemv-block-ns", type=_int_list, default=[16, 32, 64])
+    parser.add_argument(
+        "--gemv-block-ks", type=_int_list, default=[256, 512, 1024, 2048]
+    )
     args = parser.parse_args()
 
     if args.coverage:
@@ -1666,6 +1794,8 @@ def main() -> None:
             args.logits_groups,
             device,
         )
+    if "bf16-gemv" in selected:
+        bench_bf16_gemv(args.gemv_block_ks, args.warps, device)
     if "dense-gemv" in selected:
         bench_dense_gemv(args.gemv_ms, args.gemv_block_ns, device)
 
