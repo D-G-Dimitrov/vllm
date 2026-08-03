@@ -1836,7 +1836,7 @@ def _rocm_sparse_attn_prefill_ragged_triton(
 
     block_h = 16
     block_d = triton.next_power_of_2(head_dim)
-    block_k = 16 if head_dim >= 256 else 32
+    block_k = _prefill_block_k(head_dim)
     num_warps = 4
     out = torch.empty_like(q, dtype=torch.bfloat16)
     _sparse_attn_prefill_ragged_kernel[(num_queries, triton.cdiv(num_heads, block_h))](
@@ -1908,6 +1908,34 @@ def _use_split_k_decode() -> bool:
     if current_platform.is_cuda():
         return True
     return _ON_GFX942 or _ON_GFX950
+
+
+@functools.lru_cache
+def _prefill_block_k(head_dim: int) -> int:
+    """KV tile width for the ragged sparse prefill kernel.
+
+    At ``head_dim >= 256`` the ``[BLOCK_H, BLOCK_D] x [BLOCK_D, BLOCK_K]`` dot
+    is latency-bound at ``BLOCK_K=16``: doubling the tile halves the loop trip
+    count and measured **-17% to -23% at every prefill shape** on A100
+    (M=2048/ctx=32k: 721 -> 561 us; M=512/ctx=8k: 208 -> 161 us), with
+    BLOCK_K=64 worse than either. It costs one CTA/SM -- 3 -> 2, occupancy
+    18.8% -> 12.5% -- which is the opposite direction from the occupancy this
+    kernel was expected to need, and it wins anyway.
+
+    The cost is smem: 49,664 B/CTA at 16 against 82,944 B at 32. That fits
+    A100's 164 KB/SM but not AMD's 64 KB LDS per workgroup, which is what the
+    plain ``head_dim >= 256`` rule was protecting. So the tile widens only
+    where the device reports room for it, and every other device keeps 16.
+    """
+    if head_dim < 256:
+        return 32
+    try:
+        smem = torch.cuda.get_device_properties(0).shared_memory_per_block_optin
+    except Exception:
+        return 16
+    # Two CTAs of the wide tile plus headroom; below this the wide tile either
+    # will not launch or drops to 1 CTA/SM, which measured slower than 16.
+    return 32 if smem >= 96 * 1024 else 16
 
 
 @functools.lru_cache
