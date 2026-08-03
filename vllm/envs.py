@@ -177,6 +177,7 @@ if TYPE_CHECKING:
     VLLM_RAY_EXTRA_ENV_VARS_TO_COPY: str = ""
     VLLM_MARLIN_USE_ATOMIC_ADD: bool = False
     VLLM_MARLIN_FP8_DEQUANT_BF16: bool = False
+    VLLM_DSPARK_VOCAB_SHARD: bool = False
     VLLM_MARLIN_INPUT_DTYPE: Literal["int8", "fp8"] | None = None
     VLLM_HUMMING_ONLINE_QUANT_CONFIG: dict[str, Any] | None = None
     VLLM_HUMMING_INPUT_QUANT_CONFIG: dict[str, Any] | None = None
@@ -1456,6 +1457,14 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # (2x the fp8 bytes; the fp8 copy is freed) for dense-linear speed.
     "VLLM_MARLIN_FP8_DEQUANT_BF16": lambda: (
         os.environ.get("VLLM_MARLIN_FP8_DEQUANT_BF16", "0") == "1"
+    ),
+    # Shard the DSpark Markov head's output vocab across TP ranks instead of
+    # replicating it. Greedy drafting only: the selection step is an argmax,
+    # which reduces to one (value, index) pair per rank, so no rank needs the
+    # whole vocab row. The probabilistic path materializes full processed
+    # logits for verification and stays on the replicated weight.
+    "VLLM_DSPARK_VOCAB_SHARD": lambda: (
+        os.environ.get("VLLM_DSPARK_VOCAB_SHARD", "0") == "1"
     ),
     # The activation dtype for marlin kernel
     "VLLM_MARLIN_INPUT_DTYPE": env_with_choices(
