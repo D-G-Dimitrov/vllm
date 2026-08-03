@@ -366,6 +366,188 @@ def bench_sparse_decode(
 
 
 # ---------------------------------------------------------------------------
+# Sparse MLA prefill: reported at 17.9% occupancy, capped at 3 CTAs/SM by BOTH
+# 168 regs/thread and 49,664 B smem. Both figures are trace metadata, so this
+# mode reads registers, spills and smem off the compiled kernel instead and
+# prints which of the two caps actually binds at each config.
+# ---------------------------------------------------------------------------
+
+# A100 (SM80) per-SM limits. sharedMemPerMultiprocessor is 164 KB; a single
+# block may opt into at most 163 KB of it.
+_SM80_REGS_PER_SM = 65536
+_SM80_SMEM_PER_SM = 164 * 1024
+_SM80_WARPS_PER_SM = 64
+
+
+def _occupancy(n_regs: int, shared: int, num_warps: int) -> tuple[int, str, float]:
+    """CTAs/SM, which resource caps it, and warp occupancy."""
+    threads = 32 * num_warps
+    # Registers are allocated per warp in granular chunks; the per-thread
+    # figure times the thread count is the closest an outside model can get,
+    # so treat a tie as "both" rather than pretending to resolve it.
+    by_regs = _SM80_REGS_PER_SM // max(1, n_regs * threads)
+    by_smem = _SM80_SMEM_PER_SM // max(1, shared) if shared else 32
+    ctas = max(0, min(by_regs, by_smem, 32))
+    if by_regs < by_smem:
+        binder = "regs"
+    elif by_smem < by_regs:
+        binder = "smem"
+    else:
+        binder = "both"
+    return ctas, binder, 100.0 * ctas * num_warps / _SM80_WARPS_PER_SM
+
+
+def _prefill_inputs(m_tokens: int, ctx: int, kv_len: int, device: torch.device) -> dict:
+    """One chunk of ragged sparse prefill: every query gathers ``kv_len``
+    scattered rows out of a ``ctx``-row KV pool, which is the loaded case --
+    a chunk row late in a long context attends its full top-k."""
+    indices = torch.randint(
+        0, ctx, (m_tokens * kv_len,), dtype=torch.int32, device=device
+    )
+    indptr = torch.arange(
+        0, m_tokens * kv_len + 1, kv_len, dtype=torch.int32, device=device
+    )
+    return dict(
+        q=torch.randn(
+            m_tokens, NUM_HEADS, HEAD_DIM, dtype=torch.bfloat16, device=device
+        ),
+        kv=torch.randn(ctx, HEAD_DIM, dtype=torch.bfloat16, device=device),
+        indices=indices,
+        indptr=indptr,
+        attn_sink=torch.randn(NUM_HEADS, dtype=torch.float32, device=device),
+    )
+
+
+def _launch_sparse_prefill(
+    inp: dict,
+    block_h: int,
+    block_k: int,
+    num_warps: int,
+    maxnreg: int,
+    num_stages: int,
+    out: torch.Tensor,
+) -> object:
+    from vllm.v1.attention.ops.rocm_aiter_mla_sparse import (
+        _sparse_attn_prefill_ragged_kernel,
+    )
+
+    q, kv = inp["q"], inp["kv"]
+    extra = {"maxnreg": maxnreg} if maxnreg else {}
+    # num_stages=0 means "pass nothing", i.e. Triton's default -- which is what
+    # the serving launch does. It is not the same as num_stages=1: the default
+    # pipelines to 49,664 B of smem, the exact figure the trace reported, while
+    # 1 compiles a different (slower) kernel. Benchmarking against 1 would
+    # invent a win that production already has.
+    if num_stages:
+        extra["num_stages"] = num_stages
+    return _sparse_attn_prefill_ragged_kernel[
+        (q.shape[0], triton.cdiv(NUM_HEADS, block_h))
+    ](
+        q,
+        kv,
+        inp["indices"],
+        inp["indptr"],
+        inp["attn_sink"],
+        out,
+        q.stride(0),
+        q.stride(1),
+        q.stride(2),
+        kv.stride(0),
+        kv.stride(1),
+        out.stride(0),
+        out.stride(1),
+        out.stride(2),
+        NUM_HEADS,
+        HEAD_DIM,
+        kv.shape[0],
+        HEAD_DIM**-0.5,
+        HAS_ATTN_SINK=True,
+        BLOCK_H=block_h,
+        BLOCK_D=triton.next_power_of_2(HEAD_DIM),
+        BLOCK_K=block_k,
+        num_warps=num_warps,
+        **extra,
+    )
+
+
+def bench_sparse_prefill(
+    ms: list[int],
+    ctx_ns: list[int],
+    block_hs: list[int],
+    block_ks: list[int],
+    warps: list[int],
+    maxnregs: list[int],
+    stages: list[int],
+    device: torch.device,
+) -> None:
+    rows = []
+    for m_tokens, ctx in itertools.product(ms, ctx_ns):
+        kv_len = min(TOPK_LEN, ctx)
+        inp = _prefill_inputs(m_tokens, ctx, kv_len, device)
+        out = torch.empty_like(inp["q"])
+        for block_h, block_k, num_warps, maxnreg, num_stages in itertools.product(
+            block_hs, block_ks, warps, maxnregs, stages
+        ):
+            fn = partial(
+                _launch_sparse_prefill,
+                inp,
+                block_h,
+                block_k,
+                num_warps,
+                maxnreg,
+                num_stages,
+                out,
+            )
+            n_regs = n_spills = shared = 0
+            try:
+                compiled = fn()
+                torch.accelerator.synchronize()
+                n_regs = getattr(compiled, "n_regs", 0)
+                n_spills = getattr(compiled, "n_spills", 0)
+                shared = getattr(compiled, "metadata", None)
+                shared = getattr(shared, "shared", 0) if shared else 0
+            except Exception as exc:  # noqa: BLE001 - report and keep sweeping
+                print(f"  skipped ({type(exc).__name__}: {exc})")
+            ctas, binder, occ = _occupancy(n_regs, shared, num_warps)
+            rows.append(
+                [
+                    str(m_tokens),
+                    str(ctx),
+                    str(block_h),
+                    str(block_k),
+                    str(num_warps),
+                    str(maxnreg) if maxnreg else "-",
+                    str(num_stages) if num_stages else "def",
+                    str(n_regs),
+                    str(n_spills),
+                    str(shared),
+                    f"{ctas} ({binder})",
+                    _fmt(occ),
+                    _fmt(_time_us(fn)),
+                ]
+            )
+    _print_table(
+        f"sparse MLA prefill (heads={NUM_HEADS}, D={HEAD_DIM}, topk={TOPK_LEN})",
+        [
+            "M",
+            "ctx",
+            "bH",
+            "bK",
+            "warps",
+            "maxnreg",
+            "stages",
+            "regs",
+            "spill",
+            "smem",
+            "CTA/SM",
+            "occ%",
+            "us",
+        ],
+        rows,
+    )
+
+
+# ---------------------------------------------------------------------------
 # mHC prenorm GEMM: [T, hc_mult*hidden] x [24, hc_mult*hidden]^T
 # ---------------------------------------------------------------------------
 
@@ -1273,6 +1455,7 @@ def bench_dense_gemv(ms: list[int], block_ns: list[int], device: torch.device) -
 
 KERNELS = (
     "sparse-decode",
+    "sparse-prefill",
     "prenorm-gemm",
     "mhc-pre",
     "dequant-gather",
@@ -1373,6 +1556,30 @@ def main() -> None:
         default=[1, 4],
         help="KV_GROUP values: BLOCK_N tiles per CTA sharing one q-tile load",
     )
+    parser.add_argument(
+        "--prefill-ms",
+        type=_int_list,
+        default=[2048],
+        help="chunk tokens; 2048 is the serving max_num_batched_tokens",
+    )
+    parser.add_argument(
+        "--prefill-ctxs",
+        type=_int_list,
+        default=[8192, 32768],
+        help="KV pool rows the top-k gather scatters across",
+    )
+    parser.add_argument(
+        "--prefill-block-ks",
+        type=_int_list,
+        default=[16],
+        help="BLOCK_K values; production picks 16 for head_dim >= 256",
+    )
+    parser.add_argument(
+        "--prefill-stages",
+        type=_int_list,
+        default=[0],
+        help="num_stages; 0 = omit the argument, which is what serving does",
+    )
     parser.add_argument("--gemv-ms", type=_int_list, default=[1])
     parser.add_argument("--gemv-block-ns", type=_int_list, default=[16, 32, 64])
     args = parser.parse_args()
@@ -1387,6 +1594,17 @@ def main() -> None:
 
     if "sparse-decode" in selected:
         bench_sparse_decode(args.batches, args.block_h, args.splits, args.warps, device)
+    if "sparse-prefill" in selected:
+        bench_sparse_prefill(
+            args.prefill_ms,
+            args.prefill_ctxs,
+            args.block_h,
+            args.prefill_block_ks,
+            args.warps,
+            args.maxnreg,
+            args.prefill_stages,
+            device,
+        )
     if "prenorm-gemm" in selected:
         bench_prenorm_gemm(args.tokens, args.prenorm_configs, device)
     if "mhc-pre" in selected:
