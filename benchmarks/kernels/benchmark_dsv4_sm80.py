@@ -48,6 +48,10 @@ CFG_WEIGHT_BLOCK_SIZE = 128  # quantization_config.weight_block_size = [128, 128
 
 TP_SIZE = 8
 
+# compress_ratios in config.json holds 21 fours: only those layers carry an
+# indexer, so only they have three input GEMMs to merge.
+_ATTN_INPUT_LAYERS = 21
+
 # MLA head geometry. The nope width is the remainder, not an independent number.
 HEAD_DIM = CFG_HEAD_DIM
 ROPE_DIM = CFG_QK_ROPE_HEAD_DIM
@@ -1419,6 +1423,87 @@ def bench_bf16_gemv(ms: list[int], device: torch.device) -> None:
 
 
 # ---------------------------------------------------------------------------
+# The three unquantized attention input GEMMs, separate vs concatenated.
+# `attn_gemm_parallel_execute` runs four GEMMs off the same hidden_states; the
+# three bf16 ones read the same x and can be one GEMM over a concatenated
+# weight. Row counts come from the checkpoint (layers.2.attn.*): compressor
+# 2 x [1024, 4096], indexer compressor 2 x [256, 4096], weights_proj [64, 4096].
+#
+# Each timed iteration uses a DIFFERENT weight set. One 20.5 MB set replayed in
+# a loop becomes L2-resident after the first pass, which is not what a decode
+# step does -- 43 layers each stream their own weights once -- and that alone
+# moves the answer (the L2-hot version reads 28.2 us for the separate arm
+# against 31.6 cold).
+# ---------------------------------------------------------------------------
+
+_ATTN_INPUT_NS = (2048, 512, 64)  # compressor, indexer compressor, weights_proj
+_ATTN_INPUT_ROTATE = 8
+
+
+def bench_attn_input_gemm(ms: list[int], device: torch.device) -> None:
+    from vllm.model_executor.kernels.linear.gemv_triton import bf16_gemv
+
+    sets = []
+    for _ in range(_ATTN_INPUT_ROTATE):
+        parts = [
+            torch.randn(n, HIDDEN_SIZE, dtype=torch.bfloat16, device=device)
+            for n in _ATTN_INPUT_NS
+        ]
+        sets.append((parts, torch.cat(parts, dim=0).contiguous()))
+
+    def separate(x: torch.Tensor) -> None:
+        for parts, _ in sets:
+            torch.mm(x, parts[0].T, out_dtype=torch.float32)
+            # Production routes weights_proj through the M<=8 Triton GEMV.
+            if x.shape[0] <= 8:
+                bf16_gemv(x, parts[2])
+            else:
+                torch.mm(x, parts[2].T)
+            torch.mm(x, parts[1].T, out_dtype=torch.float32)
+
+    def merged_mm(x: torch.Tensor) -> None:
+        for _, w in sets:
+            torch.mm(x, w.T, out_dtype=torch.float32)
+
+    def merged_gemv(x: torch.Tensor) -> None:
+        for _, w in sets:
+            bf16_gemv(x, w, out_dtype=torch.float32)
+
+    rows = []
+    for m_tokens in ms:
+        x = torch.randn(m_tokens, HIDDEN_SIZE, dtype=torch.bfloat16, device=device)
+        per_iter = {}
+        for label, fn in (
+            ("separate x3", separate),
+            ("merged cuBLAS", merged_mm),
+            ("merged Triton GEMV", merged_gemv),
+        ):
+            us = _time_us(partial(fn, x)) / _ATTN_INPUT_ROTATE
+            per_iter[label] = us
+            rows.append(
+                [
+                    str(m_tokens),
+                    label,
+                    _fmt(us, ".2f"),
+                    _fmt(
+                        (per_iter["separate x3"] - us) * _ATTN_INPUT_LAYERS / 1e3, ".3f"
+                    ),
+                ]
+            )
+    ns = "+".join(map(str, _ATTN_INPUT_NS))
+    _print_table(
+        f"attention input GEMMs (K={HIDDEN_SIZE}, N={ns} = {sum(_ATTN_INPUT_NS)}, "
+        f"{_ATTN_INPUT_ROTATE} rotated weight sets)",
+        ["M", "impl", "us/layer", "ms/step saved"],
+        rows,
+    )
+    print(
+        f"\nms/step scales the per-layer delta by the {_ATTN_INPUT_LAYERS} ratio-4\n"
+        "layers, which are the only ones carrying all three GEMMs."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Dense Marlin fp8 at M=1: the largest single decode component (~3.22 ms/step,
 # 28%), streaming 26.2 MB/layer of weights at ~15% of DRAM peak. Marlin runs
 # 200 threads with 145 KB smem/CTA = 1 CTA/SM, and at M=1 the smem staging buys
@@ -1951,6 +2036,7 @@ KERNELS = (
     "dequant-gather",
     "indexer-logits",
     "indexer-paged",
+    "attn-input-gemm",
     "dense-gemv",
 )
 
@@ -2198,6 +2284,8 @@ def main() -> None:
         bench_tail_launch(args.gemv_ms, device)
     if "bf16-gemv" in selected:
         bench_bf16_gemv(args.gemv_ms, device)
+    if "attn-input-gemm" in selected:
+        bench_attn_input_gemm(args.gemv_ms, device)
     if "dense-gemv" in selected:
         bench_dense_gemv(args.gemv_ms, args.gemv_block_ns, device)
 
