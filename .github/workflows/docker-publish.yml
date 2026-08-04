@@ -6,10 +6,40 @@ on:
       - dsv4-a6000-opt
   workflow_dispatch:
 
+concurrency:
+  group: docker-publish-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  cancel-stale:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel older in-progress runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for status in in_progress queued; do
+            gh run list -R ${{ github.repository }} -w "${{ github.workflow }}" \
+              --status $status --json databaseId -q '.[].databaseId'
+          done | while read -r id; do
+            if [ "$id" != "${{ github.run_id }}" ]; then
+              gh run cancel "$id" -R ${{ github.repository }} || true
+            fi
+          done
+
   build-and-push:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: "8.6"
+            tags: lazymio/vllm-backport:latest-sm86,lazymio/vllm-backport:latest
+          - arch: "8.0"
+            tags: lazymio/vllm-backport:latest-sm80
     steps:
       - name: Free disk space
         run: |
@@ -34,8 +64,8 @@ jobs:
           file: docker/Dockerfile
           target: vllm-openai
           push: true
-          tags: lazymio/vllm-backport:latest
+          tags: ${{ matrix.tags }}
           build-args: |
-            torch_cuda_arch_list=8.6
+            torch_cuda_arch_list=${{ matrix.arch }}
             max_jobs=2
             nvcc_threads=4
