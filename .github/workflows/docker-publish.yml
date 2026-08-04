@@ -37,8 +37,10 @@ jobs:
       matrix:
         include:
           - arch: "8.6"
+            suffix: sm86
             tags: lazymio/vllm-backport:latest-sm86,lazymio/vllm-backport:latest
           - arch: "8.0"
+            suffix: sm80
             tags: lazymio/vllm-backport:latest-sm80
     steps:
       - name: Free disk space
@@ -65,7 +67,9 @@ jobs:
           target: vllm-openai
           push: true
           tags: ${{ matrix.tags }}
+          cache-from: type=registry,ref=lazymio/vllm-backport:buildcache-${{ matrix.suffix }}
+          cache-to: type=registry,ref=lazymio/vllm-backport:buildcache-${{ matrix.suffix }},mode=max,compression=zstd,ignore-error=true
           build-args: |
             torch_cuda_arch_list=${{ matrix.arch }}
-            max_jobs=2
-            nvcc_threads=4
+            max_jobs=3
+            nvcc_threads=2
