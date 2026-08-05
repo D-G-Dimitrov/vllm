@@ -276,6 +276,8 @@ if TYPE_CHECKING:
     VLLM_GC_DEBUG: str = ""
     VLLM_DEBUG_WORKSPACE: bool = False
     VLLM_DISABLE_SHARED_EXPERTS_STREAM: bool = False
+    VLLM_DETERMINISTIC_MOE_ALIGN: bool = True
+    VLLM_DISABLE_MULTI_STREAM_PARALLEL: bool = False
     VLLM_SHARED_EXPERTS_STREAM_TOKEN_THRESHOLD: int = 256
     VLLM_MULTI_STREAM_GEMM_TOKEN_THRESHOLD: int = 1024
     VLLM_COMPILE_CACHE_SAVE_FORMAT: Literal["binary", "unpacked"] = "binary"
@@ -1954,6 +1956,18 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Disables parallel execution of shared_experts via separate cuda stream
     "VLLM_DISABLE_SHARED_EXPERTS_STREAM": lambda: bool(
         int(os.getenv("VLLM_DISABLE_SHARED_EXPERTS_STREAM", "0"))
+    ),
+    # Deterministic moe_align_block_size (stable sort instead of FCFS atomics).
+    # The Marlin MoE GEMM is permutation-sensitive at the ulp level, so the
+    # atomic ordering makes temp=0 outputs non-reproducible (#50576). Set to 0
+    # to restore the historical CUDA kernel path.
+    "VLLM_DETERMINISTIC_MOE_ALIGN": lambda: bool(
+        int(os.getenv("VLLM_DETERMINISTIC_MOE_ALIGN", "1"))
+    ),
+    # Debug kill-switch: force execute_in_parallel/maybe_execute_in_parallel
+    # to run serially on the default stream (no aux-stream overlap).
+    "VLLM_DISABLE_MULTI_STREAM_PARALLEL": lambda: bool(
+        int(os.getenv("VLLM_DISABLE_MULTI_STREAM_PARALLEL", "0"))
     ),
     # Limits when we run shared_experts in a separate stream.
     # We found out that for large batch sizes, the separate stream
