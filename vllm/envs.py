@@ -287,7 +287,7 @@ if TYPE_CHECKING:
     VLLM_SPARSE_RAGGED_FAST_SCAN: bool = False
     VLLM_DSV4_FIXED_DECODE_SPLITS: int = 16
     VLLM_MHC_FIXED_NUM_SPLIT: int = 0
-    VLLM_TOKEN_BUCKET_PAD: bool = False
+    VLLM_TOKEN_BUCKET_PAD: bool = True
     VLLM_DSPARK_FUSED_MARKOV: bool = True
     VLLM_SHARED_EXPERTS_STREAM_TOKEN_THRESHOLD: int = 256
     VLLM_MULTI_STREAM_GEMM_TOKEN_THRESHOLD: int = 1024
@@ -2068,9 +2068,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Pad eager/piecewise V2-runner batches up to fixed token buckets
     # (16/32/64/128/256, then multiples of 256) so GEMM tile configs stop
     # changing with the exact co-batched token count. Reduces
-    # batch-composition logit jitter at <=12.5% padded-compute cost.
+    # batch-composition logit jitter; measured perf-neutral (padded compute
+    # bounded by <=12.5%). Set 0 to disable.
     "VLLM_TOKEN_BUCKET_PAD": lambda: (
-        os.environ.get("VLLM_TOKEN_BUCKET_PAD", "0") == "1"
+        os.environ.get("VLLM_TOKEN_BUCKET_PAD", "1") == "1"
     ),
     # Compile a mask-free specialization of the sparse-prefill attention kernel
     # for the case where its tile covers the data exactly (num_heads == BLOCK_H
