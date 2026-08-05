@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - dsv4-a6000-opt
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
   workflow_dispatch:
 
 concurrency:
