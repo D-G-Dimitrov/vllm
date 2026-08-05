@@ -52,3 +52,41 @@ curl http://localhost:8000/v1/models
 ```
 
 Adjust the model and `--tensor-parallel-size` to your setup; `ipc: host` is required for multi-GPU tensor parallelism.
+
+## Environment Variables
+
+All knobs this fork has added over stock vLLM. Defaults are what the images ship with; you normally don't need to touch anything.
+
+### On by default (correctness / batch-invariance)
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `VLLM_DETERMINISTIC_MOE_ALIGN` | `1` | Deterministic MoE token grouping (stable sort instead of atomic-order). `0` restores the historical CUDA kernel. |
+| `VLLM_DSV4_FIXED_DECODE_SPLITS` | `16` | Pin the sparse-decode attention split-k so a request's numerics don't depend on what else is co-batched. `0` restores the batch-adaptive heuristic. |
+| `VLLM_TOKEN_BUCKET_PAD` | `1` | Pad batches to fixed token buckets (16/32/64/128/256, then ×256) so GEMM tiling stops shifting with exact batch size. `0` disables. |
+| `VLLM_DSPARK_FUSED_MARKOV` | `1` | Fused DSpark Markov draft-sampling chain. `0` falls back to the eager op chain. |
+
+### Opt-in performance knobs (default `0` — measure on your topology first)
+
+| Variable | Meaning |
+| --- | --- |
+| `VLLM_MHC_PRENORM_SHARD` | Shard the mHC prenorm GEMM across TP ranks (pays off at TP8, hurts at TP4). |
+| `VLLM_MHC_POST_FUSE_SQRSUM` | Fold the mHC prenorm row-sqrsum into `mhc_post`. |
+| `VLLM_UNREPLICATE_ATTN_GEMMS` | De-duplicate attention GEMMs that are replicated across TP ranks. |
+| `VLLM_INDEXER_QUERY_SHARD` / `VLLM_INDEXER_QUERY_SHARD_QPATH` | Shard the sparse-indexer query projection across TP ranks. |
+| `VLLM_SPARSE_RAGGED_FAST_SCAN` | Faster ragged-index scan in sparse prefill. |
+| `VLLM_SPARSE_PREFILL_EXACT_TILE` | Mask-free sparse-prefill kernel specialization for exact-tile shapes. |
+| `VLLM_DSPARK_VOCAB_SHARD` | Vocab-sharded DSpark greedy draft selection (less draft-side communication). |
+| `VLLM_MARLIN_FP8_DEQUANT_BF16` | Route dense block-fp8 GEMMs through cuBLAS (dequant→bf16) instead of Marlin. |
+| `VLLM_HIER_ALL_REDUCE` | Island-aware hierarchical all-reduce for boxes with multiple PCIe islands. |
+| `VLLM_MAX_SIZE_MB_CUSTOM_ALL_REDUCE` | Override the custom all-reduce payload cap (MB). |
+| `VLLM_MHC_FIXED_NUM_SPLIT` | Pin the mHC TileLang GEMM split-k (only reachable on DeepGEMM-capable GPUs; no effect on sm86/sm80). |
+
+### Ops / debug
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `VLLM_MQ_MAX_CHUNK_BYTES_MB` | `16` | Worker message-queue chunk size. Lower it (e.g. `1`) when the container has a small `/dev/shm` and you cannot use `--ipc=host`. |
+| `VLLM_DISABLE_MULTI_STREAM_PARALLEL` | `0` | Debug kill-switch: run aux-stream work serially on the default stream. |
+
+For strict temperature-0 stability under concurrency, also consider `--hf-overrides '{"head_dtype": "float32"}'` (fp32 logits head) — a CLI flag, not an env.
