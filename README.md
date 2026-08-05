@@ -16,7 +16,7 @@ Prebuilt images are published to Docker Hub on every push:
 
 Images are single-arch builds (no FA3/Hopper kernels), so pick the tag matching your GPU. The entrypoint is `vllm serve`.
 
-`:latest*` tags track every push to the main branch; versioned tags (`v*`) are immutable snapshots — prefer them for deployments you don't want to move under you. Releases are cut by pushing a git tag (`git tag v0.x.y && git push origin v0.x.y`), which publishes both `v0.x.y-sm86` and `v0.x.y-sm80`.
+`:latest*` tags track the main branch; each release also ships versioned tags like `:v0.1.0-sm86` / `:v0.1.0-sm80` if you want to pin.
 
 ### Docker Compose
 
