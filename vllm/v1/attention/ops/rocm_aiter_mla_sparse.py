@@ -2333,12 +2333,15 @@ def _rocm_sparse_attn_decode_ragged_triton(
     # Average per-query segment lengths, read sync-free from the ragged index
     # sizes, let the split heuristic avoid over-splitting
     # main_indices/extra_indices are flat [nnz] int32.
-    inv_q = 1.0 / max(1, num_queries)
-    avg_main_len = main_indices.numel() * inv_q
-    avg_extra_len = (extra_indices.numel() * inv_q) if has_extra else 0.0
-    num_splits = _decode_num_splits(
-        num_queries, heads_blocks, avg_main_len, avg_extra_len, block_k
-    )
+    if envs.VLLM_DSV4_FIXED_DECODE_SPLITS > 0:
+        num_splits = min(envs.VLLM_DSV4_FIXED_DECODE_SPLITS, 16)
+    else:
+        inv_q = 1.0 / max(1, num_queries)
+        avg_main_len = main_indices.numel() * inv_q
+        avg_extra_len = (extra_indices.numel() * inv_q) if has_extra else 0.0
+        num_splits = _decode_num_splits(
+            num_queries, heads_blocks, avg_main_len, avg_extra_len, block_k
+        )
 
     part_m = torch.empty(
         (num_queries, num_splits, num_heads), dtype=torch.float32, device=q.device
