@@ -53,7 +53,29 @@ curl http://localhost:8000/v1/models
 
 Adjust the model and `--tensor-parallel-size` to your setup; `ipc: host` is required for multi-GPU tensor parallelism.
 
-## Environment Variables
+## Recommend Setup
+
+```bash
+vllm serve /path/to/your/deepseek \
+  --tensor-parallel-size 8 \
+  --max-model-len 1048576 \
+  --gpu-memory-utilization 0.90 \
+  --kv-cache-dtype fp8_ds_mla \
+  --trust-remote-code \
+  --compilation-config '{"cudagraph_mode":"PIECEWISE"}' \
+  --speculative-config {"method":"dspark","num_speculative_tokens":5} \
+  --enable-auto-tool-choice --tool-call-parser deepseek_v4 \
+  --host 0.0.0.0 --port 8000 \
+  --hf-overrides '{"head_dtype": "float32"}' \
+  --served-model-name deepseek-v4-flash
+```
+
+Tips:
+
+- Adjust your TP (--tensor-parallel-size) and PP (--pipeline-parallel-size) accordingly.
+- head dtype override helps reduce garbage outputs.
+
+## Environment Variables (Warning: Huge AI generated contents!)
 
 All knobs this fork has added over stock vLLM. Defaults are what the images ship with; you normally don't need to touch anything.
 
