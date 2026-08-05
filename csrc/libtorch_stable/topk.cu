@@ -96,6 +96,11 @@ void launch_persistent_topk(const torch::stable::Tensor& logits,
     uint32_t ctas_per_group =
         (static_cast<uint32_t>(stride) + max_chunk_elements - 1) /
         max_chunk_elements;
+    // The deterministic collection publishes per-CTA counts into one
+    // 256-entry histogram buffer of RadixRowState.
+    STD_TORCH_CHECK(ctas_per_group <= 256,
+                    "persistent_topk: ctas_per_group=", ctas_per_group,
+                    " exceeds the 256-slot per-CTA counts buffer");
     uint32_t chunk_size =
         (static_cast<uint32_t>(stride) + ctas_per_group - 1) / ctas_per_group;
     chunk_size = ((chunk_size + vec_size - 1) / vec_size) * vec_size;
