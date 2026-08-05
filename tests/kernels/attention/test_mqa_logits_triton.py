@@ -7,6 +7,7 @@ import torch
 
 from vllm.platforms import current_platform
 from vllm.utils.math_utils import cdiv
+from vllm.v1.attention.ops import mqa_logits_triton as mqa_logits_mod
 from vllm.v1.attention.ops.mqa_logits_triton import (
     fp8_mqa_logits_triton,
     fp8_paged_mqa_logits_triton,
@@ -142,9 +143,8 @@ _ATOL = 1.0
 _RTOL = 0.2
 
 
-# (8, 16640) crosses _KV_GROUP_MIN_N, so it runs the KV_GROUP=8 grouped path
-# with a partial final group (16640 = 16 * 1024 + 256); every smaller N runs
-# the ungrouped specialization.
+# (8, 16640) crosses only _KV_GROUP_MIN_N and remains on the ungrouped path;
+# it is the long-context regression shape for the new M gate.
 @pytest.mark.parametrize("M,N", [(64, 64), (128, 256), (256, 512), (8, 16640)])
 @pytest.mark.parametrize("num_heads", [16, 32])
 @pytest.mark.parametrize("partial_mask", [False, True])
@@ -190,6 +190,43 @@ def test_fp8_mqa_logits_triton_matches_torch(
         torch.testing.assert_close(
             out_triton[finite], out_torch[finite], atol=_ATOL, rtol=_RTOL
         )
+
+
+@pytest.mark.parametrize(
+    "is_sm80,M,N,expected",
+    [
+        (True, 8, 16640, 1),
+        (True, 511, 16384, 1),
+        (True, 512, 16383, 1),
+        (True, 512, 16384, 8),
+        (True, 2048, 28672, 8),
+        (False, 2048, 28672, 1),
+    ],
+)
+def test_fp8_mqa_logits_group_dispatch_boundaries(monkeypatch, is_sm80, M, N, expected):
+    monkeypatch.setattr(mqa_logits_mod, "_IS_SM80", is_sm80)
+    assert mqa_logits_mod._select_prefill_kv_group(M, N) == expected
+
+
+@pytest.mark.parametrize(
+    "is_sm80,expected_calls",
+    [
+        (False, [(8, 8192, None)]),
+        (True, [(8, 8192, None), (8, 16384, 8)]),
+    ],
+)
+def test_fp8_mqa_logits_warmup_forces_grouped_specialization(
+    monkeypatch, is_sm80, expected_calls
+):
+    calls = []
+
+    def record_shape(num_heads, head_dim, m, n, device, kv_group_override=None) -> None:
+        calls.append((m, n, kv_group_override))
+
+    monkeypatch.setattr(mqa_logits_mod, "_warmup_fp8_mqa_logits_shape", record_shape)
+    monkeypatch.setattr(mqa_logits_mod, "_IS_SM80", is_sm80)
+    mqa_logits_mod.warmup_fp8_mqa_logits_triton(64, 128, torch.device("cuda:0"))
+    assert calls == expected_calls
 
 
 def test_fp8_mqa_logits_triton_clean_logits_false_overwrites_masked():

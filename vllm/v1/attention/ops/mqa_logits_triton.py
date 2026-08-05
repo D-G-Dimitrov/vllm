@@ -4,8 +4,14 @@
 
 import torch
 
+from vllm.platforms import current_platform
 from vllm.triton_utils import tl, triton
 from vllm.v1.attention.ops.fp8_sm80 import get_e4m3fn_bf16_lut
+
+_IS_SM80 = current_platform.is_cuda() and current_platform.get_device_capability() == (
+    8,
+    0,
+)
 
 # Paged decode: num_warps=4 dominated on A100/SM80 across {2,4,8}; the others
 # were 1.5–1.7× slower at (num_heads=32, head_dim=128, block_size=64), so
@@ -52,14 +58,13 @@ _PREFILL_AUTOTUNE_CONFIGS = [
     for ns in (2, 4)
 ]
 
-# KV_GROUP is selected by the wrapper from N, not autotuned: grouping 8 tiles
-# per CTA reuses the q/weights load 8x and measures 3.9% faster at the 128k
-# shape (7.11 -> 6.84 ms at M=2048, N=28672; G=16 turns back up), but each row
-# also wastes up to G-1 dots at its `ke` boundary, ~(G-1)*64/N of the kernel,
-# which turns the grouping net-negative below N ~= 11k. The bench covered the
-# no-waste case (ks=0, ke=N), so the threshold keeps a safety margin over the
-# arithmetic breakeven rather than sitting on it.
+# KV_GROUP is selected by the wrapper from M and N, not autotuned: grouping 8
+# tiles per CTA reuses the q/weights load 8x and measures 3.9% faster at the
+# 128k prefill shape (7.11 -> 6.84 ms at M=2048, N=28672; G=16 turns back up),
+# but only large SM80 prefill grids select it; smaller grids, short contexts,
+# and other fallback devices keep the original ungrouped specialization.
 _KV_GROUP = 8
+_KV_GROUP_MIN_M = 512
 _KV_GROUP_MIN_N = 16384
 
 # Warmup shape mirrors the chunked-prefill regime (small M, long N) so
@@ -409,6 +414,12 @@ def _fp8_mqa_logits_kernel(
             )
 
 
+def _select_prefill_kv_group(m: int, n: int) -> int:
+    if _IS_SM80 and m >= _KV_GROUP_MIN_M and n >= _KV_GROUP_MIN_N:
+        return _KV_GROUP
+    return 1
+
+
 def fp8_mqa_logits_triton(
     q: torch.Tensor,
     kv: tuple[torch.Tensor, torch.Tensor],
@@ -430,6 +441,24 @@ def fp8_mqa_logits_triton(
     Returns:
         logits:       [M, N] float32
     """
+    return _fp8_mqa_logits_triton_impl(
+        q,
+        kv,
+        weights,
+        cu_seqlen_ks,
+        cu_seqlen_ke,
+        _select_prefill_kv_group(q.shape[0], kv[0].shape[0]),
+    )
+
+
+def _fp8_mqa_logits_triton_impl(
+    q: torch.Tensor,
+    kv: tuple[torch.Tensor, torch.Tensor],
+    weights: torch.Tensor,
+    cu_seqlen_ks: torch.Tensor,
+    cu_seqlen_ke: torch.Tensor,
+    kv_group: int,
+) -> torch.Tensor:
     k_fp8, k_scales = kv
     k_scales = k_scales.reshape(-1)
 
@@ -448,9 +477,7 @@ def fp8_mqa_logits_triton(
     q_bf16 = q.to(torch.bfloat16)
     k_bf16 = k_fp8.to(torch.bfloat16)
 
-    kv_group = _KV_GROUP if N >= _KV_GROUP_MIN_N else 1
-
-    # Grid depends on the autotuned BLOCK_N and the N-selected KV_GROUP.
+    # Grid depends on the autotuned BLOCK_N and the M/N-selected KV_GROUP.
     grid = lambda meta: (  # noqa: E731
         M,
         triton.cdiv(N, meta["BLOCK_N"] * meta["KV_GROUP"]),
@@ -488,13 +515,23 @@ def warmup_fp8_mqa_logits_triton(
     device: torch.device,
 ) -> None:
     """Prime the prefill `@triton.autotune` cache so first-call doesn't pay
-    the inline sweep (~5–8 s on A100 SM80). N is a runtime scalar, but
-    KV_GROUP is an N-selected constexpr, so warm both specializations: the
-    short-N shape runs the tuner sweep, the long-N one just JIT-compiles the
-    grouped variant against the cached best config."""
-    m = _PREFILL_WARMUP_M
-    for n in (_PREFILL_WARMUP_N, _KV_GROUP_MIN_N):
-        _warmup_fp8_mqa_logits_shape(num_heads, head_dim, m, n, device)
+    the inline sweep (~5–8 s on A100 SM80). KV_GROUP is an M/N-selected
+    constexpr, so on SM80 warm both specializations at the small warmup shape:
+    the short-N shape runs the tuner sweep, then the forced grouped launch just
+    JIT-compiles against the cached best config. Other devices need only the
+    ungrouped specialization."""
+    _warmup_fp8_mqa_logits_shape(
+        num_heads, head_dim, _PREFILL_WARMUP_M, _PREFILL_WARMUP_N, device
+    )
+    if _IS_SM80:
+        _warmup_fp8_mqa_logits_shape(
+            num_heads,
+            head_dim,
+            _PREFILL_WARMUP_M,
+            _KV_GROUP_MIN_N,
+            device,
+            kv_group_override=_KV_GROUP,
+        )
 
 
 def _warmup_fp8_mqa_logits_shape(
@@ -503,6 +540,7 @@ def _warmup_fp8_mqa_logits_shape(
     m: int,
     n: int,
     device: torch.device,
+    kv_group_override: int | None = None,
 ) -> None:
     q = torch.empty(m, num_heads, head_dim, dtype=torch.float8_e4m3fn, device=device)
     k = torch.empty(n, head_dim, dtype=torch.float8_e4m3fn, device=device)
@@ -510,7 +548,12 @@ def _warmup_fp8_mqa_logits_shape(
     weights = torch.zeros(m, num_heads, dtype=torch.float32, device=device)
     ks = torch.zeros(m, dtype=torch.int32, device=device)
     ke = torch.full((m,), n, dtype=torch.int32, device=device)
-    fp8_mqa_logits_triton(q, (k, scales), weights, ks, ke)
+    kv_group = (
+        _select_prefill_kv_group(m, n)
+        if kv_group_override is None
+        else kv_group_override
+    )
+    _fp8_mqa_logits_triton_impl(q, (k, scales), weights, ks, ke, kv_group)
 
 
 def warmup_fp8_paged_mqa_logits_triton(

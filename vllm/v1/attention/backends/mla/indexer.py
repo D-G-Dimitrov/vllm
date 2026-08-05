@@ -6,7 +6,7 @@ import torch
 
 import vllm.envs as envs
 from vllm.config import VllmConfig
-from vllm.distributed import get_dcp_group, get_pcp_group
+from vllm.distributed import get_dcp_group, get_pcp_group, get_tp_group
 from vllm.logger import init_logger
 from vllm.model_executor.warmup.jit_warmup import (
     VllmJitKernel,
@@ -72,6 +72,129 @@ def _prepare_uniform_decode_kernel(
 
     # All reqs now have decode_len = 1.
     tl.store(decode_lens_ptr + idx, 1)
+
+
+# Shard only when the top-k all-gather is repaid at least ~5x. Per indexer
+# layer the saving is (36.98 ms / 21) * T/8192 * 7/8, and the collective is
+# 168 us at T=8192 (ALLREDUCE.md, pynccl_ag 16 MiB), flattening near ~77 us
+# once the payload drops under ~4 MiB:
+#   T=8192 -> 9.2x    T=4096 -> 7.4x    T=2048 -> 5.0x    T=1024 -> 2.8x
+# 2048 is the crossover, and is above the cudagraph capture cap
+# (min(max_num_seqs*2, 512)), so a sharded batch is always an eager one.
+MIN_SHARD_TOKENS = 2048
+
+
+def rank_row_bounds(
+    start: int, stop: int, tp_rank: int, tp_size: int
+) -> tuple[int, int]:
+    """This rank's contiguous half-open row range within ``[start, stop)``.
+
+    Remainder rows go one each to the lowest-numbered ranks, so the union over
+    ranks is exactly ``[start, stop)`` with no gap or overlap at any row count.
+    Per-rank counts may differ by one, which is why the collective is
+    ``all_gatherv(sizes=...)`` rather than ``all_gather`` -- no padding rows are
+    created, so none can be read by mistake.
+    """
+    n = stop - start
+    base, rem = divmod(n, tp_size)
+    lo = start + tp_rank * base + min(tp_rank, rem)
+    hi = lo + base + (1 if tp_rank < rem else 0)
+    return lo, hi
+
+
+def shard_chunk_specs_by_query(
+    chunk_specs: list[tuple[slice, slice]], tp_rank: int, tp_size: int
+) -> list[tuple[slice, slice, bool]]:
+    """Narrow each ``(req_slice, query_slice)`` to this rank's rows.
+
+    Returns ``(req_slice, query_slice, skip_kv_gather)``. Sub-chunks this rank
+    owns no rows in are dropped entirely rather than emitted empty.
+    """
+    if tp_size <= 1:
+        return [(r, q, q.start > 0) for r, q in chunk_specs]
+
+    out: list[tuple[slice, slice, bool]] = []
+    prev_req: tuple[int, int] | None = None
+    gathered_for_req = False
+    for req_slice, query_slice in chunk_specs:
+        req_key = (req_slice.start, req_slice.stop)
+        if req_key != prev_req:
+            # New request group => new K workspace contents => must re-gather.
+            prev_req = req_key
+            gathered_for_req = False
+        lo, hi = rank_row_bounds(query_slice.start, query_slice.stop, tp_rank, tp_size)
+        if hi <= lo:
+            continue
+        out.append((req_slice, slice(lo, hi), gathered_for_req))
+        gathered_for_req = True
+    return out
+
+
+def all_gather_row_counts(
+    chunk_specs: list[tuple[slice, slice]], tp_size: int
+) -> list[list[int]]:
+    """Per-chunk, per-rank row counts for ``all_gatherv(sizes=...)``."""
+    counts = []
+    for _, query_slice in chunk_specs:
+        per_rank = []
+        for r in range(tp_size):
+            lo, hi = rank_row_bounds(query_slice.start, query_slice.stop, r, tp_size)
+            per_rank.append(hi - lo)
+        counts.append(per_rank)
+    return counts
+
+
+def indexer_shard_size_for_batch(num_prefill_tokens: int, shard_size: int) -> int:
+    """``shard_size``, or 1 when this batch's prefill is too short to pay.
+
+    Below ``MIN_SHARD_TOKENS`` the per-chunk top-k all-gather costs more than
+    the indexer work it removes. Derived from CPU metadata every rank holds
+    identically: a rank-divergent answer here would desynchronise the
+    collective, which hangs rather than misbehaves.
+    """
+    return shard_size if num_prefill_tokens >= MIN_SHARD_TOKENS else 1
+
+
+def indexer_q_row_ranges(
+    chunks: "list[DeepseekV32IndexerPrefillChunkMetadata]",
+    num_decodes: int,
+    num_tokens: int,
+) -> list[tuple[int, int]] | None:
+    """Rows of the indexer's Q path this rank must compute, or None for all.
+
+    The ranges are read back out of the chunk metadata rather than
+    re-partitioned, so they are by construction exactly the rows the chunk loop
+    will read (``q_quant[chunk.token_start : chunk.token_end]``). The caller
+    keeps ``q_quant``/``weights`` full-size and leaves every other row unwritten,
+    so no downstream index changes meaning and there is no second partition to
+    keep in step with this one.
+
+    None means "compute every row" -- the replicated path -- and is returned
+    whenever the rows that will be read are not covered by the chunks:
+
+    * ``num_decodes > 0``: the decode branch reads ``q_quant[:num_decode_tokens]``
+      and ``weights[:batch * next_n]``, ranges no chunk names (and the latter can
+      run past the decode region);
+    * no chunks, or none of them carries ``shard_row_counts``, i.e. the indexer
+      ran replicated for this batch (tp=1, DCP, PCP, or under MIN_SHARD_TOKENS);
+    * a chunk naming a row beyond ``num_tokens``, which would silently truncate.
+    """
+    if num_decodes > 0 or not chunks:
+        return None
+    if any(c.shard_row_counts is None for c in chunks):
+        return None
+
+    ranges: list[tuple[int, int]] = []
+    for c in chunks:
+        if c.token_end <= c.token_start:
+            continue
+        if c.token_start < 0 or c.token_end > num_tokens:
+            return None
+        if ranges and ranges[-1][1] == c.token_start:
+            ranges[-1] = (ranges[-1][0], c.token_end)
+        else:
+            ranges.append((c.token_start, c.token_end))
+    return ranges or None
 
 
 def split_indexer_prefill_chunks(
@@ -194,6 +317,9 @@ class DeepseekV32IndexerPrefillChunkMetadata:
     local_cu_seq_lens: torch.Tensor | None = None
     local_total_seq_lens: int = 0
     max_local_total_seq_lens: int = 0
+    # Per-rank row counts for the top-k all-gather under TP query-sharding.
+    # None means the indexer ran replicated and no gather is needed.
+    shard_row_counts: list[int] | None = None
 
 
 _BUILD_PREFILL_CHUNK_METADATA_INPUT_VARIANTS = (
@@ -414,6 +540,8 @@ class DeepSeekV32IndexerDecodeMetadata:
     #   - native MTP path: 2D (B, next_n) where [b,j] = L_b - next_n + j + 1
     # Both fp8_fp4_paged_mqa_logits and the topk kernels accept both shapes.
     seq_lens: torch.Tensor
+    # Upper bound in the same indexer-cache coordinate system as seq_lens.
+    max_seq_len: int
     decode_lens: torch.Tensor
     requires_padding: bool
     schedule_metadata: torch.Tensor
@@ -475,6 +603,34 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
         self.pcp_world_size = parallel_config.prefill_context_parallel_size
         self.use_pcp = self.pcp_world_size > 1
         self.cp_kv_cache_interleave_size = parallel_config.cp_kv_cache_interleave_size
+        # TP query-sharding of the (replicated) indexer. Held as size/rank so
+        # the chunk partition is a pure function of them, and so size == 1
+        # reproduces the replicated path exactly.
+        self.indexer_shard_size = 1
+        self.indexer_shard_rank = 0
+        if envs.VLLM_INDEXER_QUERY_SHARD:
+            tp = get_tp_group()
+            # Log both outcomes. A silent fallback is indistinguishable from
+            # "the flag did nothing" once an A/B comes back null, so say which
+            # one happened and why.
+            if tp.world_size > 1 and self.dcp_world_size == 1 and not self.use_pcp:
+                self.indexer_shard_size = tp.world_size
+                self.indexer_shard_rank = tp.rank_in_group
+                logger.info_once(
+                    "Indexer query-sharding ENABLED: prefill rows split across "
+                    "%d TP ranks (>= %d tokens); top-k all-gathered per chunk.",
+                    self.indexer_shard_size,
+                    MIN_SHARD_TOKENS,
+                )
+            else:
+                logger.warning_once(
+                    "VLLM_INDEXER_QUERY_SHARD=1 but the indexer is running "
+                    "REPLICATED: tp_size=%d, dcp_world_size=%d, use_pcp=%s "
+                    "(requires tp_size>1, dcp_world_size==1, use_pcp=False).",
+                    tp.world_size,
+                    self.dcp_world_size,
+                    self.use_pcp,
+                )
         # The DCP sparse-indexer code is parameterized by interleave size, but
         # interleave > 1 is not yet validated end-to-end (gsm8k parity fails),
         # so fail closed here rather than silently produce wrong output.
@@ -838,8 +994,27 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
                 request_offset=num_decodes,
             )
 
+            # Under TP query-sharding each rank keeps a contiguous slice of the
+            # rows and all-gathers the top-k afterwards; `skip_kv_gather` then
+            # has to mean "this rank already gathered K for this request group",
+            # which is not the same as "start > 0".
+            #
+            # Short prefills fall back to replicated; see
+            # indexer_shard_size_for_batch.
+            num_prefill_tokens = int(
+                query_start_loc_cpu[num_decodes + num_prefills]
+                - query_start_loc_cpu[num_decodes]
+            )
+            shard_size = indexer_shard_size_for_batch(
+                num_prefill_tokens, self.indexer_shard_size
+            )
+            shard_rank = self.indexer_shard_rank if shard_size > 1 else 0
+            sharded_specs = shard_chunk_specs_by_query(
+                chunk_specs, shard_rank, shard_size
+            )
+
             chunks = []
-            for req_slice, query_slice in chunk_specs:
+            for req_slice, query_slice, skip_kv_gather in sharded_specs:
                 metadata = build_prefill_chunk_metadata(
                     req_slice.start,
                     req_slice.stop,
@@ -851,7 +1026,7 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
                     common_attn_metadata.block_table_tensor,
                     self.compress_ratio,
                     query_slice=query_slice,
-                    skip_kv_gather=query_slice.start > 0,
+                    skip_kv_gather=skip_kv_gather,
                     dcp_rank=self.dcp_rank,
                     dcp_world_size=self.dcp_world_size,
                     cp_kv_cache_interleave_size=self.cp_kv_cache_interleave_size,
@@ -859,6 +1034,13 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
                 # Skip when total_seq_lens is 0 (i.e., no compressed token).
                 if metadata is not None:
                     chunks.append(metadata)
+            if shard_size > 1:
+                # Sizes come from the same function that cut the slices, so the
+                # collective cannot disagree with the partition.
+                for meta, counts in zip(
+                    chunks, all_gather_row_counts(chunk_specs, shard_size)
+                ):
+                    meta.shard_row_counts = counts
             prefill_metadata = DeepseekV32IndexerPrefillMetadata(chunks)
 
         decode_metadata = None
@@ -957,6 +1139,7 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
             decode_metadata = DeepSeekV32IndexerDecodeMetadata(
                 block_table=block_table,
                 seq_lens=seq_lens,
+                max_seq_len=(common_attn_metadata.max_seq_len // self.compress_ratio),
                 decode_lens=decode_lens,
                 requires_padding=requires_padding,
                 schedule_metadata=self.scheduler_metadata_buffer,
@@ -989,6 +1172,11 @@ def build_prefill_chunk_metadata(
     block_table: torch.Tensor,
     compress_ratio: int,
     query_slice: slice | None = None,
+    # Authoritative: the caller knows whether *this* rank has already gathered
+    # K for this request group. Deriving it here from `query_slice.start > 0`
+    # is only correct when sub-chunks are consecutive slices on one rank, which
+    # TP query-sharding breaks -- every rank but 0 starts at a nonzero row and
+    # has gathered nothing.
     skip_kv_gather: bool = False,
     dcp_rank: int = 0,
     dcp_world_size: int = 1,
@@ -1067,7 +1255,6 @@ def build_prefill_chunk_metadata(
     if query_slice is not None:
         token_end = token_start + qs_stop
         token_start = token_start + qs_start
-        skip_kv_gather = skip_kv_gather or qs_start > 0
     else:
         token_end = query_start_loc_cpu[end_idx].item()
 

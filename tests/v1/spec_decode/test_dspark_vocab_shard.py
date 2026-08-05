@@ -116,6 +116,81 @@ def test_model_without_the_hooks_is_rejected():
         spec._validate_local_argmax_reduction()
 
 
+def _markov_head_for_fusion(monkeypatch, tp=4, soft_cap=None, scale=1.0):
+    """A sharded Markov head plus the LogitsProcessor the speculator pairs it
+    with, built without an engine."""
+    from vllm.model_executor.layers import logits_processor, vocab_parallel_embedding
+    from vllm.model_executor.layers.logits_processor import LogitsProcessor
+
+    vocab, rank_dim = 128, 8
+    monkeypatch.setattr(
+        vocab_parallel_embedding, "get_tensor_model_parallel_rank", lambda: 3
+    )
+    monkeypatch.setattr(
+        vocab_parallel_embedding, "get_tensor_model_parallel_world_size", lambda: tp
+    )
+    monkeypatch.setattr(
+        logits_processor,
+        "get_current_vllm_config",
+        lambda: SimpleNamespace(model_config=None),
+    )
+    head = DSparkMarkovHead(
+        vocab, vocab, rank_dim, prefix="markov_head", shard_vocab=True
+    )
+    lp = LogitsProcessor(vocab, scale=scale, soft_cap=soft_cap)
+    return head, lp, vocab, rank_dim, tp
+
+
+@pytest.mark.cpu_test
+def test_fusion_operands_describe_the_shard(monkeypatch: pytest.MonkeyPatch):
+    """The fused Markov kernel is handed shard geometry, not module internals;
+    if these stop matching the head, the kernel reads the wrong rows."""
+    head, lp, vocab, rank_dim, tp = _markov_head_for_fusion(monkeypatch)
+    op = head.fusion_operands(lp)
+    assert op is not None
+    assert op.w2.shape == (vocab // tp, rank_dim)
+    assert op.w1.shape == (vocab, rank_dim)
+    assert op.tp_size == tp and op.tp_rank == 3
+    assert op.vocab_start == head.markov_w2.shard_indices.org_vocab_start_index
+    # No padding in this layout, so every column of the shard is a real token.
+    assert op.num_valid == vocab // tp
+
+
+@pytest.mark.cpu_test
+@pytest.mark.parametrize(
+    "kwargs", [{"soft_cap": 30.0}, {"scale": 2.0}], ids=["soft_cap", "scale"]
+)
+def test_fusion_declines_what_it_cannot_reproduce(
+    monkeypatch: pytest.MonkeyPatch, kwargs
+):
+    """The kernel reimplements select_top_tokens end to end. A soft cap or a
+    logit scale changes what the argmax compares, so the head must decline and
+    leave the eager chain in place rather than silently drop the transform."""
+    head, lp, *_ = _markov_head_for_fusion(monkeypatch, **kwargs)
+    assert head.fusion_operands(lp) is None
+
+
+@pytest.mark.cpu_test
+def test_fusion_declines_a_mismatched_head_dtype(monkeypatch: pytest.MonkeyPatch):
+    head, lp, *_ = _markov_head_for_fusion(monkeypatch)
+    lp.head_dtype = torch.float64
+    assert head.fusion_operands(lp) is None
+
+
+@pytest.mark.cpu_test
+def test_sampler_build_declines_a_model_without_the_hook():
+    """A model that never grew markov_fusion_operands must fall back, not
+    crash -- and must say so, because a silent fallback is an unmeasured arm."""
+    from vllm.v1.worker.gpu.spec_decode.dspark.markov_argmax import (
+        build_fused_markov_sampler,
+    )
+
+    got = build_fused_markov_sampler(
+        SimpleNamespace(), max_num_reqs=8, n_spec=5, device=torch.device("cpu")
+    )
+    assert got is None
+
+
 @pytest.mark.cpu_test
 def test_speculative_config_carries_the_flag():
     """Guards the knob the A/B start uses: --speculative-config

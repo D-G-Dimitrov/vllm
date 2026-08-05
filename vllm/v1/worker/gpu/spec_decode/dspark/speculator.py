@@ -26,12 +26,18 @@ backbone forward AND the sequential Markov sampling.
 from typing import Any
 
 import torch
+from torch.profiler import record_function
 
+from vllm import envs
 from vllm.config import VllmConfig
 from vllm.config.compilation import CUDAGraphMode
 from vllm.logger import init_logger
 from vllm.v1.worker.gpu.sample.gumbel import gumbel_sample
 from vllm.v1.worker.gpu.spec_decode.dflash.speculator import DFlashSpeculator
+from vllm.v1.worker.gpu.spec_decode.dspark.markov_argmax import (
+    FusedMarkovSampler,
+    build_fused_markov_sampler,
+)
 from vllm.v1.worker.gpu.spec_decode.dspark.utils import load_dspark_model
 
 logger = init_logger(__name__)
@@ -76,6 +82,10 @@ class DSparkSpeculator(DFlashSpeculator):
         self._d2t_scatter_index: torch.Tensor | None = None
         self._draft_scatter_buf: torch.Tensor | None = None
 
+        # Fused Markov chain (greedy vocab-sharded path only); built in
+        # load_draft_model once the head's weights and shard geometry exist.
+        self._fused_markov: FusedMarkovSampler | None = None
+
     def load_draft_model(
         self,
         target_model: torch.nn.Module,
@@ -97,6 +107,19 @@ class DSparkSpeculator(DFlashSpeculator):
                 float("-inf"),
                 dtype=self.draft_logits.dtype,
                 device=self.device,
+            )
+        # `draft_logits is None` is greedy drafting, which is the only mode the
+        # fused step covers -- it reduces the logit row instead of emitting it.
+        # `_validate_local_argmax_reduction` rejects the other combination
+        # outright, but it runs after this method, so the condition is spelled
+        # out here rather than assumed.
+        if (
+            self.use_local_argmax_reduction
+            and self.draft_logits is None
+            and envs.VLLM_DSPARK_FUSED_MARKOV
+        ):
+            self._fused_markov = build_fused_markov_sampler(
+                model, self.max_num_reqs, self.num_speculative_steps, self.device
             )
         return model
 
@@ -139,10 +162,11 @@ class DSparkSpeculator(DFlashSpeculator):
         # Under the local-argmax reduction these are this rank's vocab columns
         # only, so `vocab_size` below is the shard width -- nothing in this
         # method reads it as a vocab id.
-        if self.use_local_argmax_reduction:
-            base_logits = self.model.compute_draft_logits_shard(sample_hidden)
-        else:
-            base_logits = self.model.compute_draft_logits(sample_hidden)
+        with record_function("dspark::draft_logits"):
+            if self.use_local_argmax_reduction:
+                base_logits = self.model.compute_draft_logits_shard(sample_hidden)
+            else:
+                base_logits = self.model.compute_draft_logits(sample_hidden)
         vocab_size = base_logits.shape[-1]
         base_logits = base_logits.view(num_reqs, n_spec, vocab_size)
 
@@ -152,6 +176,13 @@ class DSparkSpeculator(DFlashSpeculator):
         # Anchor (bonus) token per request = the input id at query offset 0,
         # read via the precomputed persistent index (fixed buffer for capture).
         prev = self.input_buffers.input_ids[self._anchor_idx[:num_reqs]]
+
+        if self._fused_markov is not None:
+            # Same chain as the loop below, with each step's seven kernels and
+            # three [num_reqs, shard_width] round trips collapsed into one
+            # pass over markov_w2. Writes draft_tokens directly.
+            self._fused_markov.sample(num_reqs, base_logits, prev, self.draft_tokens)
+            return
 
         for i in range(n_spec):
             # Sequential stage: Markov bias from the previously sampled token.
@@ -207,11 +238,16 @@ class DSparkSpeculator(DFlashSpeculator):
     ) -> None:
         # Full draft step (captured under CUDA graph): parallel backbone forward
         # then sequential Markov sampling over its hidden state outputs.
-        head_hidden = self._run_model(
-            num_tokens_padded,
-            attn_metadata,
-            slot_mappings,
-            num_tokens_across_dp,
-            cudagraph_runtime_mode,
-        )
-        self._sample_sequential(num_reqs, head_hidden)
+        # NOTE: these scopes are host-side, so they only resolve when the step
+        # runs eagerly. Under CUDA-graph replay the whole step is one launch and
+        # the ranges do not reappear -- profile with cudagraphs off to use them.
+        with record_function("dspark::draft_backbone"):
+            head_hidden = self._run_model(
+                num_tokens_padded,
+                attn_metadata,
+                slot_mappings,
+                num_tokens_across_dp,
+                cudagraph_runtime_mode,
+            )
+        with record_function("dspark::markov_sampling"):
+            self._sample_sequential(num_reqs, head_hidden)

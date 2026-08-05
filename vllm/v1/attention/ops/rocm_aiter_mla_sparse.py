@@ -1029,6 +1029,99 @@ def _validate_dsv4_sparse_dims(
     )
 
 
+# Largest row count the one-block exclusive scan handles: the scan covers
+# `rows` lanes (not rows+1 -- slot 0 is stored flat), so 8192 int32 lanes is
+# 32 KB of accumulator across 8 warps.
+#
+# 8192 is not a round number chosen for headroom, it is the production shape:
+# an 8K prefill hands this exactly 8192 rows. The previous cap of 8191 -- one
+# short -- dropped every prefill layer onto the torch fallback below, whose
+# `indptr[0] = 0` is a synchronous pageable H2D that stalls the host and
+# serialises the whole ragged-prep chain behind it. Lowering this below 8192
+# reintroduces ~5.7 ms of GPU idle per 8K prefill; the boundary is pinned by
+# test_lengths_to_indptr_stays_one_block_at_prefill_width.
+_MAX_ONE_BLOCK_INDPTR_ROWS = 8192
+
+# The pre-fix cap, kept only so VLLM_SPARSE_RAGGED_FAST_SCAN=0 reproduces the
+# old dispatch exactly for the A/B control. Delete this and the flag once the
+# change is adopted -- it exists to be measured against, not to be run.
+_LEGACY_ONE_BLOCK_INDPTR_ROWS = 8191
+
+
+def _one_block_indptr_cap() -> int:
+    if envs.VLLM_SPARSE_RAGGED_FAST_SCAN:
+        return _MAX_ONE_BLOCK_INDPTR_ROWS
+    return _LEGACY_ONE_BLOCK_INDPTR_ROWS
+
+
+@triton.jit
+def _lengths_to_indptr_kernel(
+    indptr_ptr,
+    lengths_ptr,
+    num_rows,
+    BLOCK: tl.constexpr,
+):
+    """indptr[i] = sum(lengths[:i]) for i in [0, num_rows], in one launch."""
+    offsets = tl.arange(0, BLOCK)
+    # The scan covers `num_rows` lanes and writes indptr[1:]; slot 0 is a
+    # constant stored alongside. Scanning rows rather than rows+1 is what keeps
+    # a power-of-two row count inside one block of the same width -- shifting
+    # the load instead would need next_power_of_2(rows + 1), i.e. 16384 lanes
+    # for the 8192-row prefill, which is what the old cap was avoiding.
+    vals = tl.load(lengths_ptr + offsets, mask=offsets < num_rows, other=0).to(tl.int32)
+    tl.store(indptr_ptr + offsets + 1, tl.cumsum(vals, axis=0), mask=offsets < num_rows)
+    tl.store(indptr_ptr + offsets, 0, mask=offsets == 0)
+
+
+def lengths_to_indptr(
+    lengths: torch.Tensor, out: torch.Tensor | None = None
+) -> torch.Tensor:
+    """Exclusive prefix sum of ``lengths``, as an int32 ``[n + 1]`` indptr.
+
+    One Triton launch instead of the ``torch.zeros`` + ``torch.cumsum`` pair
+    (a fill, a cub scan-init and a cub scan kernel = 3 cudagraph nodes). The
+    ragged sparse-attention metadata rebuilds this per indexer layer per step,
+    so the two deleted nodes are paid 21x every decode step. Integer sums, so
+    the result is bit-identical to the torch path.
+
+    ``out`` writes the result into caller-owned storage -- used to build
+    straight into a persistent cudagraph buffer instead of allocating and
+    copying afterwards.
+    """
+    lengths = lengths.to(dtype=torch.int32).contiguous()
+    num_rows = lengths.shape[0]
+    if out is None:
+        indptr = torch.empty(num_rows + 1, dtype=torch.int32, device=lengths.device)
+    else:
+        assert out.shape == (num_rows + 1,) and out.dtype == torch.int32, (
+            f"indptr out must be int32 [{num_rows + 1}], got "
+            f"{out.dtype} {tuple(out.shape)}"
+        )
+        # The kernel stores at `out + offsets`, so a strided view would be
+        # written at the wrong addresses rather than failing loudly.
+        assert out.is_contiguous(), "indptr out must be contiguous"
+        indptr = out
+    if num_rows > _one_block_indptr_cap():
+        if envs.VLLM_SPARSE_RAGGED_FAST_SCAN:
+            # `indptr[0] = 0` assigns a Python scalar into device memory, which
+            # is a *pageable* H2D copy: it blocks the host, so the cub scan and
+            # everything queued behind it cannot be enqueued while it drains.
+            # zero_() is a device-side fill with no host round-trip.
+            indptr[:1].zero_()
+        else:
+            indptr[0] = 0
+        torch.cumsum(lengths, dim=0, out=indptr[1:])
+        return indptr
+    _lengths_to_indptr_kernel[(1,)](
+        indptr,
+        lengths,
+        num_rows,
+        BLOCK=triton.next_power_of_2(max(num_rows, 1)),
+        num_warps=8,
+    )
+    return indptr
+
+
 @triton.jit
 def _pack_dense_prefix_to_ragged_kernel(
     indices_ptr,
@@ -1066,7 +1159,18 @@ def build_ragged_indices_from_dense(
     indices: torch.Tensor,
     lengths: torch.Tensor,
     num_rows: int = -1,
+    indices_out: torch.Tensor | None = None,
+    indptr_out: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    """Flatten dense per-row prefixes into ragged (indices, indptr).
+
+    ``indices_out`` / ``indptr_out`` are optional destinations: the kernels
+    write there instead of into freshly allocated tensors, which is how the
+    metadata builders fill their persistent cudagraph buffers without a
+    follow-up device-to-device copy. Only the first ``rows * max_width``
+    entries of ``indices_out`` are written; the returned view is the caller's
+    buffer unchanged, and ``indptr`` bounds every downstream read anyway.
+    """
     indices = indices.reshape(indices.shape[0], -1)
     lengths = lengths.to(device=indices.device, dtype=torch.int32).reshape(-1)
     assert lengths.numel() == indices.shape[0], (
@@ -1076,18 +1180,21 @@ def build_ragged_indices_from_dense(
     max_width = indices.shape[1] if indices.ndim == 2 else 0
     lengths = lengths.clamp(min=0, max=max_width).contiguous()
 
-    indptr = torch.zeros(indices.shape[0] + 1, dtype=torch.int32, device=indices.device)
-    torch.cumsum(lengths, dim=0, out=indptr[1:])
+    indptr = lengths_to_indptr(lengths, out=indptr_out)
 
+    needed = indices.shape[0] * max_width
     if indices.numel() == 0:
         flat = torch.empty(0, dtype=torch.int32, device=indices.device)
     else:
-        flat = torch.empty(
-            indices.shape[0] * max_width,
-            dtype=torch.int32,
-            device=indices.device,
-        )
-        if flat.numel() > 0:
+        if indices_out is None:
+            flat = torch.empty(needed, dtype=torch.int32, device=indices.device)
+        else:
+            assert indices_out.dtype == torch.int32, "ragged out must be int32"
+            assert indices_out.numel() >= needed, (
+                f"ragged out holds {indices_out.numel()} entries, need {needed}"
+            )
+            flat = indices_out
+        if needed > 0:
             block_size = 128
             _pack_dense_prefix_to_ragged_kernel[
                 (indices.shape[0], triton.cdiv(max_width, block_size))
@@ -1135,6 +1242,7 @@ def _sparse_attn_prefill_ragged_kernel(
     BLOCK_H: tl.constexpr,
     BLOCK_D: tl.constexpr,
     BLOCK_K: tl.constexpr,
+    EXACT_TILE: tl.constexpr = False,
 ):
     query_idx = tl.program_id(0)
     pid_h = tl.program_id(1)
@@ -1144,14 +1252,19 @@ def _sparse_attn_prefill_ragged_kernel(
     head_mask = head_offsets < num_heads
     dim_mask = dim_offsets < head_dim
 
-    q = tl.load(
+    q_ptrs = (
         q_ptr
         + query_idx * q_stride_t
         + head_offsets[:, None] * q_stride_h
-        + dim_offsets[None, :] * q_stride_d,
-        mask=head_mask[:, None] & dim_mask[None, :],
-        other=0.0,
+        + dim_offsets[None, :] * q_stride_d
     )
+    if EXACT_TILE:
+        # The tile covers the data exactly (num_heads == BLOCK_H and
+        # head_dim == BLOCK_D), so every head/dim mask is all-true and only
+        # costs predication on the kernel's hottest instructions.
+        q = tl.load(q_ptrs)
+    else:
+        q = tl.load(q_ptrs, mask=head_mask[:, None] & dim_mask[None, :], other=0.0)
 
     neg_large = -3.4028234663852886e38
     m_i = tl.full((BLOCK_H,), neg_large, dtype=tl.float32)
@@ -1172,13 +1285,15 @@ def _sparse_attn_prefill_ragged_kernel(
         valid = in_range & (slot >= 0) & (slot < num_kv)
         safe_slot = tl.where(valid, slot, 0)
 
-        kv = tl.load(
+        kv_ptrs = (
             kv_ptr
             + safe_slot[:, None] * kv_stride_n
-            + dim_offsets[None, :] * kv_stride_d,
-            mask=valid[:, None] & dim_mask[None, :],
-            other=0.0,
+            + dim_offsets[None, :] * kv_stride_d
         )
+        if EXACT_TILE:
+            kv = tl.load(kv_ptrs, mask=valid[:, None], other=0.0)
+        else:
+            kv = tl.load(kv_ptrs, mask=valid[:, None] & dim_mask[None, :], other=0.0)
 
         next_k_pos = k_start + BLOCK_K + k_offsets
         slot = tl.load(
@@ -1186,13 +1301,17 @@ def _sparse_attn_prefill_ragged_kernel(
         )
 
         scores = tl.dot(q, tl.trans(kv)) * scale
-        scores = tl.where(head_mask[:, None] & valid[None, :], scores, neg_large)
+        if EXACT_TILE:
+            keep = valid[None, :]
+        else:
+            keep = head_mask[:, None] & valid[None, :]
+        scores = tl.where(keep, scores, neg_large)
 
         m_block = tl.max(scores, axis=1)
         m_new = tl.maximum(m_i, m_block)
         alpha = tl.exp(m_i - m_new)
         p = tl.exp(scores - m_new[:, None])
-        p = tl.where(head_mask[:, None] & valid[None, :], p, 0.0)
+        p = tl.where(keep, p, 0.0)
         l_new = l_i * alpha + tl.sum(p, axis=1)
 
         acc = acc * alpha[:, None] + tl.dot(p.to(kv.dtype), kv)
@@ -1200,9 +1319,12 @@ def _sparse_attn_prefill_ragged_kernel(
         l_i = l_new
 
     if HAS_ATTN_SINK:
-        sink = tl.load(
-            attn_sink_ptr + head_offsets, mask=head_mask, other=neg_large
-        ).to(tl.float32)
+        if EXACT_TILE:
+            sink = tl.load(attn_sink_ptr + head_offsets).to(tl.float32)
+        else:
+            sink = tl.load(
+                attn_sink_ptr + head_offsets, mask=head_mask, other=neg_large
+            ).to(tl.float32)
         m_final = tl.maximum(m_i, sink)
         alpha = tl.exp(m_i - m_final)
         l_final = l_i * alpha + tl.exp(sink - m_final)
@@ -1216,14 +1338,16 @@ def _sparse_attn_prefill_ragged_kernel(
         denom = tl.maximum(l_i, 1.0e-30)
         out = tl.where(l_i[:, None] > 0.0, acc / denom[:, None], 0.0)
 
-    tl.store(
+    out_ptrs = (
         out_ptr
         + query_idx * out_stride_t
         + head_offsets[:, None] * out_stride_h
-        + dim_offsets[None, :] * out_stride_d,
-        out,
-        mask=head_mask[:, None] & dim_mask[None, :],
+        + dim_offsets[None, :] * out_stride_d
     )
+    if EXACT_TILE:
+        tl.store(out_ptrs, out)
+    else:
+        tl.store(out_ptrs, out, mask=head_mask[:, None] & dim_mask[None, :])
 
 
 @triton.jit
@@ -1838,6 +1962,15 @@ def _rocm_sparse_attn_prefill_ragged_triton(
     block_d = triton.next_power_of_2(head_dim)
     block_k = _prefill_block_k(head_dim)
     num_warps = 4
+    # When the tile covers the data exactly, every head/dim mask in the kernel
+    # is all-true and buys nothing but predication on its hottest instructions.
+    # Specialize rather than delete: ranks whose head count is not the tile
+    # width (num_heads=4 at TP=16) and non-power-of-2 head dims still need them.
+    exact_tile = (
+        envs.VLLM_SPARSE_PREFILL_EXACT_TILE
+        and num_heads == block_h
+        and head_dim == block_d
+    )
     out = torch.empty_like(q, dtype=torch.bfloat16)
     _sparse_attn_prefill_ragged_kernel[(num_queries, triton.cdiv(num_heads, block_h))](
         q,
@@ -1862,6 +1995,7 @@ def _rocm_sparse_attn_prefill_ragged_triton(
         BLOCK_H=block_h,
         BLOCK_D=block_d,
         BLOCK_K=block_k,
+        EXACT_TILE=exact_tile,
         num_warps=num_warps,
     )
     return out
@@ -1923,6 +2057,23 @@ def _prefill_block_h(num_heads: int) -> int:
 
     Ranks holding more than 8 heads keep 16, which is today's tile: this only
     stops building a tile twice the size of the data.
+    """
+    return min(16, max(8, triton.next_power_of_2(num_heads)))
+
+
+@functools.lru_cache
+def _decode_block_h(num_heads: int) -> int:
+    """Head tile for the split-K sparse decode kernel.
+
+    Same rule and same reason as ``_prefill_block_h``: a hardcoded 16 masks off
+    half of every ``tl.dot`` at TP=8, where a rank owns 8 heads. Decode gains a
+    second effect prefill does not -- the ``[BLOCK_H, 512]`` fp32 accumulators
+    halve with the tile, and those accumulators are what the launch site cites
+    for needing 8 warps.
+
+    Bit-identical by the same argument ``_prefill_block_h`` makes: each head's
+    softmax reduction is independent, so repartitioning heads across CTAs
+    cannot change a single output bit.
     """
     return min(16, max(8, triton.next_power_of_2(num_heads)))
 
@@ -2062,6 +2213,7 @@ def _rocm_sparse_attn_decode_ragged_triton(
     extra_cache: torch.Tensor | None = None,
     extra_indices: torch.Tensor | None = None,
     extra_indptr: torch.Tensor | None = None,
+    out: torch.Tensor | None = None,
 ) -> torch.Tensor:
     assert q.ndim == 3, f"expected q=[b,h,d], got {q.shape}"
     assert main_cache.ndim == 3, (
@@ -2122,8 +2274,15 @@ def _rocm_sparse_attn_decode_ragged_triton(
         extra_indices = torch.empty(0, device=q.device, dtype=torch.int32)
         extra_indptr = torch.zeros(num_queries + 1, device=q.device, dtype=torch.int32)
 
-    block_h = 16
-    out = torch.empty_like(q, dtype=torch.bfloat16)
+    block_h = _decode_block_h(num_heads)
+    if out is None:
+        out = torch.empty_like(q, dtype=torch.bfloat16)
+    else:
+        assert out.shape == q.shape and out.dtype == torch.bfloat16, (
+            f"caller-provided out must be bf16 {tuple(q.shape)}, got "
+            f"{out.dtype} {tuple(out.shape)}"
+        )
+        assert out.stride(-1) == 1, "caller-provided out needs a contiguous head dim"
     heads_blocks = triton.cdiv(num_heads, block_h)
     nope_block = triton.next_power_of_2(nope_head_dim)
     comb_dim = nope_head_dim + rope_head_dim
@@ -2278,6 +2437,7 @@ def _rocm_sparse_attn_decode_triton(
     main_ragged_indptr: torch.Tensor | None = None,
     extra_ragged_indices: torch.Tensor | None = None,
     extra_ragged_indptr: torch.Tensor | None = None,
+    out: torch.Tensor | None = None,
 ) -> torch.Tensor:
     if main_ragged_indices is None or main_ragged_indptr is None:
         main_ragged_indices, main_ragged_indptr = build_ragged_indices_from_dense(
@@ -2313,6 +2473,7 @@ def _rocm_sparse_attn_decode_triton(
         extra_cache=extra_cache,
         extra_indices=extra_ragged_indices,
         extra_indptr=extra_ragged_indptr,
+        out=out,
     )
 
 
@@ -2413,6 +2574,23 @@ def rocm_sparse_attn_decode(
         if topk_indices is not None:
             extra_indices = topk_indices.reshape(topk_indices.shape[0], -1)
 
+    # Let the attention kernel land straight in the caller's buffer where the
+    # layouts already agree. Both decode kernels address `out` as
+    # `base + t*stride0 + h*stride1 + d`, so a bf16 output with a contiguous
+    # head dim is writable in place; anything else keeps the temp + copy. This
+    # deletes one cudagraph node (a `memcpy32_post`) per layer per step and is
+    # bit-exact -- the copy it replaces is a plain DtoD move.
+    #
+    # q is excluded by data_ptr because the single-pass fallback kernel reads q
+    # and writes out in the same launch, where aliasing would be a race. (The
+    # split-K route is safe either way: the partial kernel has consumed q
+    # before the reduce kernel writes, on the same stream.)
+    write_in_place = (
+        output.dtype == torch.bfloat16
+        and output.shape == q.shape
+        and output.stride(-1) == 1
+        and output.data_ptr() != q.data_ptr()
+    )
     attn_out = _rocm_sparse_attn_decode_triton(
         q=q,
         main_cache=swa_k_cache,
@@ -2429,5 +2607,7 @@ def rocm_sparse_attn_decode(
         main_ragged_indptr=swa_ragged_indptr,
         extra_ragged_indices=topk_ragged_indices,
         extra_ragged_indptr=topk_ragged_indptr,
+        out=output if write_in_place else None,
     )
-    output.copy_(attn_out.to(output.dtype))
+    if not write_in_place:
+        output.copy_(attn_out.to(output.dtype))

@@ -33,6 +33,7 @@ from vllm.v1.attention.backends.mla.sparse_swa import (
 )
 from vllm.v1.attention.ops.rocm_aiter_mla_sparse import (
     build_ragged_indices_from_dense,
+    lengths_to_indptr,
     rocm_inv_rope_einsum,
     rocm_sparse_attn_decode,
     rocm_sparse_attn_prefill,
@@ -41,10 +42,7 @@ from vllm.v1.worker.workspace import current_workspace_manager
 
 
 def _build_indptr_from_lengths(lengths: torch.Tensor) -> torch.Tensor:
-    lengths = lengths.to(dtype=torch.int32).contiguous()
-    indptr = torch.zeros(lengths.shape[0] + 1, dtype=torch.int32, device=lengths.device)
-    torch.cumsum(lengths, dim=0, out=indptr[1:])
-    return indptr
+    return lengths_to_indptr(lengths)
 
 
 # ROCm sparse prefill keeps this dense combine local so AMD-specific SWA changes
@@ -280,27 +278,30 @@ def compute_global_topk_ragged_indices_and_indptr(
     return global_topk_ragged, topk_indptr, topk_lens
 
 
-def _copy_ragged_to_graph_buffers(
-    ragged_indices: torch.Tensor,
-    ragged_indptr: torch.Tensor,
+def _build_ragged_into_graph_buffers(
+    dense_indices: torch.Tensor,
+    lengths: torch.Tensor,
     ragged_indices_buffer: torch.Tensor,
     ragged_indptr_buffer: torch.Tensor,
     num_rows: int,
     max_entries_per_row: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Copy dynamic ragged metadata into persistent CUDA graph buffers.
+    """Build ragged metadata straight into the persistent CUDA graph buffers.
 
-    FULL decode graphs capture kernel argument addresses. Keep the returned
-    tensors backed by stable storage, while indptr continues to bound reads.
+    FULL decode graphs capture kernel argument addresses, so the returned
+    tensors have to be backed by stable storage; indptr continues to bound
+    reads. Building in place gets that for free -- the previous form allocated
+    fresh tensors and copied them over, which cost two device-to-device
+    memcpy nodes per builder per step.
     """
     indptr_out = ragged_indptr_buffer[: num_rows + 1]
-    indptr_out.copy_(ragged_indptr, non_blocking=True)
-
-    max_entries = max(num_rows * max_entries_per_row, 1)
-    ragged_out = ragged_indices_buffer[:max_entries]
-    nnz = ragged_indices.numel()
-    if nnz > 0:
-        ragged_out[:nnz].copy_(ragged_indices, non_blocking=True)
+    ragged_out = ragged_indices_buffer[: max(num_rows * max_entries_per_row, 1)]
+    build_ragged_indices_from_dense(
+        dense_indices,
+        lengths,
+        indices_out=ragged_out,
+        indptr_out=indptr_out,
+    )
     return ragged_out, indptr_out
 
 
@@ -377,15 +378,11 @@ class DeepseekV4ROCMAiterMLASparseMetadataBuilder(DeepseekV4FlashMLAMetadataBuil
         dense_decode = base.c128a_global_decode_topk_indices
         decode_lens = base.c128a_decode_topk_lens
         if dense_decode is not None and decode_lens is not None:
-            ragged_indices, ragged_indptr = build_ragged_indices_from_dense(
-                dense_decode.reshape(dense_decode.shape[0], -1),
-                decode_lens,
-            )
             assert self.c128a_decode_topk_ragged_indices_buffer is not None
             assert self.c128a_decode_topk_ragged_indptr_buffer is not None
-            ragged_indices, ragged_indptr = _copy_ragged_to_graph_buffers(
-                ragged_indices,
-                ragged_indptr,
+            ragged_indices, ragged_indptr = _build_ragged_into_graph_buffers(
+                dense_decode.reshape(dense_decode.shape[0], -1),
+                decode_lens,
                 self.c128a_decode_topk_ragged_indices_buffer,
                 self.c128a_decode_topk_ragged_indptr_buffer,
                 dense_decode.shape[0],
@@ -444,13 +441,9 @@ class DeepseekV4ROCMAiterSparseSWAMetadataBuilder(DeepseekSparseSWAMetadataBuild
             and base.decode_swa_indices is not None
             and base.decode_swa_lens is not None
         ):
-            ragged_indices, ragged_indptr = build_ragged_indices_from_dense(
+            ragged_indices, ragged_indptr = _build_ragged_into_graph_buffers(
                 base.decode_swa_indices.reshape(base.num_decode_tokens, -1),
                 base.decode_swa_lens,
-            )
-            ragged_indices, ragged_indptr = _copy_ragged_to_graph_buffers(
-                ragged_indices,
-                ragged_indptr,
                 self.decode_swa_ragged_indices_buffer,
                 self.decode_swa_ragged_indptr_buffer,
                 base.num_decode_tokens,
