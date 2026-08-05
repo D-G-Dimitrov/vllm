@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 
+import vllm.envs as envs
 from vllm.compilation.breakable_cudagraph import (
     BreakableCUDAGraphWrapper,
     is_breakable_cudagraph_enabled,
@@ -385,10 +386,37 @@ class CudaGraphManager:
                     return desc
         return BatchExecutionDescriptor(
             cg_mode=CUDAGraphMode.NONE,
-            num_tokens=num_tokens,
+            num_tokens=self._bucket_pad_num_tokens(num_tokens),
             num_reqs=num_reqs,
             num_active_loras=effective_loras,
         )
+
+    # Small-batch ladder for bucket padding; above the last rung the bucket is
+    # the next multiple of _BUCKET_STEP.
+    _TOKEN_BUCKETS = (16, 32, 64, 128, 256)
+    _BUCKET_STEP = 256
+
+    def _bucket_pad_num_tokens(self, num_tokens: int) -> int:
+        """Round eager/piecewise batches up to a fixed token bucket.
+
+        GEMM tile configs (cuBLAS and quantized kernels alike) change with the
+        m dimension, so a request's rounding depends on the exact co-batched
+        token count, which swings every step under chunked prefill. Padding to
+        buckets quantizes m to a handful of values, removing most of that
+        batch-composition jitter. Padded rows reuse the existing cudagraph
+        padding machinery: PAD_SLOT_ID slot mappings (no KV writes) and
+        attention metadata covering only real requests.
+        """
+        if not envs.VLLM_TOKEN_BUCKET_PAD or num_tokens <= 0:
+            return num_tokens
+        cap = self.vllm_config.scheduler_config.max_num_batched_tokens
+        if num_tokens >= cap:
+            return num_tokens
+        for bucket in self._TOKEN_BUCKETS:
+            if num_tokens <= bucket:
+                return min(bucket, cap)
+        step = self._BUCKET_STEP
+        return min((num_tokens + step - 1) // step * step, cap)
 
     def run_fullgraph(self, desc: BatchExecutionDescriptor):
         """Replay a captured FULL cudagraph."""
