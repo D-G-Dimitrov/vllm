@@ -15,6 +15,7 @@ DSparkMarkovHead is shared with the DSV4-style DSpark model.
 """
 
 from collections.abc import Iterable
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn as nn
@@ -25,7 +26,13 @@ from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     ParallelLMHead,
+    UnquantizedEmbeddingMethod,
 )
+
+if TYPE_CHECKING:
+    from vllm.v1.worker.gpu.spec_decode.dspark.markov_argmax import (
+        MarkovFusionOperands,
+    )
 
 from .qwen3_dflash import DFlashQwen3ForCausalLM, DFlashQwen3Model
 from .utils import AutoWeightsLoader, maybe_prefix, process_eagle_weight
@@ -122,6 +129,48 @@ class DSparkMarkovHead(nn.Module):
             self.markov_w2, markov_embed, extra_logits=base_shard_logits
         )
 
+    def fusion_operands(
+        self, logits_processor: LogitsProcessor
+    ) -> "MarkovFusionOperands | None":
+        """Operands for the fused Markov step, or ``None`` to decline.
+
+        The fused kernel reimplements :meth:`select_top_tokens` end to end, so
+        it can only run where that path is exactly an unquantized GEMV plus an
+        add: no soft cap, no logit scale, no separate head dtype, no quantized
+        or non-row-major weight. Anything else falls back to the eager chain
+        rather than silently changing what the argmax sees.
+        """
+        from vllm.v1.worker.gpu.spec_decode.dspark.markov_argmax import (
+            MarkovFusionOperands,
+        )
+
+        w2 = self.markov_w2
+        w1 = self.markov_w1.weight
+        why: str | None = None
+        if logits_processor.soft_cap is not None:
+            why = "soft_cap is set"
+        elif logits_processor.scale != 1.0:
+            why = f"logit scale is {logits_processor.scale}"
+        elif logits_processor.head_dtype not in (None, w1.dtype):
+            why = f"head_dtype {logits_processor.head_dtype} != {w1.dtype}"
+        elif not isinstance(w2.quant_method, UnquantizedEmbeddingMethod):
+            why = f"markov_w2 uses {type(w2.quant_method).__name__}"
+        elif w1.dtype != w2.weight.dtype:
+            why = f"markov_w1 is {w1.dtype}, markov_w2 is {w2.weight.dtype}"
+        elif w1.stride(-1) != 1 or w2.weight.stride(-1) != 1:
+            why = "a Markov weight is not row-major"
+        if why is not None:
+            logger.info_once("DSpark: not fusing the Markov step (%s).", why)
+            return None
+        return MarkovFusionOperands(
+            w1=w1,
+            w2=w2.weight,
+            num_valid=w2.weight.shape[0] - w2.shard_indices.num_org_vocab_padding,
+            vocab_start=w2.shard_indices.org_vocab_start_index,
+            tp_size=w2.tp_size,
+            tp_rank=w2.tp_rank,
+        )
+
 
 class Qwen3DSparkModel(DFlashQwen3Model):
     """DFlash Qwen3 backbone + DSpark Markov head."""
@@ -213,6 +262,9 @@ class Qwen3DSparkForCausalLM(DFlashQwen3ForCausalLM):
 
     def markov_bias(self, markov_embed: torch.Tensor) -> torch.Tensor:
         return self.model.markov_head.bias(markov_embed, self.logits_processor)
+
+    def markov_fusion_operands(self) -> "MarkovFusionOperands | None":
+        return self.model.markov_head.fusion_operands(self.logits_processor)
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]):
         model_weights = {}

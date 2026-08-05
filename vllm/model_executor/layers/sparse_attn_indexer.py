@@ -9,7 +9,7 @@ from vllm import _custom_ops as ops
 from vllm._aiter_ops import rocm_aiter_ops
 from vllm.compilation.breakable_cudagraph import eager_break_during_capture
 from vllm.config import CUDAGraphMode, get_current_vllm_config
-from vllm.distributed import get_dcp_group, get_pcp_group
+from vllm.distributed import get_dcp_group, get_pcp_group, get_tp_group
 from vllm.forward_context import get_forward_context
 from vllm.logger import init_logger
 from vllm.model_executor.custom_op import CustomOp
@@ -547,6 +547,23 @@ def sparse_attn_indexer(
                 row_starts=chunk.cu_seqlen_ks,
             )
 
+            if chunk.shard_row_counts is not None:
+                # TP query-sharding: this rank filled only its own rows of the
+                # chunk. Reassemble the full chunk from every rank's rows.
+                # all_gatherv takes per-rank sizes, so the split need not be
+                # even and no padding row is ever created -- there is nothing
+                # written-but-unread that could carry a wrong index.
+                tp = get_tp_group()
+                gathered = tp.all_gatherv(
+                    topk_indices, dim=0, sizes=chunk.shard_row_counts
+                )
+                chunk_start = chunk.token_start - sum(
+                    chunk.shard_row_counts[:tp.rank_in_group]
+                )
+                topk_indices_buffer[
+                    chunk_start : chunk_start + gathered.shape[0], :topk_tokens
+                ] = gathered
+
     if has_decode:
         decode_metadata = attn_metadata_narrowed.decode
         assert decode_metadata is not None
@@ -632,9 +649,9 @@ def sparse_attn_indexer(
             )
         else:
             # SM80/SM121 Triton fallback. Downstream topk reads only up to
-            # `seq_lens`, so size the buffer to the active batch max rather
-            # than the configured model max.
-            active_max_model_len = attn_metadata_narrowed.max_seq_len
+            # `seq_lens`, so size the buffer in the same compressed indexer
+            # coordinate system.
+            active_max_model_len = decode_metadata.max_seq_len
             logits = fp8_paged_mqa_logits_triton(
                 padded_q_quant_cast,
                 kv_cache,

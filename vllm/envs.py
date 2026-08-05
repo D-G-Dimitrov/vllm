@@ -278,6 +278,14 @@ if TYPE_CHECKING:
     VLLM_DISABLE_SHARED_EXPERTS_STREAM: bool = False
     VLLM_DETERMINISTIC_MOE_ALIGN: bool = True
     VLLM_DISABLE_MULTI_STREAM_PARALLEL: bool = False
+    VLLM_MHC_POST_FUSE_SQRSUM: bool = False
+    VLLM_MHC_PRENORM_SHARD: bool = False
+    VLLM_UNREPLICATE_ATTN_GEMMS: bool = False
+    VLLM_INDEXER_QUERY_SHARD: bool = False
+    VLLM_INDEXER_QUERY_SHARD_QPATH: bool = False
+    VLLM_SPARSE_PREFILL_EXACT_TILE: bool = False
+    VLLM_SPARSE_RAGGED_FAST_SCAN: bool = False
+    VLLM_DSPARK_FUSED_MARKOV: bool = True
     VLLM_SHARED_EXPERTS_STREAM_TOKEN_THRESHOLD: int = 256
     VLLM_MULTI_STREAM_GEMM_TOKEN_THRESHOLD: int = 1024
     VLLM_COMPILE_CACHE_SAVE_FORMAT: Literal["binary", "unpacked"] = "binary"
@@ -1968,6 +1976,89 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # to run serially on the default stream (no aux-stream overlap).
     "VLLM_DISABLE_MULTI_STREAM_PARALLEL": lambda: bool(
         int(os.getenv("VLLM_DISABLE_MULTI_STREAM_PARALLEL", "0"))
+    ),
+    # Fold the mHC prenorm GEMM's companion row-sqrsum into mhc_post, which
+    # already holds those values in registers, instead of running it as a
+    # second pass over the post-mapped residual. Prefill-shaped only: it takes
+    # effect where the prenorm GEMM routes to cuBLAS (>= 32 tokens), and the
+    # pass it removes is a full num_tokens x hc_mult x hidden bf16 read.
+    "VLLM_MHC_POST_FUSE_SQRSUM": lambda: (
+        os.environ.get("VLLM_MHC_POST_FUSE_SQRSUM", "0") == "1"
+    ),
+    # Divide the mHC prenorm GEMM's rows across TP ranks and all-gather its
+    # output, instead of every rank computing every row. The residual stays
+    # replicated -- this splits the work, not the data, so no input collective
+    # is needed. It pays because the GEMM reduces 16384 -> 24: each rank reads
+    # 1/TP of a 256 MB residual and the gather carries only 0.68 MB. Only the
+    # cuBLAS route shards; below the token threshold the replicated path runs.
+    "VLLM_MHC_PRENORM_SHARD": lambda: (
+        os.environ.get("VLLM_MHC_PRENORM_SHARD", "0") == "1"
+    ),
+    # Split the two replicated attention input GEMMs (fused_wqa_wkv and the
+    # merged bf16 trio) over the token dim across TP ranks and all-gather the
+    # outputs, instead of every rank computing every row. Both are
+    # disable_tp=True because their consumers need full-width output on every
+    # rank -- MLA has one KV head shared by all 64 query heads, wq_b is
+    # ColumnParallel and takes the full q_lora, and the compressor/indexer are
+    # replicated. Sharding tokens rather than output features keeps the weights
+    # untouched and each output row computed by exactly one rank, so the result
+    # is bit-identical. Prefill only: the all-gather cannot be paid for at
+    # decode widths.
+    "VLLM_UNREPLICATE_ATTN_GEMMS": lambda: (
+        os.environ.get("VLLM_UNREPLICATE_ATTN_GEMMS", "0") == "1"
+    ),
+    # Split the Lightning Indexer's prefill query rows across TP ranks and
+    # all-gather the resulting top-k indices, instead of every rank computing
+    # every row. The indexer is replicated (index_n_heads is not TP-sharded),
+    # so today all ranks produce bit-identical indices and 7/8 of that is
+    # redundant. Each rank still computes its own rows with all heads over the
+    # full key range, so the gathered buffer is bit-identical to the replicated
+    # one. Falls back to replicated for DCP, PCP, tp=1, and prefills shorter
+    # than MIN_SHARD_TOKENS, where the collective is not repaid. A mixed
+    # prefill+decode batch still shards: the chunks cover only prefill rows.
+    "VLLM_INDEXER_QUERY_SHARD": lambda: (
+        os.environ.get("VLLM_INDEXER_QUERY_SHARD", "0") == "1"
+    ),
+    # Extend VLLM_INDEXER_QUERY_SHARD to the indexer's Q path: run the
+    # replicated wq_b GEMM and the fused RoPE/quant kernel over only the query
+    # rows this rank owns, instead of over every row and discarding 7/8. The
+    # outputs keep their full [num_tokens, ...] shape with the other ranks'
+    # rows left unwritten, so no downstream index changes meaning and no new
+    # collective is added -- the top-k all-gather already reassembles the
+    # result. Requires VLLM_INDEXER_QUERY_SHARD to have sharded the batch
+    # (checked per batch from the chunk metadata); additionally declines
+    # batches containing decode requests and the FP4 indexer cache. Held
+    # behind its own flag because, unlike the top-k sharding, it changes the
+    # GEMM's M and so is not bit-identical to the replicated path by
+    # construction.
+    "VLLM_INDEXER_QUERY_SHARD_QPATH": lambda: (
+        os.environ.get("VLLM_INDEXER_QUERY_SHARD_QPATH", "0") == "1"
+    ),
+    # Fuse each DSpark Markov draft step (embedding lookup, transition GEMV,
+    # base-logit add, padding mask, shard argmax) into one Triton pass, so the
+    # [batch, shard_width] logit row is reduced where it is produced instead of
+    # making three round trips through HBM. Selection semantics are unchanged.
+    # Set to 0 to fall back to the eager op chain.
+    "VLLM_DSPARK_FUSED_MARKOV": lambda: (
+        os.environ.get("VLLM_DSPARK_FUSED_MARKOV", "1") == "1"
+    ),
+    # Compile a mask-free specialization of the sparse-prefill attention kernel
+    # for the case where its tile covers the data exactly (num_heads == BLOCK_H
+    # and head_dim == BLOCK_D, both true at TP=8 on DSv4). The masks are all-true
+    # there and cost predication on the kernel's hottest loads and selects.
+    # Output is bit-identical; ranks that do not meet the condition keep the
+    # masked path.
+    "VLLM_SPARSE_PREFILL_EXACT_TILE": lambda: (
+        os.environ.get("VLLM_SPARSE_PREFILL_EXACT_TILE", "0") == "1"
+    ),
+    # Let the sparse-attention ragged-prep scan keep an 8192-row prefill on its
+    # one-block Triton path instead of the torch fallback. The fallback opens
+    # with `indptr[0] = 0` -- a synchronous pageable H2D that stalls the host --
+    # and the old one-block cap was 8191, exactly one row short of the shape an
+    # 8K prefill produces, so every layer took it. Output is bit-identical
+    # (integer prefix sums); this only changes which path computes it.
+    "VLLM_SPARSE_RAGGED_FAST_SCAN": lambda: (
+        os.environ.get("VLLM_SPARSE_RAGGED_FAST_SCAN", "0") == "1"
     ),
     # Limits when we run shared_experts in a separate stream.
     # We found out that for large batch sizes, the separate stream

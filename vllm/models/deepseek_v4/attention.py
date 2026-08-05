@@ -43,7 +43,11 @@ from vllm.config import (
     VllmConfig,
     get_current_vllm_config,
 )
-from vllm.distributed import get_tensor_model_parallel_world_size
+from vllm.distributed import (
+    get_tensor_model_parallel_rank,
+    get_tensor_model_parallel_world_size,
+    get_tp_group,
+)
 from vllm.forward_context import get_forward_context
 from vllm.logger import init_logger
 from vllm.model_executor.layers.attention_layer_base import AttentionLayerBase
@@ -62,6 +66,7 @@ from vllm.v1.attention.backend import AttentionBackend, AttentionMetadata
 from vllm.v1.attention.backends.mla.indexer import (
     DeepseekV4IndexerBackend,
     get_max_prefill_buffer_size,
+    indexer_q_row_ranges,
 )
 from vllm.v1.attention.backends.mla.sparse_swa import DeepseekV4SWACache
 from vllm.v1.kv_cache_interface import (
@@ -71,6 +76,12 @@ from vllm.v1.kv_cache_interface import (
 )
 
 logger = init_logger(__name__)
+
+# Below this many tokens, token-sharding the replicated input GEMMs cannot pay
+# for the all-gather it adds: at TP=8 the merged trio's collective costs ~270 us
+# against a GEMM that only reaches that size well into prefill. Decode widths
+# (M<=8 under DSpark) are orders of magnitude below it.
+_UNREPLICATE_MIN_TOKENS = 1024
 
 
 @triton.jit
@@ -455,8 +466,54 @@ class DeepseekV4Attention(nn.Module, AttentionLayerBase, ABC):
         # Inverse-RoPE + wo_a + wo_b output projection (platform-specific).
         return self._o_proj(o, positions)
 
+    @staticmethod
+    def _shard_rows(n_tokens: int) -> list[int]:
+        """Per-rank row counts: `base + (r < rem)`, the campaign convention.
+
+        The same split the indexer query-shard and the mHC prenorm shard use
+        (`_prenorm_shard_rows`, mhc/triton.py). Sharing one partition is what
+        lets these features compose; an even-with-padding split agrees with
+        this one only when `n % tp == 0`, which is the trap recorded as
+        refutations rule 19. Balanced within one row, so no rank straggles,
+        and exact, so `all_gatherv` reassembles any token count with no
+        padding row that could be written but not read.
+        """
+        tp = get_tensor_model_parallel_world_size()
+        base, rem = divmod(n_tokens, tp)
+        return [base + (r < rem) for r in range(tp)]
+
+    @classmethod
+    def _shard_tokens(
+        cls, x: torch.Tensor
+    ) -> tuple[torch.Tensor, list[int]]:
+        """This rank's slice of the token dim, plus the split it came from."""
+        rows = cls._shard_rows(x.shape[0])
+        start = sum(rows[: get_tensor_model_parallel_rank()])
+        return x[start : start + rows[get_tensor_model_parallel_rank()]], rows
+
+    @staticmethod
+    def _gather_tokens(y: torch.Tensor, rows: list[int]) -> torch.Tensor:
+        """Undo `_shard_tokens`: reassemble the exact rows each rank owned."""
+        return get_tp_group().all_gatherv(y, dim=0, sizes=rows)
+
+    def _unreplicate_tokens(self, n_tokens: int) -> bool:
+        """Whether to token-shard the replicated input GEMMs for this batch.
+
+        Both GEMMs are replicated because their consumers need full-width
+        output on every rank (see the flag's note in envs.py), so sharding
+        costs an all-gather. That only pays at prefill widths: at decode the
+        GEMM is far smaller than the collective's fixed cost, and below one
+        row per rank there is nothing to split.
+        """
+        return (
+            envs.VLLM_UNREPLICATE_ATTN_GEMMS
+            and n_tokens >= _UNREPLICATE_MIN_TOKENS
+            and get_tensor_model_parallel_world_size() > 1
+        )
+
     def _fused_wqa_wkv_gemm(self, hidden_states: torch.Tensor) -> torch.Tensor:
         # MergedColumnParallelLinear returns (output, bias); bias is None.
+        # Token-sharded callers pass their own slice and gather themselves.
         qr_kv, _ = self.fused_wqa_wkv(hidden_states)
         return qr_kv
 
@@ -479,18 +536,31 @@ class DeepseekV4Attention(nn.Module, AttentionLayerBase, ABC):
             merged_w = self.fused_input_weight
             splits = self.fused_input_splits
 
-            def merged_input_gemm() -> list[torch.Tensor]:
+            n_tokens = hidden_states.shape[0]
+            sharded = self._unreplicate_tokens(n_tokens)
+            # Each GEMM gathers its own output. Batching the two gathers by
+            # concatenating them was measured and REJECTED: +6.43 ms TTFT at
+            # 9.9 sigma. torch.cat over uint8 views materializes a ~106 MiB
+            # buffer per layer and the post-gather split needs two more
+            # copies, so it trades one 161 us NCCL launch for four full-size
+            # HBM passes. A copy-free variant (one ncclGroupStart/End around
+            # both all_gatherv calls) is the only version worth retrying.
+            gemm_in, rows = (
+                self._shard_tokens(hidden_states) if sharded
+                else (hidden_states, [])
+            )
+
+            def merged_input_gemm() -> torch.Tensor:
                 # cuBLAS at every M. The M<=8 Triton GEMV that serves the bare
                 # weights_proj is a CTA-per-output-row kernel, so at this width
                 # it re-reads x 2624 times: measured 17.5 us at M=1 (better
                 # than cuBLAS's 20.2) but 59-60 us at M=6/8 against cuBLAS's
                 # 21.0. Not worth a second shape-specific gate.
-                out = torch.mm(hidden_states, merged_w.T, out_dtype=torch.float32)
-                return list(out.split(splits, dim=-1))
+                return torch.mm(gemm_in, merged_w.T, out_dtype=torch.float32)
 
             aux_fns[0] = merged_input_gemm
             qr_kv, (merged_out, _, _) = execute_in_parallel(
-                lambda: self._fused_wqa_wkv_gemm(hidden_states),
+                lambda: self._fused_wqa_wkv_gemm(gemm_in),
                 aux_fns,
                 self.ln_events[0],
                 self.ln_events[1:4],
@@ -498,7 +568,12 @@ class DeepseekV4Attention(nn.Module, AttentionLayerBase, ABC):
                 enable=hidden_states.shape[0]
                 <= envs.VLLM_MULTI_STREAM_GEMM_TOKEN_THRESHOLD,
             )
-            kv_score, indexer_kv_score, indexer_weights = merged_out
+            if sharded:
+                qr_kv = self._gather_tokens(qr_kv, rows)
+                merged_out = self._gather_tokens(merged_out, rows)
+            kv_score, indexer_kv_score, indexer_weights = merged_out.split(
+                splits, dim=-1
+            )
             # weights_proj used to round through bf16 here; the merged GEMM
             # accumulates in fp32 and the consumer casts to fp32 anyway
             # (fused_indexer_q.py:169), so this is the more precise of the two.
@@ -837,7 +912,7 @@ class DeepseekV4Indexer(nn.Module):
         self.n_head = config.index_n_heads  # 64
         self.head_dim = config.index_head_dim  # 128
         self.rope_dim = config.qk_rope_head_dim  # 64
-        self.q_lora_rank = q_lora_rank  # 1536
+        self.q_lora_rank = q_lora_rank  # 1024
         self.compress_ratio = compress_ratio
         self.eager_scratch_pool = eager_scratch_pool
         self.use_fp4_kv = self.vllm_config.attention_config.use_fp4_indexer_cache
@@ -920,12 +995,101 @@ class DeepseekV4Indexer(nn.Module):
             num_heads=self.n_head,
         )
 
+        # Stage 2b of VLLM_INDEXER_QUERY_SHARD. Read once, as the builder does
+        # for the parent flag. The FP4 path is excluded because its
+        # fused_indexer_q_rope_quant contract returns a re-viewed scale tensor,
+        # which full-size output buffers would have to reproduce outside the op;
+        # it also requires SM100 datacenter hardware.
+        self.shard_q_path = envs.VLLM_INDEXER_QUERY_SHARD_QPATH and not self.use_fp4_kv
+
         # None on ROCm — maybe_execute_in_parallel falls back to sequential.
         self.aux_stream = aux_stream
         self.ln_events: list[torch.cuda.Event] = [
             torch.cuda.Event(),
             torch.cuda.Event(),
         ]
+
+    def _sharded_q_row_ranges(
+        self,
+        attn_metadata: Any,
+        num_tokens: int,
+    ) -> list[tuple[int, int]] | None:
+        """Query rows this rank's Q path must compute, or None for all of them.
+
+        Completes VLLM_INDEXER_QUERY_SHARD: that flag already gives each rank a
+        contiguous slice of the query rows to score, but every rank still runs
+        the replicated `wq_b` GEMM and the fused RoPE/quant kernel over *all*
+        rows and reads back one eighth. The ranges come from the chunk metadata
+        the same flag produced, so they are exactly the rows the indexer will
+        read -- there is no second partition that could disagree with it.
+        """
+        if not self.shard_q_path or not isinstance(attn_metadata, dict):
+            return None
+        indexer_metadata = cast(Any, attn_metadata[self.k_cache.prefix])
+        prefill = indexer_metadata.prefill
+        if prefill is None:
+            return None
+        ranges = indexer_q_row_ranges(
+            prefill.chunks, indexer_metadata.num_decodes, num_tokens
+        )
+        # Log both outcomes: a null A/B arm is otherwise indistinguishable from
+        # a flag that never engaged. Both messages take a bounded set of
+        # arguments, since `info_once` dedupes on them.
+        if ranges is None:
+            logger.info_once(
+                "Indexer Q-path sharding INACTIVE (%s): running the replicated "
+                "wq_b over every query row.",
+                "batch contains decode requests"
+                if indexer_metadata.num_decodes > 0
+                else "VLLM_INDEXER_QUERY_SHARD did not shard this batch",
+            )
+        else:
+            logger.info_once(
+                "Indexer Q-path sharding ENGAGED: wq_b and the fused "
+                "RoPE/quant kernel run over this rank's query rows only."
+            )
+        return ranges
+
+    def _wq_b_and_q_quant_rows(
+        self,
+        row_ranges: list[tuple[int, int]],
+        qr: torch.Tensor,
+        positions: torch.Tensor,
+        indexer_weights: torch.Tensor,
+        rotary_emb: nn.Module,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """`wq_b` + fused RoPE/quant over `row_ranges` only.
+
+        The outputs keep their full `[num_tokens, ...]` shape and the rows
+        outside `row_ranges` are never written: `sparse_attn_indexer` indexes
+        them globally (`q_quant[chunk.token_start : chunk.token_end]`), so
+        compacting the tensors would mean re-deriving those offsets in a second
+        place. Rows this rank does not own are never read -- `row_ranges` is
+        built from the very chunk bounds that do the reading.
+        """
+        q_quant = torch.empty(
+            (qr.shape[0], self.n_head, self.head_dim),
+            dtype=current_platform.fp8_dtype(),
+            device=qr.device,
+        )
+        weights = torch.empty(
+            (qr.shape[0], self.n_head), dtype=torch.float32, device=qr.device
+        )
+        for lo, hi in row_ranges:
+            # ReplicatedLinear returns (output, bias); bias is None.
+            q, _ = self.wq_b(qr[lo:hi])
+            q = q.view(-1, self.n_head, self.head_dim)
+            fused_indexer_q_rope_quant(
+                positions[lo:hi],
+                q,
+                rotary_emb.cos_sin_cache,
+                indexer_weights[lo:hi],
+                self.softmax_scale,
+                self.n_head**-0.5,
+                use_fp4=False,
+                output_buffers=(q_quant[lo:hi], weights[lo:hi]),
+            )
+        return q_quant, weights
 
     def forward(
         self,
@@ -961,7 +1125,13 @@ class DeepseekV4Indexer(nn.Module):
                     )
                 return self.topk_indices_buffer
 
+        q_row_ranges = self._sharded_q_row_ranges(attn_metadata, qr.shape[0])
+
         def wq_b_and_q_quant():
+            if q_row_ranges is not None:
+                return self._wq_b_and_q_quant_rows(
+                    q_row_ranges, qr, positions, indexer_weights, rotary_emb
+                )
             # ReplicatedLinear returns (output, bias); bias is None.
             q, _ = self.wq_b(qr)
             q = q.view(-1, self.n_head, self.head_dim)
