@@ -285,6 +285,8 @@ if TYPE_CHECKING:
     VLLM_INDEXER_QUERY_SHARD_QPATH: bool = False
     VLLM_SPARSE_PREFILL_EXACT_TILE: bool = False
     VLLM_SPARSE_RAGGED_FAST_SCAN: bool = False
+    VLLM_DSV4_FIXED_DECODE_SPLITS: int = 8
+    VLLM_MHC_FIXED_NUM_SPLIT: int = 0
     VLLM_DSPARK_FUSED_MARKOV: bool = True
     VLLM_SHARED_EXPERTS_STREAM_TOKEN_THRESHOLD: int = 256
     VLLM_MULTI_STREAM_GEMM_TOKEN_THRESHOLD: int = 1024
@@ -2041,6 +2043,23 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Set to 0 to fall back to the eager op chain.
     "VLLM_DSPARK_FUSED_MARKOV": lambda: (
         os.environ.get("VLLM_DSPARK_FUSED_MARKOV", "1") == "1"
+    ),
+    # Fix the DSv4 sparse-decode flash-decode split count to this value instead
+    # of the batch-adaptive heuristic. The heuristic picks splits from the
+    # total query count and batch-average KV lengths, so a request's reduction
+    # order (and hence bf16 rounding) depends on what else is in the batch;
+    # pinning the split count makes decode attention batch-invariant. Default 8
+    # (measured perf-neutral on A6000 TP4); set 0 to restore the adaptive
+    # heuristic.
+    "VLLM_DSV4_FIXED_DECODE_SPLITS": lambda: int(
+        os.environ.get("VLLM_DSV4_FIXED_DECODE_SPLITS", "8")
+    ),
+    # Pin the mHC TileLang GEMM split-k factor. The default heuristic derives
+    # it from SM count / batch grid size, so every token's reduction order
+    # changes with batch composition (splits swing ~2-64 between decode-only
+    # and mixed prefill batches). 0 keeps the adaptive heuristic.
+    "VLLM_MHC_FIXED_NUM_SPLIT": lambda: int(
+        os.environ.get("VLLM_MHC_FIXED_NUM_SPLIT", "0")
     ),
     # Compile a mask-free specialization of the sparse-prefill attention kernel
     # for the case where its tile covers the data exactly (num_heads == BLOCK_H
