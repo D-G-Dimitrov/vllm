@@ -515,6 +515,40 @@ def sparse_attn_indexer(
                         cu_seqlen_ke,
                         clean_logits=False,
                     )
+                elif (
+                    envs.VLLM_DSV4_LOGITS_ROW_CHUNK > 0 and dcp_world_size <= 1
+                ):
+                    # SM80/SM121 Triton fallback, row-chunked (from
+                    # allover326's long-context fix in #50576): the monolithic
+                    # [M, N] fp32 logits transient grows linearly with context
+                    # and starves the KV pool / faults beyond ~134k tokens.
+                    # Rows are independent (per-row logits + per-row top-k),
+                    # so process them in fixed-size row blocks and drop each
+                    # block's logits immediately.
+                    row_step = envs.VLLM_DSV4_LOGITS_ROW_CHUNK
+                    num_rows = q_slice_cast.shape[0]
+                    for r0 in range(0, num_rows, row_step):
+                        r1 = min(r0 + row_step, num_rows)
+                        logits = fp8_mqa_logits_triton(
+                            q_slice_cast[r0:r1],
+                            (k_quant_cast, k_scale_cast),
+                            weights[chunk.token_start + r0 : chunk.token_start + r1],
+                            cu_seqlen_ks[r0:r1],
+                            cu_seqlen_ke[r0:r1],
+                            clean_logits=False,
+                        )
+                        ops.top_k_per_row_prefill(
+                            logits,
+                            cu_seqlen_ks[r0:r1],
+                            cu_seqlen_ke[r0:r1],
+                            topk_indices[r0:r1],
+                            r1 - r0,
+                            logits.stride(0),
+                            logits.stride(1),
+                            topk_tokens,
+                        )
+                        del logits
+                    logits = q_slice_cast.new_empty((0, 0), dtype=torch.float32)
                 else:
                     # SM80/SM121 Triton fallback (DeepGEMM unavailable).
                     logits = fp8_mqa_logits_triton(
@@ -525,17 +559,18 @@ def sparse_attn_indexer(
                         cu_seqlen_ke,
                         clean_logits=False,
                     )
-                num_rows = logits.shape[0]
-                ops.top_k_per_row_prefill(
-                    logits,
-                    cu_seqlen_ks,
-                    cu_seqlen_ke,
-                    topk_indices,
-                    num_rows,
-                    logits.stride(0),
-                    logits.stride(1),
-                    topk_tokens,
-                )
+                if logits.shape[0] > 0:
+                    num_rows = logits.shape[0]
+                    ops.top_k_per_row_prefill(
+                        logits,
+                        cu_seqlen_ks,
+                        cu_seqlen_ke,
+                        topk_indices,
+                        num_rows,
+                        logits.stride(0),
+                        logits.stride(1),
+                        topk_tokens,
+                    )
 
             _merge_dcp_topk_global(
                 logits,
