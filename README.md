@@ -74,6 +74,7 @@ Tips:
 
 - Adjust your TP (--tensor-parallel-size) and PP (--pipeline-parallel-size) accordingly.
 - head dtype override helps reduce garbage outputs.
+- DSpark is not working very well if you have PP>1.
 
 ## Environment Variables (Warning: Huge AI generated contents!)
 
