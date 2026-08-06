@@ -286,6 +286,7 @@ if TYPE_CHECKING:
     VLLM_SPARSE_PREFILL_EXACT_TILE: bool = False
     VLLM_SPARSE_RAGGED_FAST_SCAN: bool = False
     VLLM_DSV4_FIXED_DECODE_SPLITS: int = 16
+    VLLM_DSV4_LOGITS_ROW_CHUNK: int = 128
     VLLM_MHC_FIXED_NUM_SPLIT: int = 0
     VLLM_TOKEN_BUCKET_PAD: bool = True
     VLLM_DSPARK_FUSED_MARKOV: bool = True
@@ -2057,6 +2058,19 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # the adaptive heuristic.
     "VLLM_DSV4_FIXED_DECODE_SPLITS": lambda: int(
         os.environ.get("VLLM_DSV4_FIXED_DECODE_SPLITS", "16")
+    ),
+    # Row-chunk the SM80/SM86 sparse-indexer prefill logits (allover326's
+    # long-context fix from #50576): compute the [M, N] fp32 logits transient
+    # in blocks of this many query rows instead of monolithically, bounding
+    # peak memory at long context (N grows with seq_len / compress_ratio).
+    # 0 restores the monolithic allocation. The unprefixed
+    # DSV4_LOGITS_ROW_CHUNK spelling from the original patch is honored as a
+    # fallback.
+    "VLLM_DSV4_LOGITS_ROW_CHUNK": lambda: int(
+        os.environ.get(
+            "VLLM_DSV4_LOGITS_ROW_CHUNK",
+            os.environ.get("DSV4_LOGITS_ROW_CHUNK", "128"),
+        )
     ),
     # Pin the mHC TileLang GEMM split-k factor. The default heuristic derives
     # it from SM count / batch grid size, so every token's reduction order
