@@ -87,6 +87,7 @@ All knobs this fork has added over stock vLLM. Defaults are what the images ship
 | `VLLM_DSV4_FIXED_DECODE_SPLITS` | `16` | Pin the sparse-decode attention split-k so a request's numerics don't depend on what else is co-batched. `0` restores the batch-adaptive heuristic. |
 | `VLLM_TOKEN_BUCKET_PAD` | `1` | Pad batches to fixed token buckets (16/32/64/128/256, then ×256) so GEMM tiling stops shifting with exact batch size. `0` disables. |
 | `VLLM_DSPARK_FUSED_MARKOV` | `1` | Fused DSpark Markov draft-sampling chain. `0` falls back to the eager op chain. |
+| `VLLM_DSV4_LOGITS_ROW_CHUNK` | `128` | Row-chunk the sparse-indexer prefill logits so the `[chunk_rows, context/4]` fp32 transient stays bounded at long context (fixes crashes beyond ~134k tokens; needed for 256k+). `0` restores the monolithic allocation; the unprefixed `DSV4_LOGITS_ROW_CHUNK` spelling also works. |
 
 ### Opt-in performance knobs (default `0` — measure on your topology first)
 
