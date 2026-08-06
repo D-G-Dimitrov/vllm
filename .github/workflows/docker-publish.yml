@@ -48,6 +48,9 @@ jobs:
           - arch: "8.0"
             suffix: sm80
             tags: lazymio/vllm-backport:latest-sm80
+          - arch: "8.9"
+            suffix: sm89
+            tags: lazymio/vllm-backport:latest-sm89
     steps:
       - name: Free disk space
         run: |

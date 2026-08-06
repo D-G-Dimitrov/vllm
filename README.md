@@ -12,11 +12,14 @@ Prebuilt images are published to Docker Hub on every push:
 | --- | --- |
 | `lazymio/vllm-backport:latest-sm86` (also `:latest`) | Ampere sm86 (A6000, RTX 30xx) |
 | `lazymio/vllm-backport:latest-sm80` | Ampere sm80 (A100) |
-| `lazymio/vllm-backport:v0.1.1-sm86` / `:v0.1.1-sm80` | pinned release builds |
+| `lazymio/vllm-backport:latest-sm89` | Ada sm89 (RTX 4090, L40S) |
+| `lazymio/vllm-backport:v0.2.0-sm86` / `-sm80` / `-sm89` | pinned release builds |
 
 Images are single-arch builds (no FA3/Hopper kernels), so pick the tag matching your GPU. The entrypoint is `vllm serve`.
 
-`:latest*` tags track the main branch; each release also ships versioned tags like `:v0.1.0-sm86` / `:v0.1.0-sm80` if you want to pin.
+On sm89, set `VLLM_TEST_FORCE_FP8_MARLIN=1` in the container environment.
+
+`:latest*` tags track the main branch; each release also ships versioned tags like `:v0.2.0-sm86` if you want to pin.
 
 ### Docker Compose
 
