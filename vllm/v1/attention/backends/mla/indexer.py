@@ -155,6 +155,64 @@ def indexer_shard_size_for_batch(num_prefill_tokens: int, shard_size: int) -> in
     return shard_size if num_prefill_tokens >= MIN_SHARD_TOKENS else 1
 
 
+def indexer_shard_is_eligible(tp_size: int, dcp_world_size: int, use_pcp: bool) -> bool:
+    """Whether this parallel config admits the indexer query shard at all.
+
+    Both halves (prefill rows, decode query groups) read this one predicate, so
+    neither can shard over a partition the other declines.
+    """
+    return tp_size > 1 and dcp_world_size == 1 and not use_pcp
+
+
+def indexer_decode_shard_rows(
+    bounds: tuple[int, int] | None, batch_size: int, next_n: int
+) -> tuple[int, int]:
+    """Batch-absolute top-k row range for this rank's decode query groups.
+
+    ``topk_indices_buffer`` is indexed by batch token, so query group ``g``
+    owns rows ``[g * next_n, (g + 1) * next_n)`` and this rank writes there
+    directly. Group-relative offsets are correct on rank 0 and silently
+    misplace every later rank's indices -- the failure that cost a gsm8k point
+    on the prefill half (canon rule 36).
+    """
+    lo, hi = bounds or (0, batch_size)
+    return lo * next_n, hi * next_n
+
+
+def indexer_decode_shard_bounds(
+    batch_size: int,
+    num_decodes: int,
+    shard_rank: int,
+    shard_size: int,
+    min_reqs: int,
+) -> tuple[int, int] | None:
+    """This rank's contiguous half-open slice of the decode query groups.
+
+    ``batch_size`` is the leading dimension the decode indexer kernels take:
+    one entry per request on the native path (each carrying ``next_n`` token
+    rows) and one per token on the flattening path, which is what SM80 runs at
+    ``next_n = 6``. Either way the entries are the kernel's independent query
+    groups and each owns a contiguous block of top-k rows, so partitioning this
+    dimension keeps every kernel call on a contiguous row range.
+
+    None means "compute every group" -- the replicated path -- and is returned
+    when the shard is off (``shard_size == 1``, i.e. tp=1/DCP/PCP/flag off),
+    when the batch has fewer than ``min_reqs`` decode requests, or when there
+    are fewer groups than ranks. The last case is what keeps every rank in the
+    reduction: a rank owning no group would still have to enter the collective,
+    and would launch the decode kernels over an empty row range to get there.
+
+    Every input is replicated batch metadata, so the answer is rank-uniform by
+    construction -- a rank-dependent one would desynchronise the per-layer
+    collective, which hangs rather than misbehaves.
+    """
+    if shard_size <= 1 or min_reqs <= 0:
+        return None
+    if num_decodes < min_reqs or batch_size < shard_size:
+        return None
+    return balanced_row_bounds(0, batch_size, shard_rank, shard_size)
+
+
 def indexer_q_row_ranges(
     chunks: "list[DeepseekV32IndexerPrefillChunkMetadata]",
     num_decodes: int,
@@ -546,6 +604,10 @@ class DeepSeekV32IndexerDecodeMetadata:
     requires_padding: bool
     schedule_metadata: torch.Tensor
     global_seq_lens: torch.Tensor | None = None
+    # Query groups this rank owns (indexer_decode_shard_bounds), or None for
+    # all of them. Derived here so the consumer never re-partitions, and so
+    # `schedule_metadata` below is built from the same slice it describes.
+    shard_bounds: tuple[int, int] | None = None
 
 
 @dataclass
@@ -608,19 +670,29 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
         # reproduces the replicated path exactly.
         self.indexer_shard_size = 1
         self.indexer_shard_rank = 0
+        # Decode half of the same shard. Zero unless the family is eligible, so
+        # the two flags cannot select a decode shard over an ineligible
+        # partition (rule 26: the coupling is unrepresentable, not documented).
+        self.decode_shard_min_reqs = 0
         if envs.VLLM_INDEXER_QUERY_SHARD:
             tp = get_tp_group()
             # Log both outcomes. A silent fallback is indistinguishable from
             # "the flag did nothing" once an A/B comes back null, so say which
             # one happened and why.
-            if tp.world_size > 1 and self.dcp_world_size == 1 and not self.use_pcp:
+            if indexer_shard_is_eligible(
+                tp.world_size, self.dcp_world_size, self.use_pcp
+            ):
                 self.indexer_shard_size = tp.world_size
                 self.indexer_shard_rank = tp.rank_in_group
+                self.decode_shard_min_reqs = envs.VLLM_INDEXER_DECODE_SHARD_MIN_REQS
                 logger.info_once(
                     "Indexer query-sharding ENABLED: prefill rows split across "
-                    "%d TP ranks (>= %d tokens); top-k all-gathered per chunk.",
+                    "%d TP ranks (>= %d tokens); top-k all-gathered per chunk. "
+                    "Decode query groups split at >= %s decode requests "
+                    "(0 = decode half disabled); top-k all-reduced per layer.",
                     self.indexer_shard_size,
                     MIN_SHARD_TOKENS,
+                    self.decode_shard_min_reqs,
                 )
             else:
                 logger.warning_once(
@@ -1033,6 +1105,18 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
                 )
                 # Skip when total_seq_lens is 0 (i.e., no compressed token).
                 if metadata is not None:
+                    # Counts travel with the slice they describe, so the
+                    # collective cannot disagree with the partition.
+                    metadata.shard_row_counts = spec.shard_row_counts
+                    if spec.gather_start is not None:
+                        # spec coordinates are request-group-relative; the
+                        # buffer write needs batch tokens. token_start is this
+                        # rank's slice start in batch tokens, so subtracting
+                        # the rank's offset within the chunk recovers the
+                        # chunk's absolute first row.
+                        metadata.gather_token_start = metadata.token_start - (
+                            spec.query_slice.start - spec.gather_start
+                        )
                     chunks.append(metadata)
             if shard_size > 1:
                 # Sizes come from the same function that cut the slices, so the
@@ -1097,6 +1181,17 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
                 )
             )
 
+            # Decode half of the indexer query shard. `batch_size` is the
+            # kernels' query-group dimension, so the partition is over exactly
+            # what the decode branch will slice.
+            decode_shard_bounds = indexer_decode_shard_bounds(
+                batch_size,
+                num_decodes,
+                self.indexer_shard_rank,
+                self.indexer_shard_size,
+                self.decode_shard_min_reqs,
+            )
+
             seq_lens_is_buffer_view = (use_native and next_n > 1) or (
                 not use_native and max_decode_len > 1
             )
@@ -1128,10 +1223,14 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
             if seq_lens.dim() == 1:
                 seq_lens = seq_lens.unsqueeze(-1)
 
-            # DeepGEMM is required for the paged MQA logits on CUDA devices
+            # DeepGEMM is required for the paged MQA logits on CUDA devices.
+            # Schedule the sharded rows, not the batch: this is the work
+            # decomposition for the very call the shard narrows.
             if current_platform.is_cuda() and is_deep_gemm_supported():
                 self.scheduler_metadata_buffer[:] = get_paged_mqa_logits_metadata(
-                    seq_lens,
+                    seq_lens
+                    if decode_shard_bounds is None
+                    else seq_lens[decode_shard_bounds[0] : decode_shard_bounds[1]],
                     self.kv_cache_spec.storage_block_size,
                     self.num_sms,
                 )
@@ -1144,6 +1243,7 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
                 requires_padding=requires_padding,
                 schedule_metadata=self.scheduler_metadata_buffer,
                 global_seq_lens=global_seq_lens_for_decode,
+                shard_bounds=decode_shard_bounds,
             )
 
         attn_metadata = DeepseekV32IndexerMetadata(

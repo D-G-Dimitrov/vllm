@@ -208,6 +208,30 @@ class DeepseekV4Attention(nn.Module, AttentionLayerBase, ABC):
         layer_id = extract_layer_index(prefix)
 
         self.prefix = prefix  # Alias for compatibility with compressor
+        # Read once: these gate per-forward branches in every layer.
+        self._unreplicate_gemms = envs.VLLM_UNREPLICATE_ATTN_GEMMS and tp_size > 1
+        self._multi_stream_threshold = envs.VLLM_MULTI_STREAM_GEMM_TOKEN_THRESHOLD
+        self._unreplicate_all_layers = envs.VLLM_UNREPLICATE_ATTN_GEMMS_ALL_LAYERS
+        if self._unreplicate_gemms:
+            # Rule 49: report the population the shard actually reaches, not
+            # just that the flag is on. Only the ratio-4 layers carry the
+            # merged input trio; every layer carries fused_wqa_wkv.
+            n_layers = config.num_hidden_layers
+            n_trio = sum(
+                1 for r in config.compress_ratios[:n_layers] if max(1, r) == 4
+            )
+            reached = n_layers if self._unreplicate_all_layers else n_trio
+            logger.info_once(
+                "VLLM_UNREPLICATE_ATTN_GEMMS: token-sharding fused_wqa_wkv on "
+                "%d/%d attention layers at >=%d tokens, TP=%d "
+                "(%d carry the merged input trio and shard it too, %d do not).",
+                reached,
+                n_layers,
+                _UNREPLICATE_MIN_TOKENS,
+                tp_size,
+                n_trio,
+                n_layers - n_trio,
+            )
         self.hidden_size = config.hidden_size
         self.n_heads = config.num_attention_heads
         assert self.n_heads % tp_size == 0
@@ -529,26 +553,28 @@ class DeepseekV4Attention(nn.Module, AttentionLayerBase, ABC):
         # On ROCm, aux_streams is None and execute_in_parallel runs serially.
         aux_fns: list[Callable[[], Any] | None] = [None, None, None]
 
+        # fused_wqa_wkv is replicated on every rank in BOTH branches below, so
+        # the token-shard applies to both; the merged input trio only decides
+        # what else rides on the same sliced x. Gating the shard on the trio
+        # left the 22 layers without an indexer running it at full M on all 8
+        # ranks (rule 49).
+        sharded = self._unreplicate_tokens(hidden_states.shape[0]) and (
+            self.fused_input_weight is not None or self._unreplicate_all_layers
+        )
+        # Each GEMM gathers its own output; do NOT batch the gathers by
+        # concatenating (measured regression -- see the refutations doc).
+        # A copy-free variant (one ncclGroupStart/End around both
+        # all_gatherv calls) is the only merge worth retrying.
+        gemm_in, rows = (
+            self._shard_tokens(hidden_states) if sharded else (hidden_states, [])
+        )
+
         if self.fused_input_weight is not None:
             # One GEMM for all three (see fuse_input_gemm_weights). It occupies
             # a single aux slot, so the other two stay None and nothing waits on
             # events that were never recorded.
             merged_w = self.fused_input_weight
             splits = self.fused_input_splits
-
-            n_tokens = hidden_states.shape[0]
-            sharded = self._unreplicate_tokens(n_tokens)
-            # Each GEMM gathers its own output. Batching the two gathers by
-            # concatenating them was measured and REJECTED: +6.43 ms TTFT at
-            # 9.9 sigma. torch.cat over uint8 views materializes a ~106 MiB
-            # buffer per layer and the post-gather split needs two more
-            # copies, so it trades one 161 us NCCL launch for four full-size
-            # HBM passes. A copy-free variant (one ncclGroupStart/End around
-            # both all_gatherv calls) is the only version worth retrying.
-            gemm_in, rows = (
-                self._shard_tokens(hidden_states) if sharded
-                else (hidden_states, [])
-            )
 
             def merged_input_gemm() -> torch.Tensor:
                 # cuBLAS at every M. The M<=8 Triton GEMV that serves the bare
@@ -616,8 +642,11 @@ class DeepseekV4Attention(nn.Module, AttentionLayerBase, ABC):
             aux_fns[1] = indexer_weights_proj
             aux_fns[2] = indexer_compressor_kv_score
 
+        # Only fused_wqa_wkv rides the shard here. The aux GEMMs above stay
+        # replicated: each emits a much smaller output against a much smaller
+        # GEMM, so rule 14 has to price them separately before they move.
         def fused_wqa_wkv() -> torch.Tensor:
-            return self._fused_wqa_wkv_gemm(hidden_states)
+            return self._fused_wqa_wkv_gemm(gemm_in)
 
         qr_kv, (kv_score, indexer_weights, indexer_kv_score) = execute_in_parallel(
             fused_wqa_wkv,
@@ -628,6 +657,8 @@ class DeepseekV4Attention(nn.Module, AttentionLayerBase, ABC):
             enable=hidden_states.shape[0]
             <= envs.VLLM_MULTI_STREAM_GEMM_TOKEN_THRESHOLD,
         )
+        if sharded:
+            qr_kv = self._gather_tokens(qr_kv, rows)
 
         return qr_kv, kv_score, indexer_kv_score, indexer_weights
 

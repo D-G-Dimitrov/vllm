@@ -195,9 +195,16 @@ def test_fp8_mqa_logits_triton_matches_torch(
 @pytest.mark.parametrize(
     "is_sm80,M,N,expected",
     [
+        # The gate is on the GROUPED grid's CTA count, not on M: grouping
+        # divides the grid's N dimension by KV_GROUP, so a small M with a wide
+        # N still fills the machine while a small M with a narrow N does not.
+        # Every row below is a measured corner (see the module's table).
+        (True, 240, 61440, 8),  # the served 256k shape; M>=512 missed it
+        (True, 8, 16384, 1),  # 128 grouped CTAs < one wave: grouping loses
+        (True, 8, 61440, 8),  # 480 grouped CTAs: same M, wide N, wins
+        (True, 32, 16384, 8),  # 512 grouped CTAs
         (True, 8, 16640, 1),
-        (True, 511, 16384, 1),
-        (True, 512, 16383, 1),
+        (True, 512, 16383, 1),  # N gate still binds independently
         (True, 512, 16384, 8),
         (True, 2048, 28672, 8),
         (False, 2048, 28672, 1),
@@ -205,6 +212,9 @@ def test_fp8_mqa_logits_triton_matches_torch(
 )
 def test_fp8_mqa_logits_group_dispatch_boundaries(monkeypatch, is_sm80, M, N, expected):
     monkeypatch.setattr(mqa_logits_mod, "_IS_SM80", is_sm80)
+    # Pin the wave size so this asserts the gate's arithmetic, not the SM
+    # count of whichever GPU runs the suite (A100 = 108 x 3 = 324).
+    monkeypatch.setattr(mqa_logits_mod, "_kv_group_min_ctas", lambda _idx: 324)
     assert mqa_logits_mod._select_prefill_kv_group(M, N) == expected
 
 
@@ -439,6 +449,134 @@ def test_fp8_paged_mqa_logits_triton_strided_pool_no_int32_overflow():
     )
 
 
+def _spread_k_scales(n: int, device: torch.device) -> torch.Tensor:
+    """Per-row quantization scales spanning orders of magnitude.
+
+    Canon rule 34: a distribution that makes the property trivially true makes
+    the test unable to fail. Real activations of this model drive per-row fp8
+    scales apart by ~2 decades, and it is exactly that spread that decides
+    whether reordering the head sum's scaling can move a near-tie. Uniform
+    scales cannot fail this test.
+    """
+    exponent = torch.linspace(-2.0, 2.0, n, device=device)
+    return (10.0**exponent).to(torch.float32)
+
+
+@pytest.mark.parametrize("kv_group", [1, 8])
+def test_factored_k_scale_keeps_the_relu_active_set_and_the_selection(
+    monkeypatch, kv_group
+):
+    """K7: hoisting `k_scale` out of the relu.
+
+    `out = sum_h w_h * relu(k_scale * s)` becomes
+    `out = k_scale * sum_h w_h * relu(s)`, exact in real arithmetic because
+    `k_scale >= 0` and relu is positively homogeneous.
+
+    What that argument does and does not buy, measured here rather than
+    assumed:
+
+    * The relu's ACTIVE SET is untouched -- a non-negative scale cannot move a
+      sign. That is exact and asserted exactly.
+    * The SELECTION is not guaranteed. The scaling happens once instead of
+      BLOCK_H times, so the head sum rounds differently, and on inputs with
+      the real spread (scales over ~4 decades, signed `weights_proj` output)
+      the perturbation reaches ~3e-3 against a tightest top-k boundary gap of
+      ~9e-4. The perturbation is therefore large enough to cross a near-tie
+      even though none of these rows does. The relative error is cancellation
+      in the signed head sum, not the factoring: with non-negative weights the
+      same inputs agree to 2.8e-7.
+
+    So this change carries a quality gate, not a selection-identity gate --
+    which is the opposite of what a uniform-scale test would have suggested
+    (canon rule 34).
+    """
+    device = torch.device("cuda")
+    torch.manual_seed(0)
+    M, N, H, D = 64, 4096, 64, 128
+
+    q_fp8 = torch.randn(M, H, D, dtype=torch.bfloat16, device=device).to(
+        torch.float8_e4m3fn
+    )
+    k_fp8 = torch.randn(N, D, dtype=torch.bfloat16, device=device).to(
+        torch.float8_e4m3fn
+    )
+    k_scales = _spread_k_scales(N, device)
+    weights = torch.randn(M, H, dtype=torch.float32, device=device)
+    ks = torch.zeros(M, dtype=torch.int32, device=device)
+    ke = torch.full((M,), N, dtype=torch.int32, device=device)
+
+    outs = {}
+    for factored in (False, True):
+        monkeypatch.setattr(
+            mqa_logits_mod.envs, "VLLM_INDEXER_LOGITS_FACTOR_K_SCALE", factored
+        )
+        outs[factored] = mqa_logits_mod._fp8_mqa_logits_triton_impl(
+            q_fp8, (k_fp8, k_scales), weights, ks, ke, kv_group
+        ).clone()
+
+    ref, factored_out = outs[False], outs[True]
+    # Which entries the relu zeroed is the observable half of "no sign moved",
+    # and it is exact in both variants.
+    assert torch.equal(ref == 0, factored_out == 0)
+
+    # The logits move by rounding only: bound the change against the size of
+    # the summands, not against the (cancelling) sum.
+    summand_scale = ref.abs().amax(dim=-1, keepdim=True).clamp_min(1e-30)
+    assert ((ref - factored_out).abs() / summand_scale).max() < 1e-4
+
+    # Fixed seed, so this is a deterministic regression guard on the property
+    # the indexer actually consumes -- not a proof that it cannot move.
+    k = 512
+    sel_ref = torch.topk(ref, k, dim=-1).indices.sort(dim=-1).values
+    sel_new = torch.topk(factored_out, k, dim=-1).indices.sort(dim=-1).values
+    assert torch.equal(sel_ref, sel_new)
+
+
+def test_paged_q_lut_hoist_is_bit_identical(monkeypatch):
+    """K1: decoding q on the host must reproduce the in-kernel LUT exactly.
+
+    Same 256-entry table (NaN pinned to +-480), same bf16 operands into the
+    same `tl.dot`, same fp32 accumulate -- so this is an equality assert, not
+    a tolerance. The NaN encodings are included deliberately: they are the
+    only bytes where the table and a plain fp8->bf16 cast disagree, so a
+    version that used `.to(bfloat16)` instead of the table would fail here.
+    """
+    device = torch.device("cuda")
+    torch.manual_seed(0)
+    B, next_n, H, D = 3, 6, 64, 128
+    block_size, num_blocks = 64, 32
+
+    q_bytes = torch.randint(
+        0, 256, (B, next_n, H, D), dtype=torch.uint8, device=device
+    )
+    q_bytes[0, 0, 0, :2] = torch.tensor([0x7F, 0xFF], dtype=torch.uint8,
+                                        device=device)
+    q = q_bytes.view(torch.float8_e4m3fn)
+    kv_cache = _pack_paged_kv(
+        torch.randn(num_blocks, block_size, D, dtype=torch.bfloat16, device=device)
+    )
+    weights = torch.randn(B * next_n, H, dtype=torch.float32, device=device)
+    context_lens = torch.full((B,), num_blocks * block_size // 2,
+                              dtype=torch.int32, device=device)
+    block_tables = torch.arange(
+        num_blocks, dtype=torch.int32, device=device
+    ).view(1, -1).repeat(B, 1).contiguous()
+
+    outs = {}
+    for hoisted in (False, True):
+        monkeypatch.setattr(
+            mqa_logits_mod.envs, "VLLM_INDEXER_PAGED_Q_BF16", hoisted
+        )
+        outs[hoisted] = fp8_paged_mqa_logits_triton(
+            q,
+            kv_cache,
+            weights,
+            context_lens,
+            block_tables,
+            max_model_len=num_blocks * block_size,
+        ).clone()
+
+    assert torch.equal(outs[False], outs[True])
 @torch.inference_mode()
 def test_fp8_paged_mqa_logits_torch_next_n_reads_planar_cache():
     """The torch fallback's next_n>1 branch must read the planar block layout.

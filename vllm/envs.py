@@ -176,6 +176,16 @@ if TYPE_CHECKING:
     VLLM_RAY_EXTRA_ENV_VAR_PREFIXES_TO_COPY: str = ""
     VLLM_RAY_EXTRA_ENV_VARS_TO_COPY: str = ""
     VLLM_MARLIN_USE_ATOMIC_ADD: bool = False
+    VLLM_MHC_AR_INT8: bool = False
+    VLLM_UNREPLICATE_ATTN_GEMMS_ALL_LAYERS: bool = True
+    VLLM_INDEXER_DECODE_SHARD_MIN_REQS: int = 4
+    VLLM_INDEXER_LOGITS_FACTOR_K_SCALE: bool = True
+    VLLM_INDEXER_LOGITS_MAXNREG: int = 0
+    VLLM_INDEXER_LOGITS_KV_GROUP_MIN_M: int = 0
+    VLLM_INDEXER_PAGED_Q_BF16: bool = True
+    VLLM_SPARSE_DECODE_MAXNREG: int = 0
+    VLLM_SPARSE_DENSE_QUERY_BLOCK: int = -1
+    VLLM_SPARSE_DENSE_QUERY_BLOCK_DECODE: int = -1
     VLLM_MARLIN_FP8_DEQUANT_BF16: bool = False
     VLLM_DSPARK_VOCAB_SHARD: bool = False
     VLLM_MARLIN_INPUT_DTYPE: Literal["int8", "fp8"] | None = None
@@ -1482,6 +1492,119 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_MARLIN_USE_ATOMIC_ADD": lambda: (
         os.environ.get("VLLM_MARLIN_USE_ATOMIC_ADD", "0") == "1"
     ),
+    # Transport the prefill all-reduce as int8 blockwise-32 instead of bf16,
+    # using the custom two-shot with dequant-sum-requant in kernel, and have
+    # mhc_post consume the quantized form so phase 2 never has to widen back to
+    # bf16. Halves the wire: the collective measures 0.619x today's NCCL path at
+    # the 64 MiB prefill payload, and mhc_post gets cheaper too (d falls from
+    # 8 KB/token to 4.25 KB). Prefill only -- decode ARs are latency-bound, and
+    # the mhc_post boundary dispatches on dtype because decode reaches it from
+    # three concurrent sequences onward and stays bf16 there.
+    # NOT numerics-preserving: 3.10x bf16's own error per all-reduce, measured
+    # on real activations with both roundings; see the int8-AR section of
+    # benchmarks/kernels/dsv4_sm80_refutations.md.
+    "VLLM_MHC_AR_INT8": lambda: os.environ.get("VLLM_MHC_AR_INT8", "0") == "1",
+    # Whether the shard above also covers the layers that have no merged input
+    # trio. `fused_wqa_wkv` is replicated on all 43 attention layers, but the
+    # shard used to sit inside the `fused_input_weight is not None` branch --
+    # a proxy for "has an indexer" -- so the 22 ratio-128/SWA layers ran it at
+    # full M on all 8 ranks. Set to 0 to restore that reach; the arm's control.
+    "VLLM_UNREPLICATE_ATTN_GEMMS_ALL_LAYERS": lambda: (
+        os.environ.get("VLLM_UNREPLICATE_ATTN_GEMMS_ALL_LAYERS", "1") == "1"
+    ),
+    # Minimum decode requests in a batch before the same indexer shard is
+    # applied to the DECODE query groups; 0 disables the decode half. Needs
+    # VLLM_INDEXER_QUERY_SHARD, whose TP/DCP/PCP eligibility and partition rule
+    # it reuses -- the prefill half cannot reach decode, because its
+    # MIN_SHARD_TOKENS gate reads prefill tokens only and a decode step has
+    # `num_resident * next_n` rows (132 at 22 resident requests).
+    #
+    # The threshold is where the per-layer collective is repaid at least ~5x,
+    # the same bar MIN_SHARD_TOKENS uses. Saving per step is `0.878 * C * p`
+    # (rule 10's 12.2% residual for a /8 shard of this kernel, measured at
+    # prefill widths -- the decode residual is the GPU gate's job to confirm),
+    # where `p` is the per-resident-request indexer time; cost is 21
+    # ratio-4 layers x one all-reduce of `pad(C * next_n) * index_topk * 4 B`,
+    # which the in-tree crossover table (custom_all_reduce.cuh, 8xA100,
+    # cudagraph-captured) prices at 12 us / 128 KB to 24 us / 1 MiB, i.e.
+    # 0.21-0.50 ms/step across the whole capture range. At the least favourable
+    # context this model serves (8K, p = 0.291 ms of indexer logits,
+    # PROFILE_256K.md S3) that is 4.9x at C=4 and 2.6x at C=2; at 200k
+    # (p = 2.591 ms, PROFILE_256K.md R2.2) C=4 is repaid 43x.
+    "VLLM_INDEXER_DECODE_SHARD_MIN_REQS": lambda: int(
+        os.environ.get("VLLM_INDEXER_DECODE_SHARD_MIN_REQS", "4")
+    ),
+    # Hoist `k_scale` out of the prefill indexer-logits relu:
+    #   out[q,kv] = k_scale[kv] * sum_h w_h * relu(s[h,kv])
+    # instead of scaling every (head, kv) element before the relu. Legal
+    # because k_scale is a quantization magnitude (>= 0) and relu is
+    # positively homogeneous. Turns BLOCK_H x BLOCK_N broadcast multiplies
+    # into BLOCK_N -- one of the four fp32 op classes in an epilogue that is
+    # 32.4 ms of the deep chunk's 278.4 ms (PROFILE_256K_R3 S3.3). The top-k's
+    # selected set is bit-identical; the summation's rounding order is not.
+    "VLLM_INDEXER_LOGITS_FACTOR_K_SCALE": lambda: (
+        os.environ.get("VLLM_INDEXER_LOGITS_FACTOR_K_SCALE", "1") == "1"
+    ),
+    # Register cap for the prefill indexer-logits kernel; 0 = unconstrained.
+    # Was pinned at 128 on a reading of the kernel at 132 regs; it now takes
+    # 162, so the cap spills (6 B, 14 B with FACTOR_K_SCALE) and is
+    # neutral-to-worse at every shape re-measured on this tree -- including
+    # -4.0% at the grouped 256k serving shape (rule 47, canon S8).
+    "VLLM_INDEXER_LOGITS_MAXNREG": lambda: int(
+        os.environ.get("VLLM_INDEXER_LOGITS_MAXNREG", "0")
+    ),
+    # 0 selects KV_GROUP on the grouped grid's CTA count (one wave), which is
+    # the variable that actually decides it. Set to the old 512 to restore the
+    # M threshold -- the arm's control, and the only way to A/B a gate whose
+    # replacement changed which variable it reads.
+    "VLLM_INDEXER_LOGITS_KV_GROUP_MIN_M": lambda: int(
+        os.environ.get("VLLM_INDEXER_LOGITS_KV_GROUP_MIN_M", "0")
+    ),
+    # Decode-side paged indexer logits: hand the kernel bf16 q decoded once on
+    # the host instead of LUT-decoding it inside every CTA. The grid is
+    # (B*next_n, num_block_cols) and q does not vary with the block column, so
+    # the in-kernel decode repeats 8k per-lane gathers per KV block. Same
+    # table, same NaN pin, same bf16 operands into tl.dot => bit-identical.
+    "VLLM_INDEXER_PAGED_Q_BF16": lambda: (
+        os.environ.get("VLLM_INDEXER_PAGED_Q_BF16", "1") == "1"
+    ),
+    # Cap the per-thread register budget of the split-K sparse-decode kernel.
+    # It compiles to 255 registers with zero spill, and at num_warps=8 that is
+    # 256*255 = 65280 of an SM's 65536 -- one CTA per SM, register-limited
+    # (its 78848 B of smem would allow two). Capping at 128 yields 2 CTAs/SM at
+    # ~64 B/thread of spill. 0 disables the cap (Triton's default).
+    #
+    # This exists to test the smaller-footprint rewrite's thesis -- shrink the
+    # footprint, get more CTAs/SM, go faster -- without doing the rewrite: it
+    # buys the occupancy directly. A win says the rewrite has a target; a loss
+    # is ambiguous, because the cap buys occupancy WITH spill where a rewrite
+    # would buy it without.
+    "VLLM_SPARSE_DECODE_MAXNREG": lambda: int(
+        os.environ.get("VLLM_SPARSE_DECODE_MAXNREG", "0")
+    ),
+    # Query tile for the compress_ratio=128 sparse-attention layers, whose index
+    # list is not a selection but the positional identity prefix
+    # (sparse_mla.py::_build_c128a_topk_metadata_kernel). Consecutive queries
+    # there read nested prefixes of the same rows, so one CTA can serve
+    # BLOCK_M of them: the MMA's M goes from BLOCK_H to BLOCK_M*BLOCK_H against
+    # Ampere's m16n8k16, and each KV row is read once per block instead of once
+    # per query. -1 auto-selects, 0 keeps every layer on the per-query kernel,
+    # >0 forces the tile (what the BLOCK_M sweep drives).
+    #
+    # Softmax accumulates over a different tiling, so output is NOT
+    # bit-identical; the gate is quality, not token identity.
+    "VLLM_SPARSE_DENSE_QUERY_BLOCK": lambda: int(
+        os.environ.get("VLLM_SPARSE_DENSE_QUERY_BLOCK", "-1")
+    ),
+    # Same lever on the decode side, where a request's next_n speculative
+    # tokens sit at consecutive positions. MEASURED TO LOSE (1.2-1.9x slower at
+    # C=4..27, 200k) and therefore default OFF: decode launches ~27 CTAs
+    # against 108 SMs, so trading CTAs for shared row-loads gives up the
+    # parallelism it is short of. -1 and 0 both keep the per-query kernel; set
+    # it to next_n to re-derive the result.
+    "VLLM_SPARSE_DENSE_QUERY_BLOCK_DECODE": lambda: int(
+        os.environ.get("VLLM_SPARSE_DENSE_QUERY_BLOCK_DECODE", "-1")
+    ),
     # On GPUs without native FP8 (where block-quantized FP8 linear layers fall
     # back to weight-only Marlin), dequantize those weights to the model dtype
     # once at load and run them through cuBLAS instead. Trades weight VRAM
@@ -1972,7 +2095,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Deterministic moe_align_block_size (stable sort instead of FCFS atomics).
     # The Marlin MoE GEMM is permutation-sensitive at the ulp level, so the
     # atomic ordering makes temp=0 outputs non-reproducible (#50576). Set to 0
-    # to restore the historical CUDA kernel path.
+    # to restore the historical CUDA kernel path. Cost note from the sm80
+    # branch (8xA100 TP8): the stable sort adds ~15 ms cold TTFT@8K and
+    # ~0.6 ms/token ITL there; we keep it ON because batch>1 corruption
+    # (#50576) traces back to batch-composition-dependent numerics and this
+    # is one of the pinned sources. Set 0 to trade determinism for latency.
     "VLLM_DETERMINISTIC_MOE_ALIGN": lambda: bool(
         int(os.getenv("VLLM_DETERMINISTIC_MOE_ALIGN", "1"))
     ),

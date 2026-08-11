@@ -32,11 +32,14 @@ from vllm.v1.attention.backends.mla.sparse_swa import (
     FlashMLASchedMeta,
 )
 from vllm.v1.attention.ops.rocm_aiter_mla_sparse import (
+    build_query_blocks,
     build_ragged_indices_from_dense,
     lengths_to_indptr,
+    prefill_query_block_size,
     rocm_inv_rope_einsum,
     rocm_sparse_attn_decode,
     rocm_sparse_attn_prefill,
+    rocm_sparse_attn_prefill_blocked,
 )
 from vllm.v1.worker.workspace import current_workspace_manager
 
@@ -305,6 +308,38 @@ def _build_ragged_into_graph_buffers(
     return ragged_out, indptr_out
 
 
+def uniform_decode_group_size(
+    causal: bool,
+    num_decodes: int,
+    num_decode_tokens: int,
+    query_start_loc_cpu: torch.Tensor | None,
+) -> int:
+    """Query tokens per decode request, or 0 if the step is not blockable.
+
+    The query-blocked decode kernel gives one CTA one request's whole query
+    group, which needs two things this function checks and nothing else can:
+
+    * **Every decode request has the same query count**, so blocks land on
+      request boundaries. Captured decode batches are uniform by construction
+      (``AttentionCGSupport.UNIFORM_BATCH``); an eager mixed batch need not be.
+    * **The step is causal.** The DSpark *draft* step builds a non-causal SWA
+      index list (every query also attends to future query tokens,
+      ``sparse_swa.py::_compute_dspark_noncausal_swa_indices_kernel``), so
+      those lists are not slices of one sliding run and the block's union
+      derivation would not hold. Target-verify -- where the 43 layers and all
+      of the decode time are -- is causal.
+    """
+    if not causal or num_decodes <= 0 or query_start_loc_cpu is None:
+        return 0
+    if num_decode_tokens % num_decodes:
+        return 0
+    group = num_decode_tokens // num_decodes
+    if group < 2:
+        return 0
+    lens = query_start_loc_cpu[1 : num_decodes + 1] - query_start_loc_cpu[:num_decodes]
+    return group if bool((lens == group).all()) else 0
+
+
 @dataclass
 class _PrefillChunkSlices:
     """Prefill metadata slices for one request chunk.
@@ -320,8 +355,15 @@ class _PrefillChunkSlices:
     gather_lens: torch.Tensor
     swa_block_table: torch.Tensor
     query_start_loc: torch.Tensor
+    query_start_loc_cpu: torch.Tensor
     compressed_seq_lens: torch.Tensor | None
     compressed_block_table: torch.Tensor | None
+    # (block_req, block_qstart) for the query-blocked ratio-128 path, keyed by
+    # tile width. Derived from this chunk's query layout alone, so one build
+    # serves all 20 ratio-128 layers.
+    query_blocks: dict[int, tuple[torch.Tensor, torch.Tensor]] = field(
+        default_factory=dict
+    )
 
 
 @dataclass
@@ -336,6 +378,9 @@ class DeepseekV4ROCMAiterMLASparseMetadata(DeepseekV4FlashMLAMetadata):
 class DeepseekV4ROCMAiterSparseSWAMetadata(DeepseekSparseSWAMetadata):
     decode_swa_ragged_indices: torch.Tensor | None = None
     decode_swa_ragged_indptr: torch.Tensor | None = None
+    # Query tokens per decode request when every request has the same count and
+    # the step is causal; 0 otherwise. See `uniform_decode_group_size`.
+    decode_query_group_size: int = 0
     # Per-step prefill metadata slices, keyed by DSv4 layer type. Fresh instance per
     # build(), so the cache never outlives the metadata it was derived from.
     prefill_chunk_slices: dict[str, list[_PrefillChunkSlices]] = field(
@@ -456,6 +501,12 @@ class DeepseekV4ROCMAiterSparseSWAMetadataBuilder(DeepseekSparseSWAMetadataBuild
             **vars(base),
             decode_swa_ragged_indices=ragged_indices,
             decode_swa_ragged_indptr=ragged_indptr,
+            decode_query_group_size=uniform_decode_group_size(
+                common_attn_metadata.causal,
+                base.num_decodes,
+                base.num_decode_tokens,
+                base.query_start_loc_cpu,
+            ),
         )
 
 
@@ -690,6 +741,17 @@ class DeepseekV4ROCMAiterMLAAttention(DeepseekV4Attention):
             nope_head_dim=self.nope_head_dim,
             rope_head_dim=self.rope_head_dim,
             output=output,
+            # Only the ratio-128 layers: their compressed lists are positional
+            # prefixes that nest across a request's query group, so the group
+            # shares one pass over the rows. The ratio-4 layers select per
+            # query and cannot. (SWA-only layers qualify structurally too, but
+            # carry 128 rows a query -- left on the per-query kernel so the
+            # arm's attribution stays on the population it is priced against.)
+            group_size=(
+                swa_metadata.decode_query_group_size
+                if self.compress_ratio == 128
+                else 0
+            ),
         )
 
     def _prefill_chunk_slices(
@@ -739,6 +801,9 @@ class DeepseekV4ROCMAiterMLAAttention(DeepseekV4Attention):
                     gather_lens=gather_lens[chunk_start:chunk_end],
                     swa_block_table=swa_block_table[chunk_start:chunk_end],
                     query_start_loc=query_start_loc[
+                        num_decodes + chunk_start : num_decodes + chunk_end + 1
+                    ],
+                    query_start_loc_cpu=query_start_loc_cpu[
                         num_decodes + chunk_start : num_decodes + chunk_end + 1
                     ],
                     compressed_seq_lens=(
@@ -793,6 +858,17 @@ class DeepseekV4ROCMAiterMLAAttention(DeepseekV4Attention):
 
         M = N + self.window_size + self.max_num_batched_tokens
 
+        # The ratio-128 layers have no indexer, so their index list is the
+        # positional identity prefix plus the SWA window and consecutive
+        # queries read nested rows -- the one population where a query block
+        # can share a KV tile. The ratio-4 layers' top-512 sets are genuine
+        # per-query selections, so a block of 8 could want 8x the rows.
+        block_m = (
+            prefill_query_block_size(q.shape[1], q.shape[2])
+            if not swa_only and self.compress_ratio == 128
+            else 0
+        )
+
         workspace_manager = current_workspace_manager()
         kv = workspace_manager.get_simultaneous(
             ((self.PREFILL_CHUNK_SIZE, M, q.shape[-1]), torch.bfloat16),
@@ -826,6 +902,36 @@ class DeepseekV4ROCMAiterMLAAttention(DeepseekV4Attention):
                 offset=N,
                 use_fnuz=current_platform.is_fp8_fnuz(),
             )
+
+            if block_m:
+                blocks = chunk.query_blocks.get(block_m)
+                if blocks is None:
+                    blocks = build_query_blocks(
+                        chunk.query_start_loc_cpu, block_m, q.device
+                    )
+                    chunk.query_blocks[block_m] = blocks
+                rocm_sparse_attn_prefill_blocked(
+                    q=q[query_start:query_end],
+                    kv=kv.view(-1, 1, q.shape[-1]),
+                    block_req=blocks[0],
+                    block_qstart=blocks[1],
+                    query_start_loc=chunk.query_start_loc,
+                    seq_lens=chunk.seq_lens,
+                    gather_lens=chunk.gather_lens,
+                    scale=self.scale,
+                    head_dim=self.head_dim,
+                    nope_head_dim=self.nope_head_dim,
+                    rope_head_dim=self.rope_head_dim,
+                    attn_sink=self.attn_sink,
+                    top_k=top_k,
+                    row_stride=M,
+                    swa_offset=N,
+                    compress_ratio=self.compress_ratio,
+                    window_size=self.window_size,
+                    block_m=block_m,
+                    output=output[query_start:query_end],
+                )
+                continue
 
             combined_indices, combined_lens = combine_topk_swa_indices(
                 topk_indices[query_start:query_end],
