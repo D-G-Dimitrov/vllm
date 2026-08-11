@@ -19,6 +19,7 @@ from vllm.model_executor.kernels.linear.gemv_triton import (
     bf16_gemv,
     should_use_triton_gemv,
 )
+from vllm.model_executor.kernels.mhc.ar_int8 import ar_hoisted
 from vllm.model_executor.layers.linear import (
     ColumnParallelLinear,
     MergedColumnParallelLinear,
@@ -48,6 +49,7 @@ from vllm.distributed import (
     get_tensor_model_parallel_world_size,
     get_tp_group,
 )
+from vllm.distributed.utils import balanced_row_bounds, balanced_row_counts
 from vllm.forward_context import get_forward_context
 from vllm.logger import init_logger
 from vllm.model_executor.layers.attention_layer_base import AttentionLayerBase
@@ -66,7 +68,6 @@ from vllm.v1.attention.backend import AttentionBackend, AttentionMetadata
 from vllm.v1.attention.backends.mla.indexer import (
     DeepseekV4IndexerBackend,
     get_max_prefill_buffer_size,
-    indexer_q_row_ranges,
 )
 from vllm.v1.attention.backends.mla.sparse_swa import DeepseekV4SWACache
 from vllm.v1.kv_cache_interface import (
@@ -292,12 +293,17 @@ class DeepseekV4Attention(nn.Module, AttentionLayerBase, ABC):
         )
         self.wo_a.is_bmm = True
         self.wo_a.bmm_batch_size = self.n_local_groups
+        # When the all-reduce is hoisted (task #35) the decoder layer performs it,
+        # so this layer must not. Same predicate as the MoE half -- the suppressed
+        # set and the re-added set are derived from one source, never two.
+        self._ar_hoisted = ar_hoisted(vllm_config)
         self.wo_b = RowParallelLinear(
             self.n_groups * self.o_lora_rank,
             self.hidden_size,
             bias=False,
             quant_config=quant_config,
             return_bias=False,
+            reduce_results=not self._ar_hoisted,
             prefix=f"{prefix}.wo_b",
         )
 
@@ -390,6 +396,13 @@ class DeepseekV4Attention(nn.Module, AttentionLayerBase, ABC):
         # Built after weight loading by `fuse_input_gemm_weights`; see there.
         self.fused_input_weight: torch.Tensor | None = None
         self.fused_input_splits: list[int] = []
+
+    def process_weights_after_loading(self, dtype: torch.dtype) -> None:
+        # Loader hook (the AttentionLayerBase pass in model_loader/utils.py):
+        # runs for every loader including DummyModelLoader, and inside
+        # device_loading_context, so the merged buffer is built on the target
+        # device even under CPU offloading.
+        self.fuse_input_gemm_weights()
 
     def fuse_input_gemm_weights(self) -> None:
         """Concatenate the three bf16 input projections into one weight.
@@ -491,29 +504,19 @@ class DeepseekV4Attention(nn.Module, AttentionLayerBase, ABC):
         return self._o_proj(o, positions)
 
     @staticmethod
-    def _shard_rows(n_tokens: int) -> list[int]:
-        """Per-rank row counts: `base + (r < rem)`, the campaign convention.
+    def _shard_tokens(x: torch.Tensor) -> tuple[torch.Tensor, list[int]]:
+        """This rank's slice of the token dim, plus the split it came from.
 
-        The same split the indexer query-shard and the mHC prenorm shard use
-        (`_prenorm_shard_rows`, mhc/triton.py). Sharing one partition is what
-        lets these features compose; an even-with-padding split agrees with
-        this one only when `n % tp == 0`, which is the trap recorded as
-        refutations rule 19. Balanced within one row, so no rank straggles,
-        and exact, so `all_gatherv` reassembles any token count with no
-        padding row that could be written but not read.
+        `balanced_row_counts` is the split the indexer query-shard and the mHC
+        prenorm shard also use; sharing one partition is what lets these
+        features compose (refutations rule 19).
         """
         tp = get_tensor_model_parallel_world_size()
-        base, rem = divmod(n_tokens, tp)
-        return [base + (r < rem) for r in range(tp)]
-
-    @classmethod
-    def _shard_tokens(
-        cls, x: torch.Tensor
-    ) -> tuple[torch.Tensor, list[int]]:
-        """This rank's slice of the token dim, plus the split it came from."""
-        rows = cls._shard_rows(x.shape[0])
-        start = sum(rows[: get_tensor_model_parallel_rank()])
-        return x[start : start + rows[get_tensor_model_parallel_rank()]], rows
+        rows = balanced_row_counts(x.shape[0], tp)
+        lo, hi = balanced_row_bounds(
+            0, x.shape[0], get_tensor_model_parallel_rank(), tp
+        )
+        return x[lo:hi], rows
 
     @staticmethod
     def _gather_tokens(y: torch.Tensor, rows: list[int]) -> torch.Tensor:
@@ -529,11 +532,7 @@ class DeepseekV4Attention(nn.Module, AttentionLayerBase, ABC):
         GEMM is far smaller than the collective's fixed cost, and below one
         row per rank there is nothing to split.
         """
-        return (
-            envs.VLLM_UNREPLICATE_ATTN_GEMMS
-            and n_tokens >= _UNREPLICATE_MIN_TOKENS
-            and get_tensor_model_parallel_world_size() > 1
-        )
+        return self._unreplicate_gemms and n_tokens >= _UNREPLICATE_MIN_TOKENS
 
     def _fused_wqa_wkv_gemm(self, hidden_states: torch.Tensor) -> torch.Tensor:
         # MergedColumnParallelLinear returns (output, bias); bias is None.
@@ -577,11 +576,8 @@ class DeepseekV4Attention(nn.Module, AttentionLayerBase, ABC):
             splits = self.fused_input_splits
 
             def merged_input_gemm() -> torch.Tensor:
-                # cuBLAS at every M. The M<=8 Triton GEMV that serves the bare
-                # weights_proj is a CTA-per-output-row kernel, so at this width
-                # it re-reads x 2624 times: measured 17.5 us at M=1 (better
-                # than cuBLAS's 20.2) but 59-60 us at M=6/8 against cuBLAS's
-                # 21.0. Not worth a second shape-specific gate.
+                # cuBLAS at every M; the CTA-per-row Triton GEMV wins only at
+                # M=1 here, not worth a second shape-specific gate.
                 return torch.mm(gemm_in, merged_w.T, out_dtype=torch.float32)
 
             aux_fns[0] = merged_input_gemm
@@ -592,7 +588,7 @@ class DeepseekV4Attention(nn.Module, AttentionLayerBase, ABC):
                 self.ln_events[1:4],
                 aux_streams,
                 enable=hidden_states.shape[0]
-                <= envs.VLLM_MULTI_STREAM_GEMM_TOKEN_THRESHOLD,
+                <= self._multi_stream_threshold,
             )
             if sharded:
                 qr_kv = self._gather_tokens(qr_kv, rows)
@@ -655,7 +651,7 @@ class DeepseekV4Attention(nn.Module, AttentionLayerBase, ABC):
             self.ln_events[1:4],
             aux_streams,
             enable=hidden_states.shape[0]
-            <= envs.VLLM_MULTI_STREAM_GEMM_TOKEN_THRESHOLD,
+            <= self._multi_stream_threshold,
         )
         if sharded:
             qr_kv = self._gather_tokens(qr_kv, rows)
@@ -1026,12 +1022,12 @@ class DeepseekV4Indexer(nn.Module):
             num_heads=self.n_head,
         )
 
-        # Stage 2b of VLLM_INDEXER_QUERY_SHARD. Read once, as the builder does
-        # for the parent flag. The FP4 path is excluded because its
-        # fused_indexer_q_rope_quant contract returns a re-viewed scale tensor,
-        # which full-size output buffers would have to reproduce outside the op;
-        # it also requires SM100 datacenter hardware.
-        self.shard_q_path = envs.VLLM_INDEXER_QUERY_SHARD_QPATH and not self.use_fp4_kv
+        # Q-path half of VLLM_INDEXER_QUERY_SHARD. Read once, as the builder
+        # does. The FP4 path is excluded because its fused_indexer_q_rope_quant
+        # contract returns a re-viewed scale tensor, which full-size output
+        # buffers would have to reproduce outside the op; it also requires
+        # SM100 datacenter hardware.
+        self.shard_q_path = envs.VLLM_INDEXER_QUERY_SHARD and not self.use_fp4_kv
 
         # None on ROCm — maybe_execute_in_parallel falls back to sequential.
         self.aux_stream = aux_stream
@@ -1060,9 +1056,12 @@ class DeepseekV4Indexer(nn.Module):
         prefill = indexer_metadata.prefill
         if prefill is None:
             return None
-        ranges = indexer_q_row_ranges(
-            prefill.chunks, indexer_metadata.num_decodes, num_tokens
-        )
+        # Derived once per step in the metadata builder; every indexer layer
+        # reads the same answer. Guard against a caller whose row count
+        # disagrees with the builder's rather than silently truncating.
+        ranges = prefill.q_row_ranges
+        if ranges is not None and ranges[-1][1] > num_tokens:
+            ranges = None
         # Log both outcomes: a null A/B arm is otherwise indistinguishable from
         # a flag that never engaged. Both messages take a bounded set of
         # arguments, since `info_once` dedupes on them.

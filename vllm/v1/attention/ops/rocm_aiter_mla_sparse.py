@@ -2723,6 +2723,51 @@ def _query_block_size(env_value: int, default: int) -> int:
 
 
 @functools.lru_cache
+def _decode_maxnreg_kwargs() -> dict[str, int]:
+    """Optional per-thread register cap for the split-K decode kernel.
+
+    Empty dict means "leave it to Triton", which is byte-identical to not
+    passing the argument at all -- the flag-off path compiles exactly as before.
+    The cached dict is only ever ``**``-unpacked, never mutated.
+    """
+    cap = envs.VLLM_SPARSE_DECODE_MAXNREG
+    return {"maxnreg": cap} if cap > 0 else {}
+
+
+
+@functools.lru_cache
+def _exact_tile_enabled() -> bool:
+    return envs.VLLM_SPARSE_PREFILL_EXACT_TILE
+
+
+
+@functools.lru_cache
+def _sparse_block_h(num_heads: int) -> int:
+    """Head tile for the sparse prefill and split-K decode kernels.
+
+    A hardcoded 16 masks off half of every ``tl.dot`` at TP=8, where a rank
+    owns 8 heads. Sizing the tile to the heads that exist measures **-6.3%**
+    on A100 for prefill on top of the wider KV tile (561 -> 526 us at
+    M=2048/ctx=32k); decode gains a second effect -- its ``[BLOCK_H, 512]``
+    fp32 accumulators halve with the tile. Bit-identical in both kernels:
+    each head's softmax reduction is independent, so repartitioning heads
+    across CTAs cannot change a single output bit, which is what testing head
+    counts 8/16/4/5 against BLOCK_H=16 confirms.
+
+    Ranks holding more than 8 heads keep 16, which is today's tile: this only
+    stops building a tile twice the size of the data.
+    """
+    return min(16, max(8, triton.next_power_of_2(num_heads)))
+
+
+
+@functools.lru_cache
+def _use_fast_scan() -> bool:
+    return envs.VLLM_SPARSE_RAGGED_FAST_SCAN
+
+
+
+@functools.lru_cache
 def prefill_query_block_size(num_heads: int, head_dim: int) -> int:
     """Query tile for the ratio-128 prefill layers; 0 means "use the old path".
 
@@ -2742,6 +2787,19 @@ def prefill_query_block_size(num_heads: int, head_dim: int) -> int:
         head_dim
     ):
         return 0
+    # Shared-memory reality check for the AUTO path: at TP4 head counts the
+    # kernel's footprint is dominated by fixed KV/index tiles (measured on
+    # sm86/32 heads: 204,800 B at block_m=8 and still 135,168 B at block_m=2
+    # against a 101,376 B device limit), so no tile width compiles there.
+    # Decline to the per-query kernel on parts without A100-class shared
+    # memory instead of letting warmup die in Triton's OutOfResources. A
+    # forced env value is honored verbatim -- whoever sets it owns the trade.
+    if envs.VLLM_SPARSE_DENSE_QUERY_BLOCK == -1:
+        smem_limit = torch.cuda.get_device_properties(
+            torch.cuda.current_device()
+        ).shared_memory_per_block_optin
+        if smem_limit < 160 * 1024:
+            return 0
     return block_m
 
 
@@ -2771,6 +2829,15 @@ def decode_block_tile(
     if block_m < group_size:
         return 0
     if num_queries % group_size or num_heads % block_h:
+        return 0
+    # The blocked partial kernel's shared-memory footprint scales with the
+    # tile (~17.9 KB/row at this head layout): BLOCK_M=8 needs ~140 KB, which
+    # fits A100's 163 KB but not sm86/sm89's ~99 KB. Decline rather than let
+    # a forced env value hit Triton's OutOfResources at launch.
+    smem_limit = torch.cuda.get_device_properties(
+        torch.cuda.current_device()
+    ).shared_memory_per_block_optin
+    if block_m * 17920 > smem_limit:
         return 0
     return block_m
 

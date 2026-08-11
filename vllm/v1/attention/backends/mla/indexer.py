@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 from dataclasses import dataclass
+from typing import NamedTuple
 
 import torch
 
 import vllm.envs as envs
 from vllm.config import VllmConfig
 from vllm.distributed import get_dcp_group, get_pcp_group, get_tp_group
+from vllm.distributed.utils import balanced_row_bounds, balanced_row_counts
 from vllm.logger import init_logger
 from vllm.model_executor.warmup.jit_warmup import (
     VllmJitKernel,
@@ -84,36 +86,40 @@ def _prepare_uniform_decode_kernel(
 MIN_SHARD_TOKENS = 2048
 
 
-def rank_row_bounds(
-    start: int, stop: int, tp_rank: int, tp_size: int
-) -> tuple[int, int]:
-    """This rank's contiguous half-open row range within ``[start, stop)``.
+class ShardedChunkSpec(NamedTuple):
+    """One prefill sub-chunk after TP query-sharding.
 
-    Remainder rows go one each to the lowest-numbered ranks, so the union over
-    ranks is exactly ``[start, stop)`` with no gap or overlap at any row count.
-    Per-rank counts may differ by one, which is why the collective is
-    ``all_gatherv(sizes=...)`` rather than ``all_gather`` -- no padding rows are
-    created, so none can be read by mistake.
+    ``shard_row_counts``/``gather_start`` travel with the slice they describe,
+    so the top-k all-gather can never pair sizes with the wrong chunk. They are
+    None for sub-chunks left replicated; every rank emits the same chunk list
+    either way, so the set of collectives is rank-uniform by construction.
     """
-    n = stop - start
-    base, rem = divmod(n, tp_size)
-    lo = start + tp_rank * base + min(tp_rank, rem)
-    hi = lo + base + (1 if tp_rank < rem else 0)
-    return lo, hi
+
+    req_slice: slice
+    query_slice: slice
+    skip_kv_gather: bool
+    # Per-rank row counts for all_gatherv(sizes=...); None => replicated.
+    shard_row_counts: list[int] | None
+    # The pre-shard first row, where the gathered chunk is written back.
+    gather_start: int | None
 
 
 def shard_chunk_specs_by_query(
     chunk_specs: list[tuple[slice, slice]], tp_rank: int, tp_size: int
-) -> list[tuple[slice, slice, bool]]:
+) -> list[ShardedChunkSpec]:
     """Narrow each ``(req_slice, query_slice)`` to this rank's rows.
 
-    Returns ``(req_slice, query_slice, skip_kv_gather)``. Sub-chunks this rank
-    owns no rows in are dropped entirely rather than emitted empty.
+    Sub-chunks with fewer rows than ranks stay replicated (counts None)
+    instead of leaving some ranks with an empty shard: dropping a chunk on
+    only the empty ranks would make the per-chunk all-gather participant set
+    data-dependent, which hangs rather than misbehaves.
     """
     if tp_size <= 1:
-        return [(r, q, q.start > 0) for r, q in chunk_specs]
+        return [
+            ShardedChunkSpec(r, q, q.start > 0, None, None) for r, q in chunk_specs
+        ]
 
-    out: list[tuple[slice, slice, bool]] = []
+    out: list[ShardedChunkSpec] = []
     prev_req: tuple[int, int] | None = None
     gathered_for_req = False
     for req_slice, query_slice in chunk_specs:
@@ -122,26 +128,26 @@ def shard_chunk_specs_by_query(
             # New request group => new K workspace contents => must re-gather.
             prev_req = req_key
             gathered_for_req = False
-        lo, hi = rank_row_bounds(query_slice.start, query_slice.stop, tp_rank, tp_size)
-        if hi <= lo:
-            continue
-        out.append((req_slice, slice(lo, hi), gathered_for_req))
+        n = query_slice.stop - query_slice.start
+        if n < tp_size:
+            out.append(
+                ShardedChunkSpec(req_slice, query_slice, gathered_for_req, None, None)
+            )
+        else:
+            lo, hi = balanced_row_bounds(
+                query_slice.start, query_slice.stop, tp_rank, tp_size
+            )
+            out.append(
+                ShardedChunkSpec(
+                    req_slice,
+                    slice(lo, hi),
+                    gathered_for_req,
+                    balanced_row_counts(n, tp_size),
+                    query_slice.start,
+                )
+            )
         gathered_for_req = True
     return out
-
-
-def all_gather_row_counts(
-    chunk_specs: list[tuple[slice, slice]], tp_size: int
-) -> list[list[int]]:
-    """Per-chunk, per-rank row counts for ``all_gatherv(sizes=...)``."""
-    counts = []
-    for _, query_slice in chunk_specs:
-        per_rank = []
-        for r in range(tp_size):
-            lo, hi = rank_row_bounds(query_slice.start, query_slice.stop, r, tp_size)
-            per_rank.append(hi - lo)
-        counts.append(per_rank)
-    return counts
 
 
 def indexer_shard_size_for_batch(num_prefill_tokens: int, shard_size: int) -> int:
@@ -233,8 +239,10 @@ def indexer_q_row_ranges(
     * ``num_decodes > 0``: the decode branch reads ``q_quant[:num_decode_tokens]``
       and ``weights[:batch * next_n]``, ranges no chunk names (and the latter can
       run past the decode region);
-    * no chunks, or none of them carries ``shard_row_counts``, i.e. the indexer
-      ran replicated for this batch (tp=1, DCP, PCP, or under MIN_SHARD_TOKENS);
+    * no chunks, or ANY of them lacks ``shard_row_counts`` -- the whole batch
+      replicated (tp=1, DCP, PCP, under MIN_SHARD_TOKENS) or a mixed batch
+      where a sub-chunk with fewer rows than ranks stayed replicated; either
+      way some chunk needs every row, so the Q path computes every row;
     * a chunk naming a row beyond ``num_tokens``, which would silently truncate.
     """
     if num_decodes > 0 or not chunks:
@@ -378,6 +386,9 @@ class DeepseekV32IndexerPrefillChunkMetadata:
     # Per-rank row counts for the top-k all-gather under TP query-sharding.
     # None means the indexer ran replicated and no gather is needed.
     shard_row_counts: list[int] | None = None
+    # The pre-shard first row of this chunk (where the gathered rows land);
+    # set exactly when shard_row_counts is.
+    gather_token_start: int | None = None
 
 
 _BUILD_PREFILL_CHUNK_METADATA_INPUT_VARIANTS = (
@@ -588,6 +599,10 @@ _BUILD_PREFILL_CHUNK_METADATA_KERNEL = BuildPrefillChunkMetadataKernel()
 @dataclass
 class DeepseekV32IndexerPrefillMetadata:
     chunks: list[DeepseekV32IndexerPrefillChunkMetadata]
+    # Rows this rank's indexer Q path owns (indexer_q_row_ranges), or None for
+    # all of them. Derived once here rather than per indexer layer -- it is a
+    # pure function of this step's chunk metadata.
+    q_row_ranges: list[tuple[int, int]] | None = None
 
 
 @dataclass
@@ -695,10 +710,10 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
                     self.decode_shard_min_reqs,
                 )
             else:
-                logger.warning_once(
-                    "VLLM_INDEXER_QUERY_SHARD=1 but the indexer is running "
-                    "REPLICATED: tp_size=%d, dcp_world_size=%d, use_pcp=%s "
-                    "(requires tp_size>1, dcp_world_size==1, use_pcp=False).",
+                logger.info_once(
+                    "Indexer query-sharding INACTIVE (replicated): tp_size=%d, "
+                    "dcp_world_size=%d, use_pcp=%s (requires tp_size>1, "
+                    "dcp_world_size==1, use_pcp=False).",
                     tp.world_size,
                     self.dcp_world_size,
                     self.use_pcp,
@@ -1086,10 +1101,10 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
             )
 
             chunks = []
-            for req_slice, query_slice, skip_kv_gather in sharded_specs:
+            for spec in sharded_specs:
                 metadata = build_prefill_chunk_metadata(
-                    req_slice.start,
-                    req_slice.stop,
+                    spec.req_slice.start,
+                    spec.req_slice.stop,
                     query_start_loc,
                     query_start_loc_cpu,
                     seq_lens,
@@ -1097,8 +1112,8 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
                     compressed_seq_lens_cpu,
                     common_attn_metadata.block_table_tensor,
                     self.compress_ratio,
-                    query_slice=query_slice,
-                    skip_kv_gather=skip_kv_gather,
+                    query_slice=spec.query_slice,
+                    skip_kv_gather=spec.skip_kv_gather,
                     dcp_rank=self.dcp_rank,
                     dcp_world_size=self.dcp_world_size,
                     cp_kv_cache_interleave_size=self.cp_kv_cache_interleave_size,
@@ -1118,14 +1133,12 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
                             spec.query_slice.start - spec.gather_start
                         )
                     chunks.append(metadata)
-            if shard_size > 1:
-                # Sizes come from the same function that cut the slices, so the
-                # collective cannot disagree with the partition.
-                for meta, counts in zip(
-                    chunks, all_gather_row_counts(chunk_specs, shard_size)
-                ):
-                    meta.shard_row_counts = counts
-            prefill_metadata = DeepseekV32IndexerPrefillMetadata(chunks)
+            prefill_metadata = DeepseekV32IndexerPrefillMetadata(
+                chunks,
+                q_row_ranges=indexer_q_row_ranges(
+                    chunks, num_decodes, common_attn_metadata.num_actual_tokens
+                ),
+            )
 
         decode_metadata = None
         if num_decodes > 0:

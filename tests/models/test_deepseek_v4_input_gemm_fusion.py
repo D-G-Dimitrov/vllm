@@ -14,7 +14,11 @@ import pytest
 import torch
 from torch import nn
 
-from vllm.models.deepseek_v4.attention import DeepseekV4Attention
+from vllm.distributed.utils import balanced_row_counts
+from vllm.models.deepseek_v4.attention import (
+    _UNREPLICATE_MIN_TOKENS,
+    DeepseekV4Attention,
+)
 from vllm.platforms import current_platform
 
 pytestmark = pytest.mark.skipif(
