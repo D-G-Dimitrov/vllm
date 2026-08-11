@@ -66,7 +66,7 @@ vllm serve /path/to/your/deepseek \
   --kv-cache-dtype fp8_ds_mla \
   --trust-remote-code \
   --compilation-config '{"cudagraph_mode":"PIECEWISE"}' \
-  --speculative-config {"method":"dspark","num_speculative_tokens":5} \
+  --speculative-config '{"method":"dspark","num_speculative_tokens":5}' \
   --enable-auto-tool-choice --tool-call-parser deepseek_v4 \
   --host 0.0.0.0 --port 8000 \
   --hf-overrides '{"head_dtype": "float32"}' \
@@ -78,6 +78,8 @@ Tips:
 - Adjust your TP (--tensor-parallel-size) and PP (--pipeline-parallel-size) accordingly.
 - head dtype override helps reduce garbage outputs.
 - DSpark is not working very well if you have PP>1.
+- The single quotes around the `--speculative-config` JSON are required — without them bash brace-expands the braces at the comma and vLLM receives the literal `method:dspark` (`Value method:dspark cannot be converted` error).
+- `num_speculative_tokens` must be 5 on Ampere: the spec-decode kernel tile at 7 needs ~200 KB of shared memory vs the 163 KB Ampere limit (`triton OutOfResources` error), and values below 5 are rejected.
 
 ## Environment Variables (Warning: Huge AI generated contents!)
 
