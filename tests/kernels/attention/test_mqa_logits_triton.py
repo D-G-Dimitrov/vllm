@@ -437,3 +437,97 @@ def test_fp8_paged_mqa_logits_triton_strided_pool_no_int32_overflow():
     torch.testing.assert_close(
         out_triton[finite], out_torch[finite], atol=_ATOL, rtol=_RTOL
     )
+
+
+@torch.inference_mode()
+def test_fp8_paged_mqa_logits_torch_next_n_reads_planar_cache():
+    """The torch fallback's next_n>1 branch must read the planar block layout.
+
+    Regression for the layout mismatch class reported in
+    vllm-project/vllm#50576 (CuritisSun): the cache writer is block-planar
+    (all fp8 K bytes, then all fp32 scales), while a reader slicing the
+    nominal ``[NB, BS, 1, D+4]`` shape token-interleaved silently drifts K by
+    4 bytes/token and bitcasts value bytes as scales. Ground truth is derived
+    from the source K/scale arrays, never from a second read of the cache.
+    """
+    from vllm.v1.attention.ops.rocm_aiter_mla_sparse import (
+        fp8_paged_mqa_logits_torch,
+    )
+
+    torch.manual_seed(0)
+    device = "cuda"
+    num_blocks, block_size, dim, heads = 6, 8, 32, 4
+    batch_size, next_n = 2, 3
+    context_lens = torch.tensor([13, 7], dtype=torch.int32, device=device)
+    max_model_len = 16
+    # Non-monotonic block tables: logical order != physical order.
+    block_tables = torch.tensor(
+        [[3, 0], [5, 1]], dtype=torch.int32, device=device
+    )
+
+    kv_bf16 = torch.randn(
+        num_blocks, block_size, dim, dtype=torch.bfloat16, device=device
+    )
+    packed = _pack_paged_kv(kv_bf16)
+    # Source-array dequant (writer's definition of the content).
+    amax = kv_bf16.abs().float().amax(dim=-1, keepdim=True).clamp_min(1e-4)
+    sf = (amax / 448.0).to(torch.float32)
+    k_fp8 = (kv_bf16.float() / sf).to(torch.float8_e4m3fn)
+    kv_deq = (k_fp8.float() * sf).view(num_blocks, block_size, 1, dim)
+
+    q = torch.randn(
+        batch_size, next_n, heads, dim, dtype=torch.bfloat16, device=device
+    )
+    weights = torch.rand(
+        batch_size * next_n, heads, dtype=torch.float32, device=device
+    )
+
+    out = fp8_paged_mqa_logits_torch(
+        q, packed, weights, context_lens, block_tables, max_model_len
+    )
+
+    # Ground truth: replicate the branch's math from the SOURCE arrays.
+    qf = q.float()
+    expected = torch.full(
+        [batch_size * next_n, max_model_len],
+        float("-inf"),
+        device=device,
+        dtype=torch.float32,
+    )
+    for i in range(batch_size):
+        context_len_i = int(context_lens[i].item())
+        q_offsets = torch.arange(
+            context_len_i - next_n, context_len_i, device=device
+        )
+        context_limit = torch.full(
+            (next_n,), context_len_i, dtype=torch.int32, device=device
+        )
+        weight_slice = (
+            weights[i * next_n : (i + 1) * next_n, :].transpose(0, 1).contiguous()
+        )
+        for block_rk in range(cdiv(context_len_i, block_size)):
+            block_idx = block_tables[i][block_rk]
+            qx, kx = qf[i], kv_deq[block_idx]
+            k_offsets = torch.arange(
+                block_rk * block_size, (block_rk + 1) * block_size, device=device
+            )
+            mask = (k_offsets[None, :] < context_limit[:, None]) & (
+                k_offsets[None, :] <= q_offsets[:, None]
+            )
+            s = torch.where(
+                mask[None, :, :],
+                (qx.transpose(0, 1) @ kx.transpose(0, 1).transpose(1, 2)).to(
+                    expected.dtype
+                ),
+                float("-inf"),
+            )
+            s = torch.relu(s) * weight_slice[..., None]
+            s = s.sum(dim=0)
+            expected[
+                i * next_n : (i + 1) * next_n,
+                block_rk * block_size : (block_rk + 1) * block_size,
+            ] = torch.where(
+                k_offsets[None, :] <= q_offsets[:, None], s, float("-inf")
+            )
+
+    assert torch.equal(out, expected)
