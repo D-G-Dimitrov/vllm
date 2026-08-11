@@ -9,7 +9,12 @@ from vllm import _custom_ops as ops
 from vllm._aiter_ops import rocm_aiter_ops
 from vllm.compilation.breakable_cudagraph import eager_break_during_capture
 from vllm.config import CUDAGraphMode, get_current_vllm_config
-from vllm.distributed import get_dcp_group, get_pcp_group, get_tp_group
+from vllm.distributed import (
+    get_dcp_group,
+    get_pcp_group,
+    get_tp_group,
+    tensor_model_parallel_all_reduce,
+)
 from vllm.forward_context import get_forward_context
 from vllm.logger import init_logger
 from vllm.model_executor.custom_op import CustomOp
@@ -33,6 +38,7 @@ from vllm.utils.torch_utils import (
 )
 from vllm.v1.attention.backends.mla.indexer import (
     DeepseekV32IndexerMetadata,
+    indexer_decode_shard_rows,
 )
 from vllm.v1.attention.ops.common import pack_seq_triton, unpack_seq_triton
 from vllm.v1.attention.ops.mqa_logits_triton import (
@@ -126,6 +132,55 @@ def _merge_dcp_topk_global(
     stable_topk_from_gathered_candidates_cutedsl(
         gathered, topk_tokens, out=topk_indices
     )
+
+
+def _all_reduce_decode_topk(
+    topk_indices_buffer: torch.Tensor,
+    num_padded_tokens: int,
+    topk_tokens: int,
+    row_lo: int,
+    row_hi: int,
+    max_index: int,
+) -> torch.Tensor:
+    """Reassemble the decode top-k from every rank's owned rows, under capture.
+
+    A sum-all_reduce over a buffer each rank zeroes outside the rows it owns
+    carries exactly what an all-gather would: every other rank adds exact +0.0
+    to a row, and ``x + 0.0 == x`` for every float, so each row arrives
+    bit-identical to the value its owner computed. Unlike ``all_gatherv`` it
+    needs no per-rank sizes and takes the one-shot custom all-reduce, which is
+    what makes it affordable once per ratio-4 layer inside a full cudagraph.
+
+    The indices ride in float32 because custom all-reduce takes only
+    float32/float16/bfloat16 (`custom_all_reduce.cu`); every integer below
+    2**24 is exact there, against compressed KV positions under 2**16 at this
+    model's 256k context.
+
+    The owned rows are read back out of ``topk_indices_buffer`` rather than
+    from the top-k kernel's output tensor: the kernel scatters only the slots
+    it fills and leaves the rest at the -1 pre-fill, so the buffer, not the
+    kernel, holds the full row.
+
+    The clamp is a no-op on every real index -- each is -1 or a position below
+    ``max_index`` -- and bounds the one case that is not real:
+    ``CustomAllreduce.custom_all_reduce``'s non-capturing warm-up branch
+    returns ``torch.empty_like``, and these values are gathered as KV offsets.
+    That branch is why VLLM_LOCAL_ARGMAX_ALLREDUCE ships off by default;
+    clamping before the result is used as an index is what makes the DSpark
+    fused Markov step safe with the same exchange, and it is what makes this
+    one safe.
+    """
+    scattered = torch.zeros(
+        (num_padded_tokens, topk_tokens),
+        dtype=torch.float32,
+        device=topk_indices_buffer.device,
+    )
+    scattered[row_lo:row_hi] = topk_indices_buffer[row_lo:row_hi, :topk_tokens]
+    reduced = tensor_model_parallel_all_reduce(scattered)
+    topk_indices_buffer[:num_padded_tokens, :topk_tokens] = reduced.clamp_(
+        -1, max_index
+    )
+    return topk_indices_buffer[:num_padded_tokens, :topk_tokens]
 
 
 @triton.jit
@@ -647,14 +702,38 @@ def sparse_attn_indexer(
         batch_size = padded_q_quant_decode_tokens.shape[0]
         next_n = padded_q_quant_decode_tokens.shape[1]
         num_padded_tokens = batch_size * next_n
-        seq_lens = decode_metadata.seq_lens[:batch_size]
+        # TP query-sharding, decode half: compute only this rank's query groups
+        # and all-reduce the top-k back to the full buffer below. The builder
+        # partitioned this same `batch_size`, so nothing is re-partitioned here.
+        shard_bounds = decode_metadata.shard_bounds
+        group_lo, group_hi = shard_bounds or (0, batch_size)
+        assert 0 <= group_lo < group_hi <= batch_size
+        row_lo, row_hi = indexer_decode_shard_rows(shard_bounds, batch_size, next_n)
+        # Log both outcomes once: a null A/B arm is otherwise indistinguishable
+        # from a shard that never engaged (canon; same as the prefill half).
+        if shard_bounds is not None:
+            logger.info_once(
+                "Indexer decode-sharding ENGAGED: each rank computes its own "
+                "slice of the decode query groups; top-k all-reduced per layer."
+            )
+        else:
+            logger.info_once(
+                "Indexer decode-sharding INACTIVE for this batch shape "
+                "(below VLLM_INDEXER_DECODE_SHARD_MIN_REQS, or ineligible)."
+            )
+        seq_lens = decode_metadata.seq_lens[group_lo:group_hi]
+        block_table = decode_metadata.block_table[group_lo:group_hi]
+        shard_weights = weights[row_lo:row_hi]
+        padded_q_scale = (
+            padded_q_scale[group_lo:group_hi] if padded_q_scale is not None else None
+        )
         # seq_lens is always 2D: (B, next_n) for native spec decode, (B, 1)
         # otherwise. deep_gemm fp8_fp4_paged_mqa_logits requires 2D context_lens;
         # the downstream topk kernels accept both 1D and 2D.
         padded_q_quant_cast = (
-            padded_q_quant_decode_tokens.view(torch.int8)
+            padded_q_quant_decode_tokens[group_lo:group_hi].view(torch.int8)
             if use_fp4_cache
-            else padded_q_quant_decode_tokens
+            else padded_q_quant_decode_tokens[group_lo:group_hi]
         )
         if current_platform.is_xpu():
             if padded_q_scale is not None:
@@ -665,9 +744,9 @@ def sparse_attn_indexer(
             logits = torch.ops.vllm.xpu_fp8_paged_mqa_logits(
                 padded_q_quant_cast,
                 kv_cache,
-                weights[:num_padded_tokens],
+                shard_weights,
                 seq_lens_xpu,
-                decode_metadata.block_table,
+                block_table,
                 decode_metadata.schedule_metadata,
                 max_model_len,
             )
@@ -675,9 +754,9 @@ def sparse_attn_indexer(
             logits = fp8_fp4_paged_mqa_logits(
                 (padded_q_quant_cast, padded_q_scale),
                 kv_cache,
-                weights[:num_padded_tokens],
+                shard_weights,
                 seq_lens,
-                decode_metadata.block_table,
+                block_table,
                 decode_metadata.schedule_metadata,
                 max_model_len=max_model_len,
                 clean_logits=False,
@@ -686,23 +765,25 @@ def sparse_attn_indexer(
             # SM80/SM121 Triton fallback. Downstream topk reads only up to
             # `seq_lens`, so size the buffer in the same compressed indexer
             # coordinate system.
-            active_max_model_len = decode_metadata.max_seq_len
             logits = fp8_paged_mqa_logits_triton(
                 padded_q_quant_cast,
                 kv_cache,
-                weights[:num_padded_tokens],
+                shard_weights,
                 seq_lens,
-                decode_metadata.block_table,
-                max_model_len=active_max_model_len,
+                block_table,
+                max_model_len=decode_metadata.max_seq_len,
                 clean_logits=False,
             )
         num_rows = logits.shape[0]
-        topk_indices = topk_indices_buffer[:num_padded_tokens, :topk_tokens]
+        topk_indices = topk_indices_buffer[row_lo:row_hi, :topk_tokens]
 
+        # Keyed on the batch's row count, not this rank's: a shard must not
+        # pick a different top-k kernel than the replicated path would, and a
+        # batch that fits the cooperative kernel fits it on any shard of itself.
         use_cooperative_topk = (
             current_platform.is_cuda()
             and topk_tokens in (512, 1024, 2048)
-            and num_rows <= 32
+            and num_padded_tokens <= 32
             and logits.stride(0) % 4 == 0  # TMA 16-byte alignment
             and current_platform.has_device_capability(90)
             and not current_platform.is_device_capability_family(120)
@@ -765,6 +846,16 @@ def sparse_attn_indexer(
                 dcp_rank,
                 dcp_world_size,
                 cp_kv_cache_interleave_size,
+            )
+
+        if shard_bounds is not None:
+            topk_indices = _all_reduce_decode_topk(
+                topk_indices_buffer,
+                num_padded_tokens,
+                topk_tokens,
+                row_lo,
+                row_hi,
+                decode_metadata.max_seq_len,
             )
 
         if decode_metadata.requires_padding:

@@ -77,6 +77,10 @@ SINKHORN_ITERS = CFG_HC_SINKHORN_ITERS
 SWA_LEN = CFG_SLIDING_WINDOW
 TOPK_LEN = CFG_INDEX_TOPK
 
+# The ratio-128 layers' compression ratio: their index list is the identity
+# prefix (pos+1)//128 of the compressed cache, not a selection.
+_PREFILL_COMPRESS_RATIO = 128
+
 # mHC pre runs twice per layer (attention and FFN) plus one broadcast variant for
 # the first layer, which is what per-step totals below are scaled by.
 MHC_PRE_LAUNCHES_PER_STEP = 2 * CFG_NUM_HIDDEN_LAYERS + 1  # 87
@@ -512,21 +516,56 @@ def _occupancy(n_regs: int, shared: int, num_warps: int) -> tuple[int, str, floa
     return ctas, binder, 100.0 * ctas * num_warps / _SM80_WARPS_PER_SM
 
 
-def _prefill_inputs(m_tokens: int, ctx: int, kv_len: int, device: torch.device) -> dict:
-    """One chunk of ragged sparse prefill: every query gathers ``kv_len``
-    scattered rows out of a ``ctx``-row KV pool, which is the loaded case --
-    a chunk row late in a long context attends its full top-k."""
-    indices = torch.randint(
-        0, ctx, (m_tokens * kv_len,), dtype=torch.int32, device=device
-    )
-    indptr = torch.arange(
-        0, m_tokens * kv_len + 1, kv_len, dtype=torch.int32, device=device
-    )
+def _prefill_inputs(
+    m_tokens: int,
+    ctx: int,
+    kv_len: int,
+    device: torch.device,
+    index_mode: str = "topk",
+) -> dict:
+    """One chunk of ragged sparse prefill.
+
+    ``index_mode`` picks which of the two layer populations the indices come
+    from, and it is not a cosmetic knob -- it decides whether adjacent queries
+    share rows, which is the whole property a query-blocked kernel would
+    exploit:
+
+    ``topk`` (the 21 ratio-4 layers): every query gathers ``kv_len``
+    scattered rows out of a ``ctx``-row pool. Those layers' top-k sets are
+    genuine per-query selections, so scattered indices are faithful.
+
+    ``prefix`` (the 20 ratio-128 layers): the index list is not a selection at
+    all -- ``sparse_mla.py`` builds it positionally as ``(pos+1)//128``, the
+    identity prefix of the compressed cache. Adjacent queries then share all
+    but at most one row. ``torch.randint`` destroys exactly that sharing,
+    which is why R3 S3.2's standalone bench predicted 485 ms/chunk against a
+    traced 315 ms and why its absolute rates were not quotable.
+    """
+    if index_mode == "prefix":
+        ratio = _PREFILL_COMPRESS_RATIO
+        kv_rows = max(1, ctx // ratio)
+        # Queries sit at the deep end of the context, one position apart.
+        positions = ctx - m_tokens + torch.arange(m_tokens, device=device)
+        lens = ((positions + 1) // ratio).clamp(1, kv_rows)
+        indptr = torch.zeros(m_tokens + 1, dtype=torch.int64, device=device)
+        torch.cumsum(lens, 0, out=indptr[1:])
+        total = int(indptr[-1].item())
+        starts = indptr[:-1].repeat_interleave(lens)
+        indices = (torch.arange(total, device=device) - starts).to(torch.int32)
+        indptr = indptr.to(torch.int32)
+    else:
+        kv_rows = ctx
+        indices = torch.randint(
+            0, ctx, (m_tokens * kv_len,), dtype=torch.int32, device=device
+        )
+        indptr = torch.arange(
+            0, m_tokens * kv_len + 1, kv_len, dtype=torch.int32, device=device
+        )
     return dict(
         q=torch.randn(
             m_tokens, NUM_HEADS, HEAD_DIM, dtype=torch.bfloat16, device=device
         ),
-        kv=torch.randn(ctx, HEAD_DIM, dtype=torch.bfloat16, device=device),
+        kv=torch.randn(kv_rows, HEAD_DIM, dtype=torch.bfloat16, device=device),
         indices=indices,
         indptr=indptr,
         attn_sink=torch.randn(NUM_HEADS, dtype=torch.float32, device=device),
@@ -594,12 +633,15 @@ def bench_sparse_prefill(
     maxnregs: list[int],
     stages: list[int],
     device: torch.device,
+    index_modes: list[str] | None = None,
 ) -> None:
+    index_modes = ["topk"] if index_modes is None else index_modes
     rows = []
-    for m_tokens, ctx in itertools.product(ms, ctx_ns):
+    for m_tokens, ctx, index_mode in itertools.product(ms, ctx_ns, index_modes):
         kv_len = min(TOPK_LEN, ctx)
-        inp = _prefill_inputs(m_tokens, ctx, kv_len, device)
+        inp = _prefill_inputs(m_tokens, ctx, kv_len, device, index_mode)
         out = torch.empty_like(inp["q"])
+        rows_per_q = (inp["indptr"][-1].item()) / m_tokens
         for block_h, block_k, num_warps, maxnreg, num_stages in itertools.product(
             block_hs, block_ks, warps, maxnregs, stages
         ):
@@ -628,6 +670,8 @@ def bench_sparse_prefill(
                 [
                     str(m_tokens),
                     str(ctx),
+                    index_mode,
+                    f"{rows_per_q:.0f}",
                     str(block_h),
                     str(block_k),
                     str(num_warps),
@@ -646,6 +690,8 @@ def bench_sparse_prefill(
         [
             "M",
             "ctx",
+            "indices",
+            "rows/q",
             "bH",
             "bK",
             "warps",
@@ -658,6 +704,572 @@ def bench_sparse_prefill(
             "occ%",
             "us",
         ],
+        rows,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Sparse MLA at the ratio-128 operating point (K2). These 20 layers have no
+# indexer: their index list is `(pos+1)//128` rows of identity prefix plus a
+# 128-row sliding window, so consecutive queries read nested rows. That is the
+# whole premise of the query-blocked path, and it is invisible to any arm that
+# builds indices with randint -- which is why these are separate arms rather
+# than new points on the ones above.
+#
+# `--prefill-index-mode prefix` above already puts the *existing* kernel on the
+# compressed half of this row rule, and that is the arm to use for "what does
+# the per-query kernel do when the rows are shared". These arms exist because
+# the blocked kernel reads no index list: it re-derives the rows from the query
+# positions, so measuring it needs the rest of the production geometry the
+# index-list arms never have to model -- the SWA window, the per-request slab
+# layout of the bf16 workspace, and the top-k cap. Both rungs here share one
+# input, which is what makes the comparison an A/B rather than two arms.
+#
+# The ladder is one switch per rung (canon rule 17): the ragged kernel on real
+# prefixes, then the blocked kernel at BLOCK_M=1 (same tile, no index list --
+# it derives rows from positions), then the tile itself.
+# ---------------------------------------------------------------------------
+
+C128_MAX_MODEL_LEN = 262_144
+
+
+def _c128_prefill_inputs(m_tokens: int, depth: int, device: torch.device) -> dict:
+    """One ratio-128 prefill chunk of a single request at context ``depth``.
+
+    Mirrors what `_forward_prefill` hands the kernel: a `[row_stride, 512]`
+    bf16 workspace holding the dequantized compressed rows at `[0, n_rows)`
+    and the gathered SWA rows at `[n_rows, ...)`, and one ragged index list per
+    query built the way `_combine_topk_swa_indices_kernel` builds it.
+    """
+    from vllm.v1.attention.ops.rocm_aiter_mla_sparse import (
+        build_ragged_indices_from_dense,
+    )
+
+    n_rows = triton.cdiv(C128_MAX_MODEL_LEN, _PREFILL_COMPRESS_RATIO)
+    seq_len = depth + m_tokens
+    gather_len = m_tokens + min(depth, SWA_LEN - 1)
+    gather_start = seq_len - gather_len
+    row_stride = n_rows + SWA_LEN + m_tokens
+    ratio = _PREFILL_COMPRESS_RATIO
+    top_k = min(
+        max(triton.next_power_of_2(max(seq_len // ratio, 1)), ratio), n_rows
+    )
+
+    positions = torch.arange(depth, seq_len, device=device, dtype=torch.int32)
+    topk_len = torch.clamp(
+        torch.div(positions + 1, ratio, rounding_mode="floor"), max=top_k
+    )
+    swa_len = torch.clamp(positions + 1, max=SWA_LEN)
+    swa_row = n_rows + positions + 1 - swa_len - gather_start
+    lens = (topk_len + swa_len).to(torch.int32)
+
+    width = int(lens.max())
+    col = torch.arange(width, device=device, dtype=torch.int32)
+    dense = torch.where(
+        col[None, :] < topk_len[:, None],
+        col[None, :],
+        swa_row[:, None] + col[None, :] - topk_len[:, None],
+    )
+    dense = torch.where(col[None, :] < lens[:, None], dense, -1).to(torch.int32)
+    indices, indptr = build_ragged_indices_from_dense(dense, lens, num_rows=row_stride)
+
+    q = torch.randn(m_tokens, NUM_HEADS, HEAD_DIM, dtype=torch.bfloat16, device=device)
+    query_start_loc = torch.tensor([0, m_tokens], dtype=torch.int32, device=device)
+    return dict(
+        q=q,
+        out=torch.empty_like(q),
+        kv=torch.randn(row_stride, HEAD_DIM, dtype=torch.bfloat16, device=device),
+        dense=dense,
+        lens=lens,
+        indices=indices,
+        indptr=indptr,
+        attn_sink=torch.randn(NUM_HEADS, dtype=torch.float32, device=device),
+        query_start_loc=query_start_loc,
+        query_start_loc_cpu=query_start_loc.cpu(),
+        seq_lens=torch.tensor([seq_len], dtype=torch.int32, device=device),
+        gather_lens=torch.tensor([gather_len], dtype=torch.int32, device=device),
+        top_k=top_k,
+        row_stride=row_stride,
+        swa_offset=n_rows,
+        rows_per_query=float(lens.float().mean()),
+    )
+
+
+def _launch_c128_prefill_ragged(inp: dict, block_h: int, block_k: int, num_warps: int):
+    from vllm.v1.attention.ops.rocm_aiter_mla_sparse import (
+        _sparse_attn_prefill_ragged_kernel,
+    )
+
+    q, out, kv = inp["q"], inp["out"], inp["kv"]
+    return _sparse_attn_prefill_ragged_kernel[
+        (q.shape[0], triton.cdiv(NUM_HEADS, block_h))
+    ](
+        q,
+        kv,
+        inp["indices"],
+        inp["indptr"],
+        inp["attn_sink"],
+        out,
+        q.stride(0),
+        q.stride(1),
+        q.stride(2),
+        kv.stride(0),
+        kv.stride(1),
+        out.stride(0),
+        out.stride(1),
+        out.stride(2),
+        NUM_HEADS,
+        HEAD_DIM,
+        kv.shape[0],
+        SCALE,
+        HAS_ATTN_SINK=True,
+        BLOCK_H=block_h,
+        BLOCK_D=triton.next_power_of_2(HEAD_DIM),
+        BLOCK_K=block_k,
+        EXACT_TILE=block_h == NUM_HEADS,
+        num_warps=num_warps,
+    )
+
+
+def _launch_c128_prefill_blocked(
+    inp: dict, block_m: int, block_h: int, block_k: int, num_warps: int
+):
+    from vllm.v1.attention.ops.rocm_aiter_mla_sparse import (
+        _sparse_attn_prefill_blocked_kernel,
+        build_query_blocks,
+    )
+
+    q, out, kv = inp["q"], inp["out"], inp["kv"]
+    blocks = inp["blocks"].get(block_m)
+    if blocks is None:
+        blocks = build_query_blocks(inp["query_start_loc_cpu"], block_m, q.device)
+        inp["blocks"][block_m] = blocks
+    return _sparse_attn_prefill_blocked_kernel[
+        (blocks[0].numel(), triton.cdiv(NUM_HEADS, block_h))
+    ](
+        q,
+        kv,
+        blocks[0],
+        blocks[1],
+        inp["query_start_loc"],
+        inp["seq_lens"],
+        inp["gather_lens"],
+        inp["attn_sink"],
+        out,
+        q.stride(0),
+        q.stride(1),
+        q.stride(2),
+        kv.stride(0),
+        kv.stride(1),
+        out.stride(0),
+        out.stride(1),
+        out.stride(2),
+        inp["top_k"],
+        inp["row_stride"],
+        inp["swa_offset"],
+        SCALE,
+        HAS_ATTN_SINK=True,
+        COMPRESS_RATIO=_PREFILL_COMPRESS_RATIO,
+        WINDOW_SIZE=SWA_LEN,
+        BLOCK_M=block_m,
+        BLOCK_H=block_h,
+        BLOCK_D=triton.next_power_of_2(HEAD_DIM),
+        BLOCK_K=block_k,
+        num_warps=num_warps,
+    )
+
+
+def _c128_prefill_fp32_error(inp: dict, out: torch.Tensor, samples: int = 24) -> float:
+    """Error of sampled query rows against fp32 softmax attention.
+
+    Scaled by the row's own largest component, not per element. An attention
+    output over ~1,800 rows of random KV has components scattered around zero,
+    so a per-element ratio divides by noise and reports ~0.2 for a kernel that
+    is exactly right -- which is what the per-query kernel, carried in this
+    same check as its own control, measured before this was fixed.
+
+    Sampled rather than exhaustive: the gathered KV of one 15,360-query chunk
+    does not fit anywhere. Rows are drawn across the chunk so the sample spans
+    short and long prefixes, and the first and last query are always in it --
+    those are the two the block's masks treat specially.
+    """
+    m_tokens = inp["q"].shape[0]
+    picks = sorted(
+        {0, m_tokens - 1, *torch.randint(0, m_tokens, (samples,)).tolist()}
+    )
+    worst = 0.0
+    for t in picks:
+        n = int(inp["lens"][t])
+        rows = inp["dense"][t, :n].to(torch.int64)
+        kv = inp["kv"][rows].to(torch.float32)
+        scores = (inp["q"][t].to(torch.float32) @ kv.T) * SCALE
+        sink = inp["attn_sink"].to(torch.float32)[:, None]
+        weights = torch.softmax(torch.cat([scores, sink], dim=1), dim=1)[:, :-1]
+        expected = weights @ kv
+        got = out[t].to(torch.float32)
+        scale = expected.abs().max().clamp(min=1e-6)
+        worst = max(worst, float((got - expected).abs().max() / scale))
+    return worst
+
+
+def bench_sparse_prefill_c128(
+    ms: list[int],
+    depths: list[int],
+    block_ms: list[int],
+    block_ks: list[int],
+    warps: list[int],
+    device: torch.device,
+    check: bool = True,
+) -> None:
+    rows = []
+    for m_tokens, depth in itertools.product(ms, depths):
+        inp = _c128_prefill_inputs(m_tokens, depth, device)
+        inp["blocks"] = {}
+        block_h = min(16, max(8, triton.next_power_of_2(NUM_HEADS)))
+        rows_per_query = inp["rows_per_query"]
+        # 2 dots of 2*BLOCK_D per (query, head, row).
+        flop = 4.0 * HEAD_DIM * NUM_HEADS * rows_per_query * m_tokens
+
+        for block_k, num_warps in itertools.product(block_ks, warps):
+            fn = partial(_launch_c128_prefill_ragged, inp, block_h, block_k, num_warps)
+            us = _time_us(fn)
+            err = _c128_prefill_fp32_error(inp, inp["out"]) if check else float("nan")
+            rows.append(
+                [
+                    str(m_tokens),
+                    str(depth),
+                    "ragged (per query)",
+                    str(block_k),
+                    str(num_warps),
+                    f"{m_tokens}",
+                    _fmt(us),
+                    _fmt(flop / us * 1e-6) if us == us else "-",
+                    f"{err:.1e}",
+                ]
+            )
+
+        for block_m, block_k, num_warps in itertools.product(
+            block_ms, block_ks, warps
+        ):
+            fn = partial(
+                _launch_c128_prefill_blocked,
+                inp,
+                block_m,
+                block_h,
+                block_k,
+                num_warps,
+            )
+            us = _time_us(fn)
+            err = _c128_prefill_fp32_error(inp, inp["out"]) if check else float("nan")
+            rows.append(
+                [
+                    str(m_tokens),
+                    str(depth),
+                    f"blocked M={block_m}",
+                    str(block_k),
+                    str(num_warps),
+                    str(triton.cdiv(m_tokens, block_m)),
+                    _fmt(us),
+                    _fmt(flop / us * 1e-6) if us == us else "-",
+                    f"{err:.1e}",
+                ]
+            )
+    _print_table(
+        f"sparse MLA prefill, ratio-128 dense prefix (heads={NUM_HEADS}, "
+        f"D={HEAD_DIM}, window={SWA_LEN})",
+        ["M", "depth", "impl", "bK", "warps", "CTAs", "us", "TFLOP/s", "relerr"],
+        rows,
+    )
+
+
+def _c128_paged_slots(
+    num_reqs: int, per_req: int, pool_rows: int, device: torch.device
+) -> torch.Tensor:
+    """`[num_reqs, per_req]` slot ids, paged the way a free list hands them out.
+
+    Row `i` of a request always lands in the same slot regardless of which
+    query reads it -- that is what makes the prefixes nest -- while the pages
+    themselves are scattered through the pool, which is what keeps the address
+    spread honest.
+    """
+    pages_per_req = triton.cdiv(per_req, CACHE_BLOCK_SIZE)
+    pool_pages = max(num_reqs * pages_per_req, pool_rows // CACHE_BLOCK_SIZE)
+    pages = torch.randperm(pool_pages, device=device)[: num_reqs * pages_per_req]
+    pages = pages.reshape(num_reqs, pages_per_req)
+    off = torch.arange(per_req, device=device)
+    return (
+        pages[:, off // CACHE_BLOCK_SIZE] * CACHE_BLOCK_SIZE
+        + (off % CACHE_BLOCK_SIZE)[None, :]
+    ).to(torch.int32)
+
+
+def _c128_decode_inputs(
+    batch: int,
+    next_n: int,
+    depth: int,
+    splits: list[int],
+    device: torch.device,
+    pool_rows: int = 0,
+) -> dict:
+    """`batch` requests of `next_n` query tokens each at consecutive positions.
+
+    Both segments are built from a per-request positional slot map, so the
+    compressed lists nest and the SWA windows slide by one -- the structure the
+    blocked kernel derives from `indptr`. Both kernels then take *the same*
+    ragged buffers, so the arm compares implementations and nothing else.
+    """
+    from vllm.platforms import current_platform
+    from vllm.v1.attention.ops.fp8_sm80 import get_e4m3fn_bf16_lut
+    from vllm.v1.attention.ops.rocm_aiter_mla_sparse import (
+        build_ragged_indices_from_dense,
+    )
+
+    is_fnuz = current_platform.is_fp8_fnuz()
+    positions = (
+        depth + torch.arange(next_n, device=device, dtype=torch.int32)[None, :]
+    ).expand(batch, next_n)
+
+    comp_per_req = max(1, (depth + next_n) // _PREFILL_COMPRESS_RATIO)
+    comp_slots = _c128_paged_slots(batch, comp_per_req, pool_rows, device)
+    comp_lens = torch.clamp(
+        torch.div(positions + 1, _PREFILL_COMPRESS_RATIO, rounding_mode="floor"),
+        max=comp_per_req,
+    ).reshape(-1)
+    comp_dense = comp_slots[:, None, :].expand(batch, next_n, comp_per_req).reshape(
+        batch * next_n, comp_per_req
+    )
+    comp_dense = torch.where(
+        torch.arange(comp_per_req, device=device)[None, :] < comp_lens[:, None],
+        comp_dense,
+        -1,
+    ).to(torch.int32)
+
+    swa_span = min(depth + next_n, SWA_LEN + next_n - 1)
+    swa_first = depth + next_n - swa_span
+    swa_slots = _c128_paged_slots(batch, swa_span, 0, device)
+    swa_lens = torch.clamp(positions + 1, max=SWA_LEN).reshape(-1)
+    swa_start = (positions + 1 - torch.clamp(positions + 1, max=SWA_LEN)).reshape(
+        -1
+    ) - swa_first
+    col = torch.arange(SWA_LEN, device=device)
+    gather = torch.clamp(swa_start[:, None] + col[None, :], 0, swa_span - 1)
+    swa_dense = torch.gather(
+        swa_slots.repeat_interleave(next_n, dim=0), 1, gather.to(torch.int64)
+    )
+    swa_dense = torch.where(col[None, :] < swa_lens[:, None], swa_dense, -1).to(
+        torch.int32
+    )
+
+    comp_rows = int(comp_slots.max()) + 1
+    swa_rows = int(swa_slots.max()) + 1
+    main_indices, main_indptr = build_ragged_indices_from_dense(
+        swa_dense, swa_lens.to(torch.int32), num_rows=swa_rows
+    )
+    extra_indices, extra_indptr = build_ragged_indices_from_dense(
+        comp_dense, comp_lens.to(torch.int32), num_rows=comp_rows
+    )
+
+    num_queries = batch * next_n
+    q = torch.randn(
+        num_queries, NUM_HEADS, HEAD_DIM, dtype=torch.bfloat16, device=device
+    )
+    part = {
+        s: (
+            torch.empty(
+                (num_queries, s, NUM_HEADS), dtype=torch.float32, device=device
+            ),
+            torch.empty(
+                (num_queries, s, NUM_HEADS), dtype=torch.float32, device=device
+            ),
+            torch.empty(
+                (num_queries, s, NUM_HEADS, HEAD_DIM),
+                dtype=torch.float32,
+                device=device,
+            ),
+        )
+        for s in splits
+    }
+    return dict(
+        q=q,
+        out=torch.empty_like(q),
+        main_cache=_make_ds_mla_cache(swa_rows, CACHE_BLOCK_SIZE, is_fnuz, device),
+        extra_cache=_make_ds_mla_cache(comp_rows, CACHE_BLOCK_SIZE, False, device),
+        main_indices=main_indices,
+        main_indptr=main_indptr,
+        extra_indices=extra_indices,
+        extra_indptr=extra_indptr,
+        attn_sink=torch.randn(NUM_HEADS, dtype=torch.float32, device=device),
+        fp8_lut=get_e4m3fn_bf16_lut(device),
+        is_fnuz=is_fnuz,
+        part=part,
+        next_n=next_n,
+        rows_per_query=float((comp_lens + swa_lens).float().mean()),
+    )
+
+
+def _launch_c128_decode_blocked(
+    inp: dict, block_m: int, block_h: int, block_k: int, num_splits: int, warps: int
+) -> None:
+    from vllm.v1.attention.ops.rocm_aiter_mla_sparse import (
+        _sparse_attn_decode_partial_blocked_kernel,
+        _sparse_attn_decode_reduce_kernel,
+    )
+
+    q, out = inp["q"], inp["out"]
+    part_m, part_l, part_acc = inp["part"][num_splits]
+    main_cache, extra_cache = inp["main_cache"], inp["extra_cache"]
+    next_n = inp["next_n"]
+    _sparse_attn_decode_partial_blocked_kernel[
+        (q.shape[0] // next_n, num_splits, triton.cdiv(NUM_HEADS, block_h))
+    ](
+        q,
+        main_cache,
+        inp["main_indices"],
+        inp["main_indptr"],
+        extra_cache,
+        inp["extra_indices"],
+        inp["extra_indptr"],
+        part_m,
+        part_l,
+        part_acc,
+        inp["fp8_lut"],
+        q.stride(0),
+        q.stride(1),
+        main_cache.stride(0),
+        extra_cache.stride(0),
+        part_m.stride(0),
+        part_m.stride(1),
+        part_acc.stride(0),
+        part_acc.stride(1),
+        part_acc.stride(2),
+        main_cache.shape[0] * main_cache.shape[1],
+        extra_cache.shape[0] * extra_cache.shape[1],
+        main_cache.shape[1],
+        extra_cache.shape[1],
+        SCALE,
+        next_n,
+        HAS_EXTRA=True,
+        NOPE_DIM=NOPE_DIM,
+        NOPE_BLOCK=triton.next_power_of_2(NOPE_DIM),
+        ROPE_DIM=ROPE_DIM,
+        IS_FNUZ_MAIN=inp["is_fnuz"],
+        IS_FNUZ_EXTRA=False,
+        BLOCK_M=block_m,
+        BLOCK_H=block_h,
+        BLOCK_K=block_k,
+        NUM_SPLITS=num_splits,
+        NUM_STAGES=1,
+        num_warps=warps,
+    )
+    _sparse_attn_decode_reduce_kernel[(q.shape[0], NUM_HEADS)](
+        part_m,
+        part_l,
+        part_acc,
+        inp["attn_sink"],
+        out,
+        out.stride(0),
+        out.stride(1),
+        part_m.stride(0),
+        part_m.stride(1),
+        part_acc.stride(0),
+        part_acc.stride(1),
+        part_acc.stride(2),
+        NUM_HEADS,
+        HAS_ATTN_SINK=True,
+        COMB_DIM=HEAD_DIM,
+        BLOCK_H=1,
+        NUM_SPLITS=num_splits,
+        SPLITS_PAD=triton.next_power_of_2(num_splits),
+        num_warps=4,
+    )
+
+
+def bench_sparse_decode_c128(
+    batches: list[int],
+    next_n: int,
+    depths: list[int],
+    block_ms: list[int],
+    splits: list[int],
+    warps: list[int],
+    device: torch.device,
+    pool_rows: int = 0,
+) -> None:
+    from vllm.v1.attention.ops.rocm_aiter_mla_sparse import _decode_num_splits
+
+    block_h = min(16, max(8, triton.next_power_of_2(NUM_HEADS)))
+    heads_blocks = triton.cdiv(NUM_HEADS, block_h)
+    rows = []
+    for batch, depth in itertools.product(batches, depths):
+        num_queries = batch * next_n
+        # The per-query kernel's own split choice, and the blocked one's: the
+        # block count is `next_n` times smaller, so the heuristic sees a
+        # different device fill and this is where that shows up.
+        live = _decode_num_splits(num_queries, heads_blocks, SWA_LEN, TOPK_LEN, 32)
+        blocked_live = _decode_num_splits(batch, heads_blocks, SWA_LEN, TOPK_LEN, 32)
+        all_splits = sorted({*splits, live, blocked_live})
+        inp = _c128_decode_inputs(
+            batch, next_n, depth, all_splits, device, pool_rows=pool_rows
+        )
+        flop = 4.0 * HEAD_DIM * NUM_HEADS * inp["rows_per_query"] * num_queries
+
+        reference = None
+
+        def _err(got: torch.Tensor) -> str:
+            # Scaled by the output's own magnitude, not per element: attention
+            # over ~1,700 rows of random KV has components scattered around
+            # zero, and a per-element ratio divides by that noise.
+            if reference is None:
+                return "-"
+            scale = reference.abs().max().clamp(min=1e-6)
+            err = (got.to(torch.float32) - reference).abs().max() / scale
+            return f"{float(err):.1e}"
+
+        for s in all_splits:
+            for w in warps:
+                fn = partial(_launch_split_k, inp, block_h, 32, s, w)
+                us = _time_us(fn)
+                # The per-query kernel measured against its own first split
+                # count is the metric's floor: whatever it reports is split-K
+                # reassociation, not a property of the blocked path.
+                err = _err(inp["out"]) if us == us else "-"
+                if reference is None and us == us:
+                    reference = inp["out"].clone().to(torch.float32)
+                    err = "ref"
+                rows.append(
+                    [
+                        str(batch),
+                        str(depth),
+                        f"per query s{s} w{w}" + (" (live)" if s == live else ""),
+                        str(num_queries * s * heads_blocks),
+                        _fmt(us),
+                        _fmt(flop / us * 1e-6) if us == us else "-",
+                        err,
+                    ]
+                )
+        # A group is never split across CTAs, so a tile narrower than next_n
+        # would leave the group's last queries unwritten. `decode_block_tile`
+        # declines those in production; here they are simply not run.
+        usable = [b for b in block_ms if b >= next_n]
+        for block_m, s, w in itertools.product(usable, all_splits, warps):
+            fn = partial(_launch_c128_decode_blocked, inp, block_m, block_h, 32, s, w)
+            us = _time_us(fn)
+            err = _err(inp["out"]) if us == us else "-"
+            rows.append(
+                [
+                    str(batch),
+                    str(depth),
+                    f"blocked M={block_m} s{s} w{w}"
+                    + (" (live)" if s == blocked_live else ""),
+                    str(batch * s * heads_blocks),
+                    _fmt(us),
+                    _fmt(flop / us * 1e-6) if us == us else "-",
+                    err,
+                ]
+            )
+    _print_table(
+        f"sparse MLA decode, ratio-128 (heads={NUM_HEADS}, next_n={next_n}, "
+        f"window={SWA_LEN})",
+        ["C", "depth", "impl", "CTAs", "us", "TFLOP/s", "relerr"],
         rows,
     )
 
@@ -941,13 +1553,14 @@ def _launch_indexer_logits(
     maxnreg: int,
     num_stages: int,
     kv_group: int,
-) -> None:
+    factor_k_scale: bool = True,
+) -> object:
     from vllm.v1.attention.ops.mqa_logits_triton import _fp8_mqa_logits_kernel
 
     # Bypass @triton.autotune via .fn so maxnreg is an explicit knob.
     extra = {"maxnreg": maxnreg} if maxnreg else {}
     q, k, weights, logits = inp["q"], inp["k"], inp["weights"], inp["logits"]
-    _fp8_mqa_logits_kernel.fn[grid](
+    return _fp8_mqa_logits_kernel.fn[grid](
         q,
         k,
         inp["k_scales"],
@@ -971,9 +1584,48 @@ def _launch_indexer_logits(
         BLOCK_D=triton.next_power_of_2(CFG_INDEX_HEAD_DIM),
         BLOCK_N=_LOGITS_BLOCK_N,
         KV_GROUP=kv_group,
+        FACTOR_K_SCALE=factor_k_scale,
         num_warps=4,
         num_stages=num_stages,
         **extra,
+    )
+
+
+def _check_factored_k_scale(inp: dict, n_ctx: int, kv_group: int) -> str:
+    """Both epilogue variants, same inputs, one invocation.
+
+    Reports the logit delta and whether the indexer's top-k SELECTION moved.
+    The relu's active set cannot move (k_scale >= 0 cannot flip a sign), but
+    the head sum's rounding order does change -- one scaling instead of
+    BLOCK_H -- so near-ties can in principle reorder. This is a structural
+    check on synthetic inputs; canon rule 34 requires the real gate to run on
+    captured tensors (see /root/optim/k7_numerics.py).
+    """
+    m_tokens = inp["q"].shape[0]
+    grid = (m_tokens, triton.cdiv(n_ctx, _LOGITS_BLOCK_N * kv_group))
+    outs = {}
+    for factored in (False, True):
+        inp["logits"].zero_()
+        _launch_indexer_logits(inp, grid, n_ctx, 0, 2, kv_group, factored)
+        torch.accelerator.synchronize()
+        outs[factored] = inp["logits"].clone()
+
+    ref, new = outs[False], outs[True]
+    finite = torch.isfinite(ref) & torch.isfinite(new)
+    diff = (ref - new).abs()[finite]
+    scale = ref.abs()[finite].clamp_min(1e-30)
+    max_abs = diff.max().item() if diff.numel() else 0.0
+    max_rel = (diff / scale).max().item() if diff.numel() else 0.0
+
+    k = min(TOPK_LEN, n_ctx)
+    sel_ref = torch.topk(ref, k, dim=-1).indices.sort(dim=-1).values
+    sel_new = torch.topk(new, k, dim=-1).indices.sort(dim=-1).values
+    moved = int((sel_ref != sel_new).any(dim=-1).sum().item())
+
+    assert max_rel < 1e-4, f"factored k_scale changed logits by {max_rel:.2e} rel"
+    return (
+        f"M={m_tokens} N={n_ctx} G={kv_group}: max|d|={max_abs:.3e} "
+        f"rel={max_rel:.3e}, top-{k} rows moved {moved}/{m_tokens}"
     )
 
 
@@ -984,8 +1636,11 @@ def bench_indexer_logits(
     stages: list[int],
     kv_groups: list[int],
     device: torch.device,
+    factor_scales: list[int] | None = None,
 ) -> None:
+    factor_scales = [0, 1] if factor_scales is None else factor_scales
     rows = []
+    checks = []
     for m_tokens, n_ctx in itertools.product(ms, ctx_ns):
         inp = dict(
             q=torch.randn(
@@ -1009,21 +1664,31 @@ def bench_indexer_logits(
             ke=torch.full((m_tokens,), n_ctx, dtype=torch.int32, device=device),
             logits=torch.empty(m_tokens, n_ctx, dtype=torch.float32, device=device),
         )
-        for maxnreg, num_stages, kv_group in itertools.product(
-            maxnregs, stages, kv_groups
+        for kv_group in kv_groups:
+            checks.append(_check_factored_k_scale(inp, n_ctx, kv_group))
+        for maxnreg, num_stages, kv_group, factored in itertools.product(
+            maxnregs, stages, kv_groups, factor_scales
         ):
             grid = (m_tokens, triton.cdiv(n_ctx, _LOGITS_BLOCK_N * kv_group))
-            us = _time_us(
-                partial(
-                    _launch_indexer_logits,
-                    inp,
-                    grid,
-                    n_ctx,
-                    maxnreg,
-                    num_stages,
-                    kv_group,
-                )
+            fn = partial(
+                _launch_indexer_logits,
+                inp,
+                grid,
+                n_ctx,
+                maxnreg,
+                num_stages,
+                kv_group,
+                bool(factored),
             )
+            n_regs = n_spills = 0
+            try:
+                compiled = fn()
+                torch.accelerator.synchronize()
+                n_regs = getattr(compiled, "n_regs", 0)
+                n_spills = getattr(compiled, "n_spills", 0)
+            except Exception as exc:  # noqa: BLE001 - report and keep sweeping
+                print(f"  skipped ({type(exc).__name__}: {exc})")
+            us = _time_us(fn)
             ns_per_cta = float("nan") if us != us else us * 1e3 / (grid[0] * grid[1])
             rows.append(
                 [
@@ -1032,6 +1697,9 @@ def bench_indexer_logits(
                     str(maxnreg) if maxnreg else "-",
                     str(num_stages),
                     str(kv_group),
+                    "yes" if factored else "no",
+                    str(n_regs),
+                    str(n_spills),
                     _fmt(us),
                     _fmt(ns_per_cta, ".1f"),
                 ]
@@ -1039,9 +1707,23 @@ def bench_indexer_logits(
     _print_table(
         f"indexer MQA logits (H={CFG_INDEX_N_HEADS}, D={CFG_INDEX_HEAD_DIM}, "
         f"BLOCK_N={_LOGITS_BLOCK_N}, num_warps=4)",
-        ["M", "N", "maxnreg", "stages", "G", "us", "ns/CTA"],
+        [
+            "M",
+            "N",
+            "maxnreg",
+            "stages",
+            "G",
+            "k_scale out",
+            "regs",
+            "spill",
+            "us",
+            "ns/CTA",
+        ],
         rows,
     )
+    print("\n  factored-vs-scaled epilogue (same invocation, synthetic q/k):")
+    for line in checks:
+        print(f"    {line}")
 
 
 # ---------------------------------------------------------------------------
@@ -1061,9 +1743,16 @@ _PAGED_BLOCK_SIZE = 64
 _PAGED_COMPRESS_RATIO = 4
 
 
-def _paged_logits_inputs(batch: int, n_compressed: int, device: torch.device) -> dict:
+def _paged_logits_inputs(
+    batch: int, n_compressed: int, device: torch.device, next_n: int = 6
+) -> dict:
     """Decode inputs for `_fp8_paged_mqa_logits_kernel`, laid out exactly as
     `fp8_paged_mqa_logits_triton` re-derives them from the paged cache.
+
+    ``next_n`` is the DSpark draft length: production runs 6 (5 speculative
+    tokens plus the bonus), and the grid's first dimension is B * next_n, so
+    the harness's old hardcoded 1 measured a grid 6x smaller than serving's
+    at the same batch (canon rule 7).
 
     The block table scatters each sequence's blocks over a pool several times
     its size, because live block IDs come off a free list rather than being
@@ -1105,37 +1794,48 @@ def _paged_logits_inputs(batch: int, n_compressed: int, device: torch.device) ->
     q = torch.randint(
         0,
         256,
-        (batch, 1, CFG_INDEX_N_HEADS, head_dim),
+        (batch, next_n, CFG_INDEX_N_HEADS, head_dim),
         dtype=torch.uint8,
         device=device,
     )
+    lut = get_e4m3fn_bf16_lut(device, nan_value=480.0)
     return dict(
         q=q,
+        # K1's treatment operand: the same table applied once on the host.
+        q_bf16=lut.index_select(0, q.reshape(-1).to(torch.int32)).view(q.shape),
+        next_n=next_n,
         kv_byte=kv_byte,
         kv_scale=kv_scale,
         weights=torch.rand(
-            batch, CFG_INDEX_N_HEADS, dtype=torch.float32, device=device
+            batch * next_n, CFG_INDEX_N_HEADS, dtype=torch.float32, device=device
         ),
-        fp8_lut=get_e4m3fn_bf16_lut(device, nan_value=480.0),
+        fp8_lut=lut,
         context_lens=torch.full(
             (batch,), n_compressed, dtype=torch.int32, device=device
         ),
         block_tables=block_tables.contiguous(),
         # clean_logits=False in serving: the buffer is left uninitialized and
         # the top-k reads only [:context_len].
-        logits=torch.empty(batch, n_compressed, dtype=torch.float32, device=device),
+        logits=torch.empty(
+            batch * next_n, n_compressed, dtype=torch.float32, device=device
+        ),
         seq_blocks=seq_blocks,
     )
 
 
 def _launch_paged_logits(
-    inp: dict, grid: tuple[int, int], maxnreg: int, num_stages: int
+    inp: dict,
+    grid: tuple[int, int],
+    maxnreg: int,
+    num_stages: int,
+    q_bf16: bool = True,
 ) -> object:
     from vllm.v1.attention.ops.mqa_logits_triton import _fp8_paged_mqa_logits_kernel
 
     # Bypass @triton.autotune via .fn so maxnreg is an explicit knob.
     extra = {"maxnreg": maxnreg} if maxnreg else {}
-    q, kv_byte, kv_scale = inp["q"], inp["kv_byte"], inp["kv_scale"]
+    q = inp["q_bf16"] if q_bf16 else inp["q"]
+    kv_byte, kv_scale = inp["kv_byte"], inp["kv_scale"]
     weights, block_tables, logits = inp["weights"], inp["block_tables"], inp["logits"]
     return _fp8_paged_mqa_logits_kernel.fn[grid](
         q,
@@ -1161,17 +1861,35 @@ def _launch_paged_logits(
         block_tables.stride(1),
         logits.stride(0),
         logits.stride(1),
-        next_n=1,
+        next_n=inp["next_n"],
         num_heads=CFG_INDEX_N_HEADS,
         head_dim=CFG_INDEX_HEAD_DIM,
         block_size=_PAGED_BLOCK_SIZE,
         BLOCK_H=max(16, triton.next_power_of_2(CFG_INDEX_N_HEADS)),
         BLOCK_D=triton.next_power_of_2(CFG_INDEX_HEAD_DIM),
         BLOCK_N=triton.next_power_of_2(_PAGED_BLOCK_SIZE),
+        Q_IS_BF16=q_bf16,
         num_warps=4,
         num_stages=num_stages,
         **extra,
     )
+
+
+def _check_paged_q_decode(inp: dict, grid: tuple[int, int]) -> str:
+    """K1 gate: hoisting q's LUT decode must be bit-identical.
+
+    Same table, same bf16 operands into the same tl.dot, same fp32
+    accumulate -- so this is an equality assert, not a tolerance.
+    """
+    outs = {}
+    for q_bf16 in (False, True):
+        inp["logits"].zero_()
+        _launch_paged_logits(inp, grid, 0, 2, q_bf16)
+        torch.accelerator.synchronize()
+        outs[q_bf16] = inp["logits"].clone()
+    same = torch.equal(outs[False], outs[True])
+    assert same, "hoisting the q LUT decode changed the logits"
+    return f"grid={grid}: in-kernel vs hoisted q decode bit-identical"
 
 
 def bench_indexer_paged(
@@ -1180,13 +1898,22 @@ def bench_indexer_paged(
     maxnregs: list[int],
     stages: list[int],
     device: torch.device,
+    next_n: int = 6,
+    q_decodes: list[int] | None = None,
 ) -> None:
+    q_decodes = [0, 1] if q_decodes is None else q_decodes
     rows = []
+    checks = []
     for batch, n_compressed in itertools.product(batches, n_compresseds):
-        inp = _paged_logits_inputs(batch, n_compressed, device)
-        grid = (batch, inp["seq_blocks"])
-        for maxnreg, num_stages in itertools.product(maxnregs, stages):
-            fn = partial(_launch_paged_logits, inp, grid, maxnreg, num_stages)
+        inp = _paged_logits_inputs(batch, n_compressed, device, next_n)
+        grid = (batch * next_n, inp["seq_blocks"])
+        checks.append(_check_paged_q_decode(inp, grid))
+        for maxnreg, num_stages, q_bf16 in itertools.product(
+            maxnregs, stages, q_decodes
+        ):
+            fn = partial(
+                _launch_paged_logits, inp, grid, maxnreg, num_stages, bool(q_bf16)
+            )
             n_regs = n_spills = shared = 0
             try:
                 compiled = fn()
@@ -1206,6 +1933,7 @@ def bench_indexer_paged(
                     str(n_compressed),
                     str(n_compressed * _PAGED_COMPRESS_RATIO),
                     str(grid[0] * grid[1]),
+                    "host" if q_bf16 else "kernel",
                     str(maxnreg) if maxnreg else "-",
                     str(num_stages),
                     str(n_regs),
@@ -1219,12 +1947,14 @@ def bench_indexer_paged(
             )
     _print_table(
         f"indexer MQA logits, paged decode (H={CFG_INDEX_N_HEADS}, "
-        f"D={CFG_INDEX_HEAD_DIM}, block_size={_PAGED_BLOCK_SIZE}, num_warps=4)",
+        f"D={CFG_INDEX_HEAD_DIM}, block_size={_PAGED_BLOCK_SIZE}, "
+        f"next_n={next_n}, num_warps=4)",
         [
             "B",
             "n_cmp",
             "ctx",
             "CTAs",
+            "q decode",
             "maxnreg",
             "stages",
             "regs",
@@ -1237,6 +1967,8 @@ def bench_indexer_paged(
         ],
         rows,
     )
+    for line in checks:
+        print(f"    {line}")
 
 
 # ---------------------------------------------------------------------------
@@ -2640,6 +3372,8 @@ KERNELS = (
     "moe-experts",
     "sparse-decode",
     "sparse-prefill",
+    "sparse-decode-c128",
+    "sparse-prefill-c128",
     "bf16-gemv",
     "tail-launch",
     "prenorm-gemm",
@@ -2703,6 +3437,56 @@ def main() -> None:
     parser.add_argument("--batches", type=_int_list, default=[1, 8, 32])
     parser.add_argument("--block-h", type=_int_list, default=[16, 8, 4, 2])
     parser.add_argument("--splits", type=_int_list, default=[1, 4, 8, 16, 32, 64])
+    parser.add_argument(
+        "--c128-ms",
+        type=_int_list,
+        default=[15360],
+        help="chunk tokens for the ratio-128 prefill arm; 15360 is the served "
+        "PREFILL_CHUNK_SIZE at 256k",
+    )
+    parser.add_argument(
+        "--c128-depths",
+        type=_int_list,
+        default=[0, 100_000, 200_000],
+        help="context already in the KV cache when the chunk starts; the "
+        "compressed prefix is depth/128 rows, so this is the axis the query "
+        "blocking is priced against",
+    )
+    parser.add_argument(
+        "--c128-block-ms",
+        type=_int_list,
+        default=[1, 2, 4, 8, 16],
+        help="BLOCK_M sweep for the query-blocked kernels. BLOCK_M=1 is the "
+        "control rung: same tile as today, but rows derived from positions "
+        "instead of read from an index list",
+    )
+    parser.add_argument(
+        "--c128-batches",
+        type=_int_list,
+        default=[4, 16, 27],
+        help="resident requests for the ratio-128 decode arm; 27 is the "
+        "measured c64@256k residency",
+    )
+    parser.add_argument(
+        "--c128-next-n",
+        type=int,
+        default=6,
+        help="query tokens per request (1 + num_speculative_tokens). The "
+        "per-query arms above hardcode 1, which is a harness/production "
+        "mismatch this arm exists to close",
+    )
+    parser.add_argument(
+        "--c128-decode-depths",
+        type=_int_list,
+        default=[200_000],
+        help="context depth for the ratio-128 decode arm",
+    )
+    parser.add_argument(
+        "--c128-no-check",
+        action="store_true",
+        help="skip the fp32 reference check on the prefill arm (it costs a "
+        "few seconds per operating point)",
+    )
     parser.add_argument("--warps", type=_int_list, default=[4, 8])
     parser.add_argument("--tokens", type=_int_list, default=[1, 8, 32, 128, 512, 2048])
     parser.add_argument(
@@ -2719,12 +3503,46 @@ def main() -> None:
     parser.add_argument(
         "--gather-workers", type=_int_list, default=[128, 256, 512, 1024, 2048]
     )
-    parser.add_argument("--logits-ms", type=_int_list, default=[256, 2048])
+    parser.add_argument(
+        "--logits-ms",
+        type=_int_list,
+        default=[240, 2048],
+        help="query rows per call. 240 is the production prefill shape at "
+        "256k: the logits budget splits a 15,360-token chunk into 8 "
+        "sub-chunks and the query shard splits each across 8 ranks. 2048 is "
+        "the point the KV_GROUP gate was originally tuned at",
+    )
     parser.add_argument(
         "--logits-ns",
         type=_int_list,
-        default=[7168, 28672],
-        help="compressed context lengths (= context/compress_ratio)",
+        default=[28672, 61440],
+        help="compressed context lengths (= context/compress_ratio); 61440 "
+        "is the 256k-deep chunk",
+    )
+    parser.add_argument(
+        "--prefill-index-mode",
+        type=lambda v: [x.strip() for x in v.split(",")],
+        default=["topk"],
+        help="sparse-prefill index construction: 'topk' builds the ratio-4 "
+        "layers' scattered per-query selections, 'prefix' builds the "
+        "ratio-128 layers' real dense prefix (pos+1)//128, which is the only "
+        "mode that preserves row-sharing between adjacent queries",
+    )
+    parser.add_argument(
+        "--logits-factor-scale",
+        type=_int_list,
+        default=[0, 1],
+        help="K7 arm: 0 scales every (head, kv) element before the relu, "
+        "1 factors k_scale out to a per-kv multiply on the head sum",
+    )
+    parser.add_argument(
+        "--prefill-index-mode",
+        type=lambda v: [x.strip() for x in v.split(",")],
+        default=["topk"],
+        help="sparse-prefill index construction: 'topk' builds the ratio-4 "
+        "layers' scattered per-query selections, 'prefix' builds the "
+        "ratio-128 layers' real dense prefix (pos+1)//128, which is the only "
+        "mode that preserves row-sharing between adjacent queries",
     )
     parser.add_argument(
         "--maxnreg",
@@ -2747,8 +3565,23 @@ def main() -> None:
     parser.add_argument(
         "--paged-batches",
         type=_int_list,
-        default=[1],
-        help="decode batch for the paged indexer sweep (grid is B x blocks)",
+        default=[4, 12, 27],
+        help="decode batch for the paged indexer sweep; the grid is "
+        "(B x next_n) x blocks, and 27 is the c64@256k residency",
+    )
+    parser.add_argument(
+        "--paged-next-n",
+        type=int,
+        default=6,
+        help="DSpark draft length: 5 speculative tokens plus the bonus. The "
+        "grid's first dimension is B x next_n",
+    )
+    parser.add_argument(
+        "--paged-q-bf16",
+        type=_int_list,
+        default=[0, 1],
+        help="K1 arm: 0 LUT-decodes q inside every CTA, 1 takes q already "
+        "decoded to bf16 by the wrapper",
     )
     parser.add_argument(
         "--paged-ns",
@@ -2853,7 +3686,13 @@ def main() -> None:
 
     torch.manual_seed(0)
     device = torch.device("cuda")
-    selected = KERNELS if args.kernel == "all" else (args.kernel,)
+    # The two c128 arms build a 15,360-query chunk and an fp32 reference per
+    # operating point, so they are opt-in rather than part of "all".
+    selected = (
+        tuple(k for k in KERNELS if not k.endswith("-c128"))
+        if args.kernel == "all"
+        else (args.kernel,)
+    )
 
     if "moe-experts" in selected:
         bench_moe_experts(
@@ -2893,6 +3732,27 @@ def main() -> None:
                 point["swa_len"],
                 args.decode_cache_rows,
             )
+    if "sparse-prefill-c128" in selected:
+        bench_sparse_prefill_c128(
+            args.c128_ms,
+            args.c128_depths,
+            args.c128_block_ms,
+            args.prefill_block_ks,
+            args.warps,
+            device,
+            check=not args.c128_no_check,
+        )
+    if "sparse-decode-c128" in selected:
+        bench_sparse_decode_c128(
+            args.c128_batches,
+            args.c128_next_n,
+            args.c128_decode_depths,
+            args.c128_block_ms,
+            args.splits,
+            args.warps,
+            device,
+            args.decode_cache_rows,
+        )
     if "sparse-prefill" in selected:
         bench_sparse_prefill(
             args.prefill_ms,
@@ -2903,6 +3763,7 @@ def main() -> None:
             args.maxnreg,
             args.prefill_stages,
             device,
+            args.prefill_index_mode,
         )
     if "prenorm-gemm" in selected:
         bench_prenorm_gemm(args.tokens, args.prenorm_configs, device)
@@ -2920,6 +3781,7 @@ def main() -> None:
             args.logits_stages,
             args.logits_groups,
             device,
+            args.logits_factor_scale,
         )
     if "indexer-paged" in selected:
         bench_indexer_paged(
@@ -2928,6 +3790,8 @@ def main() -> None:
             args.maxnreg,
             args.logits_stages,
             device,
+            args.paged_next_n,
+            args.paged_q_bf16,
         )
     if "tail-launch" in selected:
         bench_tail_launch(args.gemv_ms, device)

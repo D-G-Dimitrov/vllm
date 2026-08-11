@@ -1044,7 +1044,8 @@ class Scheduler(SchedulerInterface):
                     if self.needs_kv_cache_zeroing:
                         # Skip zeroing of the blocks the async load will
                         # overwrite; the zeroing could race the write.
-                        per_group = self.kv_cache_manager.get_zeroing_block_ids_in_range(
+                        mgr = self.kv_cache_manager
+                        per_group = mgr.get_zeroing_block_ids_in_range(
                             request.request_id,
                             num_new_local_computed_tokens,
                             num_computed_tokens,
