@@ -397,12 +397,12 @@ class DeepseekV4Attention(nn.Module, AttentionLayerBase, ABC):
         self.fused_input_weight: torch.Tensor | None = None
         self.fused_input_splits: list[int] = []
 
-    def process_weights_after_loading(self, dtype: torch.dtype) -> None:
-        # Loader hook (the AttentionLayerBase pass in model_loader/utils.py):
-        # runs for every loader including DummyModelLoader, and inside
-        # device_loading_context, so the merged buffer is built on the target
-        # device even under CPU offloading.
-        self.fuse_input_gemm_weights()
+    # NOTE: upstream sm80 round-2 fuses input GEMMs via a
+    # process_weights_after_loading loader hook; this fork keeps the original
+    # call site in nvidia/model.py instead. Defining the hook here as well
+    # made the fusion run twice, which measured as an ~8% single-stream
+    # decode regression on 4xA6000 TP4 -- do not re-add it without removing
+    # the model.py call.
 
     def fuse_input_gemm_weights(self) -> None:
         """Concatenate the three bf16 input projections into one weight.

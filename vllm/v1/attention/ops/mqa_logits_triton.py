@@ -4,6 +4,8 @@
 
 import functools
 
+import os
+
 import torch
 
 from vllm import envs
@@ -108,6 +110,24 @@ _PREFILL_WARMUP_N = 8192
 # logits row through the dot product.
 _INDEXER_LUT_NAN_VALUE = 480.0
 
+
+
+@functools.lru_cache
+def _paged_q_bf16_default(device: torch.device) -> bool:
+    """Whether to pre-decode q to bf16 on the host for the paged kernel.
+
+    Wins on A100-class parts (the sm80 branch's measurement) but costs ~70%
+    on sm86/sm89 at TP4 shapes, so the unset default follows the device; an
+    explicit VLLM_INDEXER_PAGED_Q_BF16 value is honored. Cached: the env and
+    device do not change within a process.
+    """
+    raw = os.environ.get("VLLM_INDEXER_PAGED_Q_BF16")
+    if raw is not None:
+        return raw == "1"
+    return (
+        torch.cuda.get_device_properties(device).shared_memory_per_block_optin
+        >= 160 * 1024
+    )
 
 def _get_e4m3fn_bf16_lut(device: torch.device) -> torch.Tensor:
     return get_e4m3fn_bf16_lut(device, nan_value=_INDEXER_LUT_NAN_VALUE)
@@ -276,7 +296,7 @@ def fp8_paged_mqa_logits_triton(
     )
     kv_scale = kv_flat[:, k_end:].view(torch.float32)
     q_byte = q.view(torch.uint8)
-    q_is_bf16 = envs.VLLM_INDEXER_PAGED_Q_BF16
+    q_is_bf16 = _paged_q_bf16_default(q.device)
 
     if clean_logits:
         logits = torch.full(
