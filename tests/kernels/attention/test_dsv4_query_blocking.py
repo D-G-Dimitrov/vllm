@@ -332,6 +332,11 @@ def test_prefill_block_size_reads_the_flag(
 ) -> None:
     monkeypatch.setenv("VLLM_SPARSE_DENSE_QUERY_BLOCK", str(flag))
     prefill_query_block_size.cache_clear()
+    if flag == -1:
+        # The auto default declines on parts without A100-class shared
+        # memory (the fixed KV/index tiles alone exceed sm86/sm89's ~99 KB).
+        smem = torch.cuda.get_device_properties(0).shared_memory_per_block_optin
+        expected = 8 if smem >= 160 * 1024 else 0
     assert prefill_query_block_size(8, 512) == expected
     prefill_query_block_size.cache_clear()
 
@@ -481,6 +486,14 @@ def test_blocked_decode_kernel_matches_the_per_query_kernel(
     production does at ``next_n=6``: ``BLOCK_M`` indexes a ``tl.arange`` and
     must be a power of two, while ``group_size`` is the real query count.
     """
+    smem = torch.cuda.get_device_properties(0).shared_memory_per_block_optin
+    block_m = 1 << (group - 1).bit_length()
+    if block_m * 17920 > smem:
+        pytest.skip(
+            f"blocked tile BLOCK_M={block_m} needs ~{block_m * 17920} B smem, "
+            f"device limit {smem} B (sm86/sm89)"
+        )
+
     from vllm.models.deepseek_v4.common.ops.cache_utils import (
         quantize_and_insert_k_cache,
     )
@@ -583,7 +596,11 @@ def test_decode_block_tile_declines_what_the_kernel_cannot_serve(
     monkeypatch.setenv("VLLM_SPARSE_DENSE_QUERY_BLOCK_DECODE", "6")
     decode_query_block_size.cache_clear()
     # 27 requests x next_n 6, 8 heads on an 8-wide head tile: the served shape.
-    assert decode_block_tile(6, 162, 8, 8) == 8
+    # On low-shared-memory parts (sm86/sm89, ~99 KB vs A100's 163 KB) the
+    # 8-row tile cannot compile, so the chooser declines it there instead.
+    smem = torch.cuda.get_device_properties(0).shared_memory_per_block_optin
+    expected = 8 if 8 * 17920 <= smem else 0
+    assert decode_block_tile(6, 162, 8, 8) == expected
     # A group is never split across CTAs, so a forced tile below next_n
     # declines rather than halving the group.
     monkeypatch.setenv("VLLM_SPARSE_DENSE_QUERY_BLOCK_DECODE", "4")

@@ -541,9 +541,9 @@ def test_full_size_output_buffers_satisfy_the_fused_op_contract():
     )
 
 
-def test_the_query_shard_flag_defaults_on():
-    """The shard (top-k and Q-path halves share one flag) is token-identical
-    and self-gating, so it defaults on; =0 must still opt out."""
+def test_the_query_shard_flag_defaults_off():
+    """This fork defaults the shard OFF: on TP4 A6000 the gather cost measured
+    -13% (upstream sm80 branch defaults it on for TP8). =1 must still opt in."""
     import os
 
     import vllm.envs as envs
@@ -551,9 +551,9 @@ def test_the_query_shard_flag_defaults_on():
     name = "VLLM_INDEXER_QUERY_SHARD"
     saved = os.environ.pop(name, None)
     try:
-        check(getattr(envs, name) is True, f"{name} must default on")
-        os.environ[name] = "0"
-        check(getattr(envs, name) is False, f"{name} must read '0' as disabled")
+        check(getattr(envs, name) is False, f"{name} must default off (TP4 policy)")
+        os.environ[name] = "1"
+        check(getattr(envs, name) is True, f"{name} must read '1' as enabled")
     finally:
         os.environ.pop(name, None)
         if saved is not None:

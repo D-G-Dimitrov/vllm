@@ -617,15 +617,15 @@ def sparse_attn_indexer(
                 if logits.shape[0] > 0:
                     num_rows = logits.shape[0]
                     ops.top_k_per_row_prefill(
-                        logits,
-                        cu_seqlen_ks,
-                        cu_seqlen_ke,
-                        topk_indices,
-                        num_rows,
-                        logits.stride(0),
-                        logits.stride(1),
-                        topk_tokens,
-                    )
+                    logits,
+                    cu_seqlen_ks,
+                    cu_seqlen_ke,
+                    topk_indices,
+                    num_rows,
+                    logits.stride(0),
+                    logits.stride(1),
+                    topk_tokens,
+                )
 
             _merge_dcp_topk_global(
                 logits,
@@ -643,13 +643,12 @@ def sparse_attn_indexer(
                 # all_gatherv takes per-rank sizes, so the split need not be
                 # even and no padding row is ever created -- there is nothing
                 # written-but-unread that could carry a wrong index.
-                tp = get_tp_group()
-                gathered = tp.all_gatherv(
+                gathered = get_tp_group().all_gatherv(
                     topk_indices, dim=0, sizes=chunk.shard_row_counts
                 )
-                chunk_start = chunk.token_start - sum(
-                    chunk.shard_row_counts[:tp.rank_in_group]
-                )
+                # The builder recorded the pre-shard start, so this module
+                # never has to invert the partition arithmetic.
+                chunk_start = chunk.gather_token_start
                 topk_indices_buffer[
                     chunk_start : chunk_start + gathered.shape[0], :topk_tokens
                 ] = gathered
@@ -789,11 +788,9 @@ def sparse_attn_indexer(
             and not current_platform.is_device_capability_family(120)
         )
         # Deliberately NOT capability-gated, unlike the cooperative path
-        # above: persistent_topk is the portable non-cluster kernel, and an
-        # external report of k<n<2k corruption on SM8x (#50576) did not
-        # reproduce here — 183/183 direct kernel checks and 2x 286/286
-        # end-to-end, audited 2026-08-03 (the reporter ran a third-party
-        # vendored kernel, not this tree's topk.cu). Regression coverage:
+        # above: persistent_topk is the portable non-cluster kernel. An SM8x
+        # corruption report (#50576) traced to a third-party vendored kernel,
+        # not this tree's topk.cu; regression coverage:
         # tests/kernels/test_persistent_topk_band.py.
         use_persistent_topk = current_platform.is_cuda() and topk_tokens in (
             512,
