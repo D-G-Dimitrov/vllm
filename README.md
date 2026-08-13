@@ -13,13 +13,13 @@ Prebuilt images are published to Docker Hub on every push:
 | `lazymio/vllm-backport:latest-sm86` (also `:latest`) | Ampere sm86 (A6000, RTX 30xx) |
 | `lazymio/vllm-backport:latest-sm80` | Ampere sm80 (A100) |
 | `lazymio/vllm-backport:latest-sm89` | Ada sm89 (RTX 4090, L40S) |
-| `lazymio/vllm-backport:v0.2.0-sm86` / `-sm80` / `-sm89` | pinned release builds |
+| `lazymio/vllm-backport:v0.4.0-sm86` / `-sm80` / `-sm89` | pinned release builds |
 
 Images are single-arch builds (no FA3/Hopper kernels), so pick the tag matching your GPU. The entrypoint is `vllm serve`.
 
 On sm89, set `VLLM_TEST_FORCE_FP8_MARLIN=1` in the container environment.
 
-`:latest*` tags track the main branch; each release also ships versioned tags like `:v0.2.0-sm86` if you want to pin.
+`:latest*` tags track the main branch; each release also ships versioned tags like `:v0.4.0-sm86` if you want to pin.
 
 ### Docker Compose
 
@@ -79,7 +79,8 @@ Tips:
 - head dtype override helps reduce garbage outputs.
 - DSpark is not working very well if you have PP>1.
 - The single quotes around the `--speculative-config` JSON are required — without them bash brace-expands the braces at the comma and vLLM receives the literal `method:dspark` (`Value method:dspark cannot be converted` error).
-- `num_speculative_tokens` must be 5 on Ampere: the spec-decode kernel tile at 7 needs ~200 KB of shared memory vs the 163 KB Ampere limit (`triton OutOfResources` error), and values below 5 are rejected.
+- Keep `num_speculative_tokens` at 5 on Ampere. Values below 5 (the checkpoint's `dspark_block_size`) are rejected, and 7 needs ~200 KB of shared memory vs the 163 KB Ampere limit (`triton OutOfResources` error). 6 does start, but draft positions past the native block are almost never accepted (3–13% in our measurements), so it only wastes draft compute — output quality and speed are the same as 5.
+- Requests that set neither `thinking` nor `reasoning_effort` now get thinking mode with high effort, matching the official 0731 API mapping (`reasoning_effort: "none"` restores plain chat mode). Agentic/tool-calling clients should pass a `reasoning_effort` explicitly from the first turn of a session — sessions that run without the effort prefix gradually stop thinking and can enter self-reinforcing reasoning loops.
 
 ## Environment Variables (Warning: Huge AI generated contents!)
 
