@@ -1427,6 +1427,11 @@ class TestThinkingConfigMapping:
     def test_disabled_thinking_maps_to_disabled(self):
         assert self._kwargs(thinking={"type": "disabled"})["thinking"] is False
 
+    def test_adaptive_thinking_maps_to_enabled(self):
+        """Newer Claude Code sends type "adaptive"; a closed literal 400s the
+        client at startup. Unknown modes must validate and mean thinking on."""
+        assert self._kwargs(thinking={"type": "adaptive"})["thinking"] is True
+
     def test_explicit_template_kwargs_win(self):
         kwargs = self._kwargs(
             thinking={"type": "enabled"},

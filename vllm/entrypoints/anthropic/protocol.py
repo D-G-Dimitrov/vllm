@@ -118,11 +118,14 @@ class AnthropicOutputConfig(BaseModel):
 class AnthropicThinkingConfig(BaseModel):
     """Extended thinking configuration (Anthropic Messages API).
 
-    Anthropic semantics: extended thinking is off unless the request carries
-    ``thinking: {"type": "enabled", ...}``.
+    Anthropic semantics: extended thinking is off only when the request
+    carries ``thinking: {"type": "disabled"}``. ``type`` is deliberately an
+    open string: clients ship new modes (e.g. ``adaptive``) faster than this
+    model is updated, and rejecting an unknown mode with a 400 breaks the
+    client outright.
     """
 
-    type: Literal["enabled", "disabled"] = "enabled"
+    type: str = "enabled"
     budget_tokens: int | None = None
 
 
