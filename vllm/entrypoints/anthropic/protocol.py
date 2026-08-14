@@ -115,6 +115,17 @@ class AnthropicOutputConfig(BaseModel):
     format: AnthropicJsonOutputFormat | None = None
 
 
+class AnthropicThinkingConfig(BaseModel):
+    """Extended thinking configuration (Anthropic Messages API).
+
+    Anthropic semantics: extended thinking is off unless the request carries
+    ``thinking: {"type": "enabled", ...}``.
+    """
+
+    type: Literal["enabled", "disabled"] = "enabled"
+    budget_tokens: int | None = None
+
+
 class AnthropicMessagesRequest(BaseModel):
     """Anthropic Messages API request"""
 
@@ -127,6 +138,7 @@ class AnthropicMessagesRequest(BaseModel):
     stream: bool | None = False
     system: str | list[AnthropicContentBlock] | None = None
     temperature: float | None = None
+    thinking: AnthropicThinkingConfig | None = None
     tool_choice: AnthropicToolChoice | None = None
     tools: list[AnthropicTool] | None = None
     top_k: int | None = None
@@ -245,6 +257,7 @@ class AnthropicCountTokensRequest(BaseModel):
     model: str
     messages: list[AnthropicMessage]
     system: str | list[AnthropicContentBlock] | None = None
+    thinking: AnthropicThinkingConfig | None = None
     tool_choice: AnthropicToolChoice | None = None
     tools: list[AnthropicTool] | None = None
 
