@@ -36,6 +36,7 @@ from vllm.distributed.parallel_state import (
     get_pp_group,
     prepare_communication_buffer_for_model,
 )
+from vllm.distributed.utils import get_pp_indices
 from vllm.forward_context import BatchDescriptor, set_forward_context
 from vllm.logger import init_logger
 from vllm.model_executor.layers.fused_moe.all2all_utils import get_ep_all2all_manager
@@ -210,10 +211,40 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 # Drafting may require auxiliary hidden states from target model outputs
                 self.use_aux_hidden_state_outputs = True
                 if self.use_pp:
-                    raise ValueError(
-                        f"{self.speculative_config.method} with pipeline parallel "
-                        "is not supported."
+                    # The drafter itself is already PP-safe: it is only built on
+                    # the last stage (above) and execute_model returns early on
+                    # every other rank, so propose() never runs off-stage. The
+                    # real constraint is that the aux hidden states it consumes
+                    # are appended inside the target's layer loop, so they only
+                    # exist on the rank owning those layers -- that rank must be
+                    # the last one. Methods that cannot state which layers they
+                    # need stay unsupported.
+                    aux_layers = self._pp_aux_hidden_state_layers()
+                    if aux_layers is None:
+                        raise ValueError(
+                            f"{self.speculative_config.method} with pipeline "
+                            "parallel is not supported."
+                        )
+                    # Total layers, not get_num_layers(): that one already
+                    # divides by the pipeline size, so feeding it back into
+                    # get_pp_indices splits an already-split count.
+                    start, end = get_pp_indices(
+                        self.model_config.get_total_num_hidden_layers(),
+                        get_pp_group().rank_in_group,
+                        get_pp_group().world_size,
                     )
+                    off_stage = [
+                        layer for layer in aux_layers if not start <= layer < end
+                    ]
+                    if self.is_last_pp_rank and off_stage:
+                        raise ValueError(
+                            f"{self.speculative_config.method} with pipeline "
+                            f"parallel requires every auxiliary hidden-state "
+                            f"layer to live on the last pipeline stage, but "
+                            f"{off_stage} fall outside its range [{start}, "
+                            f"{end}). Reduce --pipeline-parallel-size or use a "
+                            "checkpoint whose draft layers sit at the end."
+                        )
 
         # Draft tokens propagation - for spec-dec + struct outputs.
         self.draft_tokens_handler = DraftTokensHandler(self.device)
@@ -279,6 +310,27 @@ class GPUModelRunner(LoRAModelRunnerMixin):
 
         # Expert parallelism load balancer.
         self.eplb = EPLBController(self.parallel_config, self.device)
+
+    def _pp_aux_hidden_state_layers(self) -> list[int] | None:
+        """Target layers whose hidden states the drafter consumes, or None.
+
+        Returning None means "cannot tell", which keeps pipeline parallelism
+        rejected for that method rather than letting it run against hidden
+        states that may not exist on this stage. Only DSpark declares its
+        layers up front (``dspark_target_layer_ids``); eagle3/dflash pick theirs
+        elsewhere, so they stay unsupported until they can answer this too.
+        """
+        if self.speculative_config is None:
+            return None
+        if self.speculative_config.method != "dspark":
+            return None
+        draft_config = self.speculative_config.draft_model_config
+        if draft_config is None:
+            return None
+        layers = getattr(draft_config.hf_config, "dspark_target_layer_ids", None)
+        if not layers:
+            return None
+        return list(layers)
 
     def update_max_model_len(self, max_model_len: int) -> None:
         self.max_model_len = max_model_len
@@ -835,6 +887,16 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         if self.pp_handler is not None:
             outputs = self.pp_handler.get_prev_sampled_outputs()
             if outputs is not None:
+                draft_tokens = outputs.pop("draft_tokens")
+                # Scatter with the unfiltered mapping: `idx_mapping` in `outputs`
+                # may carry -1 for rows dropped since the receive, and those
+                # sentinels must not be used as destination row indices.
+                valid = outputs["idx_mapping"] >= 0
+                if valid.any():
+                    rows = outputs["idx_mapping"][valid]
+                    self.req_states.draft_tokens.index_copy_(
+                        0, rows.long(), draft_tokens[valid]
+                    )
                 self.postprocess_sampled(**outputs)
 
     def add_requests(self, scheduler_output: SchedulerOutput) -> None:
@@ -988,6 +1050,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             expanded_idx_mapping, expanded_local_pos = expand_idx_mapping(
                 idx_mapping, total_num_logits, cu_num_logits, max_expand_len
             )
+
 
         # Get query_start_loc.
         # num_reqs_padded is None for PIECEWISE graphs (no request padding needed)
@@ -1496,15 +1559,6 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             hidden_states, input_batch, grammar_output
         )
 
-        if self.pp_handler is not None:
-            # Broadcast to non-last PP ranks (handles spec decode multi-token).
-            self.pp_handler.broadcast(
-                sampler_output.sampled_token_ids,
-                num_sampled,
-                num_rejected,
-                input_batch,
-            )
-
         assert self.prompt_logprobs_worker is not None
         prompt_logprobs_dict = self.prompt_logprobs_worker.compute_prompt_logprobs(
             self.model.compute_logits,
@@ -1584,6 +1638,18 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 mm_inputs=mm_inputs,
             )
             self.req_states.draft_tokens[input_batch.idx_mapping] = draft_tokens
+
+        if self.pp_handler is not None:
+            # Broadcast to non-last PP ranks (handles spec decode multi-token).
+            # Deliberately after `propose`: the drafts for the next step must be
+            # in hand, since the non-last stages cannot compute them themselves.
+            self.pp_handler.broadcast(
+                sampler_output.sampled_token_ids,
+                num_sampled,
+                num_rejected,
+                self.req_states.draft_tokens[input_batch.idx_mapping],
+                input_batch,
+            )
 
         if self.num_speculative_steps > 0:
             # Spec-decode and diffusion LLMs both use draft tokens but the latter does
