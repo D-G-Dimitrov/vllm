@@ -481,7 +481,7 @@ class AnthropicServingMessages(OpenAIServingChat):
         if "thinking" not in kwargs and "enable_thinking" not in kwargs:
             kwargs["thinking"] = (
                 anthropic_request.thinking is not None
-                and anthropic_request.thinking.type == "enabled"
+                and anthropic_request.thinking.type != "disabled"
             )
         return kwargs
 
