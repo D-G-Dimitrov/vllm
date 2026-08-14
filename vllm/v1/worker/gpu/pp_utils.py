@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from vllm.distributed.parallel_state import get_pp_group
 from vllm.platforms import current_platform
@@ -23,6 +24,7 @@ class PendingRecv:
     sampled_tokens: torch.Tensor  # [num_reqs, max_sample_len]
     num_sampled: torch.Tensor  # [num_reqs]
     num_rejected: torch.Tensor  # [num_reqs]
+    draft_tokens: torch.Tensor  # [num_reqs, num_speculative_steps]
     idx_mapping: torch.Tensor  # [num_reqs]
     idx_mapping_np: np.ndarray  # [num_reqs]
     # Records which rows need a deferred postprocess (bool).
@@ -65,6 +67,13 @@ class PPHandler:
         self.is_last_rank = get_pp_group().is_last_rank
         self.last_rank = get_pp_group().last_rank
         self.max_sample_len = num_speculative_steps + 1
+        # The drafter runs only on the last stage, but the stage that owns the
+        # embedding has to build the speculative positions of the next step from
+        # the very ids the last stage will verify. The scheduler cannot carry
+        # them (it schedules -1 placeholders and keeps only the count), so they
+        # ride this broadcast alongside the sampled tokens and land under the
+        # same pp_size-step deferral.
+        self.num_speculative_steps = num_speculative_steps
         self.device = device
         self.main_stream = torch.cuda.current_stream(device)
         self.broadcast_stream = torch.cuda.Stream(device)
@@ -120,6 +129,7 @@ class PPHandler:
             sampled_tokens=slot.sampled_tokens,
             num_sampled=slot.num_sampled,
             num_rejected=slot.num_rejected,
+            draft_tokens=slot.draft_tokens,
             idx_mapping=idx_mapping,
         )
 
@@ -143,11 +153,20 @@ class PPHandler:
                 num_reqs, self.max_sample_len, dtype=torch.int64, device=self.device
             )
             combined = torch.empty(2, num_reqs, dtype=torch.int32, device=self.device)
+            draft_tokens = torch.empty(
+                num_reqs,
+                self.num_speculative_steps,
+                dtype=torch.int64,
+                device=self.device,
+            )
             torch.distributed.broadcast(
                 sampled_tokens, src=self.last_rank, group=self.broadcast_group
             )
             torch.distributed.broadcast(
                 combined, src=self.last_rank, group=self.broadcast_group
+            )
+            torch.distributed.broadcast(
+                draft_tokens, src=self.last_rank, group=self.broadcast_group
             )
             event = self.broadcast_stream.record_event()
             num_sampled, num_rejected = combined.unbind(dim=0)
@@ -155,11 +174,13 @@ class PPHandler:
             # later used on the main stream.
             sampled_tokens.record_stream(self.main_stream)
             combined.record_stream(self.main_stream)
+            draft_tokens.record_stream(self.main_stream)
         self.queue[-1] = PendingRecv(
             event,
             sampled_tokens,
             num_sampled,
             num_rejected,
+            draft_tokens,
             input_batch.idx_mapping,
             input_batch.idx_mapping_np,
             need_sampled_mask,
@@ -172,6 +193,7 @@ class PPHandler:
         sampled_token_ids: torch.Tensor,
         num_sampled: torch.Tensor,
         num_rejected: torch.Tensor,
+        draft_tokens: torch.Tensor,
         input_batch: InputBatch,
     ) -> None:
         assert self.is_last_rank
@@ -180,6 +202,18 @@ class PPHandler:
             return
 
         assert sampled_token_ids.dtype == torch.int64
+
+        # The receiver always allocates `max_sample_len` columns, but the sampler
+        # returns only the columns it actually produced -- a single one on any
+        # step without draft tokens (every prefill, and the first decode). Pad so
+        # both sides post the same element count; the consumer bounds its reads
+        # by `num_sampled`, so the padding is never observed.
+        num_cols = sampled_token_ids.shape[-1]
+        assert num_cols <= self.max_sample_len
+        if num_cols < self.max_sample_len:
+            sampled_token_ids = F.pad(
+                sampled_token_ids, (0, self.max_sample_len - num_cols)
+            )
 
         if current_platform.is_xpu():
             self.main_stream.synchronize()
@@ -195,5 +229,10 @@ class PPHandler:
             torch.distributed.broadcast(
                 combined, src=self.last_rank, group=self.broadcast_group
             )
-            for tensor in (sampled_token_ids, num_sampled, num_rejected):
+            torch.distributed.broadcast(
+                draft_tokens.contiguous(),
+                src=self.last_rank,
+                group=self.broadcast_group,
+            )
+            for tensor in (sampled_token_ids, num_sampled, num_rejected, draft_tokens):
                 tensor.record_stream(self.broadcast_stream)

@@ -978,6 +978,19 @@ class DeepseekV4DecoderLayer(nn.Module):
         return x, residual, post_mix, res_mix
 
 
+def _drafter_needs_target_embed(vllm_config: VllmConfig) -> bool:
+    """Does a speculative drafter on the last stage alias the target embedding?
+
+    True only for methods whose draft weights ship without an embedding table
+    and are therefore aliased to the target's. Anything else keeps the stock
+    first-stage-only placement.
+    """
+    speculative_config = vllm_config.speculative_config
+    if speculative_config is None:
+        return False
+    return speculative_config.method in ("dspark", "dflash")
+
+
 class DeepseekV4Model(nn.Module, EagleModelMixin):
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
@@ -1031,7 +1044,18 @@ class DeepseekV4Model(nn.Module, EagleModelMixin):
             dtype=torch.int32,
         )
 
-        if get_pp_group().is_first_rank:
+        # The last stage also needs the table when a drafter runs there: DSpark
+        # embeds its own proposed tokens every step and aliases this module
+        # (the checkpoint carries no separate draft embedding -- see
+        # DSparkDeepseekV4ForCausalLM.has_own_embed_tokens). Without this the
+        # alias would resolve to PPMissingLayer and drafting would read garbage.
+        # Costs one extra vocab-parallel table on the last stage only
+        # (129280x4096 bf16 = 1.06 GB, ~265 MB/GPU at TP4).
+        needs_embed = get_pp_group().is_first_rank or (
+            get_pp_group().is_last_rank
+            and _drafter_needs_target_embed(vllm_config)
+        )
+        if needs_embed:
             self.embed_tokens = VocabParallelEmbedding(
                 config.vocab_size,
                 config.hidden_size,
