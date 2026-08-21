@@ -49,6 +49,7 @@ from vllm.v1.kv_offload.tiering.base import (
     ScheduleEndContext,
     SecondaryTierManager,
 )
+from vllm.v1.kv_offload.tiering.fs.capacity import FsCapacityManager
 from vllm.v1.kv_offload.tiering.fs.io import (
     batch_load_block,
     batch_store_block,
@@ -116,6 +117,9 @@ class FileSystemTierManager(SecondaryTierManager):
         n_write_threads: int = 16,
         enable_kv_events: bool = False,
         locality: str | None = None,
+        max_capacity_gb: float = 0,
+        evict_watermark: float = 0.9,
+        evict_protect_s: float = 120.0,
     ):
         """
         Args:
@@ -131,6 +135,15 @@ class FileSystemTierManager(SecondaryTierManager):
                 cache events are enabled globally (kv_events_config).
             locality: Whether this tier's storage is LOCAL or REMOTE relative
                 to the publishing vLLM instance.
+            max_capacity_gb: Upper bound for total block file size (in GB,
+                1e9 bytes). 0 (default) disables capacity management,
+                preserving the previous unbounded behavior. When exceeded,
+                least-recently-used block files are unlinked until usage
+                drops below ``max_capacity_gb * evict_watermark``. Assumes a
+                single manager instance owns ``root_dir``.
+            evict_watermark: Fraction of ``max_capacity_gb`` to evict down to.
+            evict_protect_s: Files stored or touched within this many seconds
+                are exempt from eviction, protecting lookup-hit -> load races.
         """
         super().__init__(offloading_spec, primary_kv_view, tier_type)
         self.locality = Locality(locality) if locality is not None else None
@@ -192,6 +205,25 @@ class FileSystemTierManager(SecondaryTierManager):
 
         self._lookup_manager = FsAsyncLookupManager(tier=self, tier_type=self.tier_type)
 
+        self._capacity: FsCapacityManager | None = None
+        self._capacity_job_paths: dict[JobId, list[str]] = {}
+        if max_capacity_gb > 0:
+            self._capacity = FsCapacityManager(
+                capacity_bytes=int(max_capacity_gb * 1e9),
+                watermark=evict_watermark,
+                protect_s=evict_protect_s,
+            )
+            # Block files live in sibling per-rank dirs of the config dir.
+            base_path = os.path.dirname(config_path)
+            parent = os.path.dirname(base_path) or "."
+            prefix = os.path.basename(base_path) + "_r"
+            scan_dirs = [
+                os.path.join(parent, d)
+                for d in sorted(os.listdir(parent))
+                if d.startswith(prefix)
+            ]
+            self._capacity.scan(scan_dirs)
+
     @override
     def on_new_request(self, req_context: ReqContext) -> RequestOffloadingContext:
         return RequestOffloadingContext()
@@ -207,6 +239,10 @@ class FileSystemTierManager(SecondaryTierManager):
     def submit_store(self, job_metadata: JobMetadata) -> None:
         if self.events is not None:
             self._store_job_keys[job_metadata.job_id] = list(job_metadata.keys)
+        if self._capacity is not None:
+            self._capacity_job_paths[job_metadata.job_id] = [
+                self.file_mapper.get_file_name(key) for key in job_metadata.keys
+            ]
         task = functools.partial(
             batch_store_block,
             [self.file_mapper.get_file_name(key) for key in job_metadata.keys],
@@ -219,6 +255,9 @@ class FileSystemTierManager(SecondaryTierManager):
 
     @override
     def submit_load(self, job_metadata: JobMetadata) -> None:
+        if self._capacity is not None:
+            for key in job_metadata.keys:
+                self._capacity.record_use(self.file_mapper.get_file_name(key))
         task = functools.partial(
             batch_load_block,
             [self.file_mapper.get_file_name(key) for key in job_metadata.keys],
@@ -237,6 +276,14 @@ class FileSystemTierManager(SecondaryTierManager):
         """
         results = []
         for job_id, success in self._pool.get_finished():
+            if self._capacity is not None:
+                paths = self._capacity_job_paths.pop(job_id, None)
+                if success and paths:
+                    for path in paths:
+                        try:
+                            self._capacity.record_store(path, os.path.getsize(path))
+                        except OSError:
+                            pass
             if self.events is not None:
                 keys = self._store_job_keys.pop(job_id, None)
                 if success and keys:
@@ -249,6 +296,8 @@ class FileSystemTierManager(SecondaryTierManager):
                         )
                     )
             results.append(JobResult(job_id=job_id, success=success))
+        if self._capacity is not None:
+            self._capacity.evict()
         return results
 
     @override
@@ -262,12 +311,23 @@ class FileSystemTierManager(SecondaryTierManager):
         """Block until all in-flight transfers in the threadpool finish."""
         self._pool.wait_idle()
 
+    @override
+    def touch(self, keys, req_context: ReqContext) -> None:
+        if self._capacity is None:
+            return
+        for key in keys:
+            self._capacity.record_use(self.file_mapper.get_file_name(key))
+
     def on_request_finished(self, req_context: ReqContext) -> None:
         self._lookup_manager.cleanup(req_context.req_id)
 
     @override
     def on_schedule_end(self, context: ScheduleEndContext) -> None:
         self._lookup_manager.flush()
+        if self._capacity is not None:
+            # Cheap no-op when under capacity; keeps usage converging toward
+            # the limit even when no store/load jobs are completing.
+            self._capacity.evict()
 
     @override
     def shutdown(self) -> None:
