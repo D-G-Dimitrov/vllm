@@ -171,7 +171,17 @@ class SharedOffloadRegion:
         return memoryview(np_arr)
 
     def cleanup(self) -> None:
-        if self.is_pinned and self._base is not None:
+        if (
+            self.is_pinned
+            and self._base is not None
+            and hasattr(self, "_pinned_slot_offsets")
+        ):
+            base_ptr = self._base.data_ptr()
+            for off in self._pinned_slot_offsets:
+                torch.cuda.cudart().cudaHostUnregister(base_ptr + off)
+            self._pinned_slot_offsets = []
+            self.is_pinned = False
+        elif self.is_pinned and self._base is not None:
             if current_platform.is_cuda_alike():
                 base_ptr = self._base.data_ptr()
                 result = torch.cuda.cudart().cudaHostUnregister(base_ptr)

@@ -131,23 +131,43 @@ def pin_mmap_region(region: SharedOffloadRegion) -> None:
         return
 
     rank = region.rank
+    if rank is None:
+        return
 
+    # The region is shared by every worker process, and the CUDA driver only
+    # lets the FIRST process cudaHostRegister a given physical page - later
+    # registrations from sibling ranks fail with cudaErrorInvalidValue and the
+    # unpinned fallback then crashes the UVA transfer kernels at warmup.
+    # Register only the slots owned by this rank (disjoint across ranks).
     base_ptr = region._base.data_ptr()
-    result = torch.cuda.cudart().cudaHostRegister(base_ptr, region.total_size_bytes, 0)
-    if result.value != 0:
-        logger.warning(
-            "cudaHostRegister failed for rank=%d (code=%d) — "
-            "transfers will still work but may be slower (unpinned DMA)",
-            rank,
-            result,
-        )
-    else:
-        logger.debug(
-            "cudaHostRegister rank=%d %.2f GB",
-            rank,
-            region.total_size_bytes / 1e9,
-        )
-        region.is_pinned = True
+    slot_size = region._worker_area_end - region._worker_offset
+    cudart = torch.cuda.cudart()
+    registered: list[int] = []
+    _t0 = time.perf_counter()
+    for block in range(region.num_blocks):
+        off = block * region._row_stride + region._worker_offset
+        result = cudart.cudaHostRegister(base_ptr + off, slot_size, 0)
+        if result.value != 0:
+            logger.warning(
+                "cudaHostRegister failed for rank=%d block=%d (code=%d) - "
+                "rolling back, transfers will be unpinned",
+                rank,
+                block,
+                result,
+            )
+            for done in registered:
+                cudart.cudaHostUnregister(base_ptr + done)
+            return
+        registered.append(off)
+    region._pinned_slot_offsets = registered
+    region.is_pinned = True
+    logger.info(
+        "cudaHostRegister rank=%d pinned %d slots (%.2f GB) in %.1fs",
+        rank,
+        len(registered),
+        len(registered) * slot_size / 1e9,
+        time.perf_counter() - _t0,
+    )
 
 
 def _new_descriptor_buffers(
