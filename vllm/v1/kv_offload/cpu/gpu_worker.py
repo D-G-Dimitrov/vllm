@@ -146,18 +146,26 @@ def pin_mmap_region(region: SharedOffloadRegion) -> None:
     _t0 = time.perf_counter()
     for block in range(region.num_blocks):
         off = block * region._row_stride + region._worker_offset
-        result = cudart.cudaHostRegister(base_ptr + off, slot_size, 0)
+        # Transient failures happen under memory pressure (concurrent ranks
+        # pinning + model weights loading); retry before giving up.
+        for attempt in range(4):
+            result = cudart.cudaHostRegister(base_ptr + off, slot_size, 0)
+            if result.value == 0:
+                break
+            time.sleep(0.5 * (attempt + 1))
         if result.value != 0:
-            logger.warning(
-                "cudaHostRegister failed for rank=%d block=%d (code=%d) - "
-                "rolling back, transfers will be unpinned",
-                rank,
-                block,
-                result,
-            )
             for done in registered:
                 cudart.cudaHostUnregister(base_ptr + done)
-            return
+            # Unpinned is not a usable fallback: the UVA transfer kernels
+            # dereference these host pointers and crash later with an async
+            # cudaErrorInvalidValue far from this code. Fail fast instead.
+            raise RuntimeError(
+                f"cudaHostRegister failed for rank={rank} at block {block}/"
+                f"{region.num_blocks} (code={result.value}) after retries. "
+                "This usually means host memory pressure or insufficient "
+                "free /dev/shm. Check for stale vllm_offload_*.mmap files "
+                "and overall RAM usage."
+            )
         registered.append(off)
     region._pinned_slot_offsets = registered
     region.is_pinned = True

@@ -66,6 +66,27 @@ class SharedOffloadRegion:
             self.fd: int | None = os.open(
                 self.mmap_path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600
             )
+            # Fail fast with an actionable message if /dev/shm cannot hold the
+            # region. Otherwise page allocation fails later as an inscrutable
+            # EFAULT/SIGBUS. Stale regions from SIGKILLed engines (e.g.
+            # docker force-recreate) are the usual culprit.
+            vfs = os.statvfs("/dev/shm")
+            free = vfs.f_bavail * vfs.f_frsize
+            if free < self.total_size_bytes:
+                stale = [
+                    f
+                    for f in os.listdir("/dev/shm")
+                    if f.startswith("vllm_offload_") and f != os.path.basename(self.mmap_path)
+                ]
+                os.close(self.fd)
+                os.unlink(self.mmap_path)
+                raise RuntimeError(
+                    f"/dev/shm has {free / 1e9:.1f} GB free but the KV offload "
+                    f"region needs {self.total_size_bytes / 1e9:.1f} GB. "
+                    f"Stale offload regions present: {stale or 'none'}. "
+                    "Remove stale /dev/shm/vllm_offload_*.mmap files or "
+                    "increase the /dev/shm size."
+                )
             os.ftruncate(self.fd, self.total_size_bytes)
             self._creator = True
             logger.info(
