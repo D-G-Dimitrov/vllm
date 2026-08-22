@@ -150,6 +150,41 @@ class CPUOffloadingManager(OffloadingManager):
         self._policy.touch(keys, req_context)
 
     @override
+    def reserve_hits(
+        self, keys: Collection[OffloadKey], req_context: ReqContext
+    ) -> list[OffloadKey]:
+        # Pin ready blocks against eviction until prepare_load() takes over.
+        # Without this, a block can be evicted by a concurrent store between
+        # the lookup that promised it to the vLLM scheduler and the
+        # prepare_load() that pins it, and prepare_load() then dies on its
+        # "not found in cache" assertion, taking the engine with it.
+        reserved: list[OffloadKey] = []
+        for key in keys:
+            block = self._policy.get(key)
+            if block is None or not block.is_ready:
+                continue
+            if block.ref_cnt == 0:
+                self._policy.mark_non_evictable(key)
+                self._num_evictable_cache_blocks -= 1
+                assert self._num_evictable_cache_blocks >= 0
+            block.ref_cnt += 1
+            reserved.append(key)
+        return reserved
+
+    @override
+    def release_reservation(
+        self, keys: Collection[OffloadKey], req_context: ReqContext
+    ) -> None:
+        for key in keys:
+            block = self._policy.get(key)
+            assert block is not None, f"Reserved block {key!r} vanished"
+            assert block.ref_cnt > 0, f"Reserved block {key!r} ref_cnt is 0"
+            block.ref_cnt -= 1
+            if block.ref_cnt == 0:
+                self._num_evictable_cache_blocks += 1
+                self._policy.mark_evictable(key)
+
+    @override
     def complete_load(
         self, keys: Collection[OffloadKey], req_context: ReqContext
     ) -> None:
