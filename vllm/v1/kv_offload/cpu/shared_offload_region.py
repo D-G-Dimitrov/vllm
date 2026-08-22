@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import fcntl
 import json
 import mmap
 import os
@@ -11,6 +12,63 @@ from vllm.logger import init_logger
 from vllm.platforms import current_platform
 
 logger = init_logger(__name__)
+
+
+def _reclaim_stale_regions(exclude_path: str) -> int:
+    """Delete offload region files whose owning engine is gone.
+
+    Every process holds a shared flock on its region file for the file's
+    whole lifetime (taken right after open, fd kept open until cleanup),
+    and the kernel drops flocks automatically on process death --
+    including SIGKILL. A region file we can lock exclusively therefore
+    has no live owner. Without this reaper, every fail-fast boot crash
+    leaks its region into /dev/shm (engine ids are fresh per boot) until
+    the free-space precheck refuses to boot at all, turning a transient
+    crash into a permanent crash loop that restart policies cannot heal.
+
+    Files younger than 60s are skipped: a booting sibling engine's
+    workers open+lock their creator's file within moments, and the grace
+    period keeps the reaper away from that window. Regions created by
+    builds that predate flocking are indistinguishable from stale ones;
+    they are only safe to reap because deployments stop the old engine
+    before starting a new build.
+    """
+    reclaimed = 0
+    try:
+        names = os.listdir("/dev/shm")
+    except OSError:
+        return 0
+    for name in names:
+        if not (name.startswith("vllm_offload_") and name.endswith(".mmap")):
+            continue
+        path = os.path.join("/dev/shm", name)
+        if path == exclude_path:
+            continue
+        try:
+            if time.time() - os.stat(path).st_mtime < 60.0:
+                continue
+            fd = os.open(path, os.O_RDWR)
+        except OSError:
+            continue
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                continue  # lock held -> a live engine owns this region
+            for p in (path, path + ".meta"):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+            reclaimed += 1
+            logger.warning(
+                "Reclaimed stale KV offload region %s (no live owner holds "
+                "its lock)",
+                path,
+            )
+        finally:
+            os.close(fd)
+    return reclaimed
 
 
 def _wait_for_file_size(fd: int, expected_size: int, timeout: float = 30.0) -> None:
@@ -67,6 +125,17 @@ class SharedOffloadRegion:
             self.fd: int | None = os.open(
                 self.mmap_path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600
             )
+            # Advertise liveness: hold a shared lock on the region file for
+            # as long as this process lives (fd stays open until cleanup).
+            # The reaper below only deletes region files nobody holds a
+            # lock on, so this is what protects OUR region from a sibling
+            # engine's reaper.
+            fcntl.flock(self.fd, fcntl.LOCK_SH)
+            # Reap regions leaked by dead engines (fail-fast crashes are
+            # SIGKILLed and cannot clean up after themselves) BEFORE the
+            # free-space check, so a crash loop frees its own garbage and
+            # the restart policy can actually self-heal.
+            _reclaim_stale_regions(self.mmap_path)
             # Fail fast with an actionable message if /dev/shm cannot hold the
             # region. Otherwise page allocation fails later as an inscrutable
             # EFAULT/SIGBUS. Stale regions from SIGKILLed engines (e.g.
@@ -83,10 +152,11 @@ class SharedOffloadRegion:
                 os.unlink(self.mmap_path)
                 raise RuntimeError(
                     f"/dev/shm has {free / 1e9:.1f} GB free but the KV offload "
-                    f"region needs {self.total_size_bytes / 1e9:.1f} GB. "
-                    f"Stale offload regions present: {stale or 'none'}. "
-                    "Remove stale /dev/shm/vllm_offload_*.mmap files or "
-                    "increase the /dev/shm size."
+                    f"region needs {self.total_size_bytes / 1e9:.1f} GB "
+                    "(after reaping stale regions). Other offload regions "
+                    f"present: {stale or 'none'} - these are live (lock held) "
+                    "or too young to reap. Free /dev/shm space or increase "
+                    "its size."
                 )
             os.ftruncate(self.fd, self.total_size_bytes)
             # Publish the region geometry so late-joining processes can verify
@@ -113,6 +183,9 @@ class SharedOffloadRegion:
             )
         except FileExistsError:
             self.fd = os.open(self.mmap_path, os.O_RDWR)
+            # Same liveness lock as the creator: joiners keep the region
+            # alive too (the creator process alone may die first).
+            fcntl.flock(self.fd, fcntl.LOCK_SH)
             meta_path = self.mmap_path + ".meta"
             deadline = time.monotonic() + 30.0
             while not os.path.exists(meta_path):
