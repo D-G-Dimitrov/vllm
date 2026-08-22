@@ -234,26 +234,15 @@ class SharedOffloadRegion:
         return memoryview(np_arr)
 
     def cleanup(self) -> None:
-        if (
-            self.is_pinned
-            and self._base is not None
-            and hasattr(self, "_pinned_slot_offsets")
-        ):
-            base_ptr = self._base.data_ptr()
-            for off in self._pinned_slot_offsets:
-                torch.cuda.cudart().cudaHostUnregister(base_ptr + off)
+        # Do NOT cudaHostUnregister here: with per-slot pinning that is tens
+        # of thousands of driver calls taking minutes, during which a crashed
+        # engine looks hung -- the container never exits, so the docker
+        # restart policy cannot self-heal a boot-time failure. The driver
+        # releases every pin automatically when the process exits, which is
+        # exactly where cleanup() runs.
+        if self.is_pinned and self._base is not None:
             self._pinned_slot_offsets = []
             self.is_pinned = False
-        elif self.is_pinned and self._base is not None:
-            if current_platform.is_cuda_alike():
-                base_ptr = self._base.data_ptr()
-                result = torch.cuda.cudart().cudaHostUnregister(base_ptr)
-                if result.value != 0:
-                    logger.warning(
-                        "cudaHostUnregister failed for rank=%d (code=%d)",
-                        self.rank,
-                        result,
-                    )
             self.is_pinned = False
         # Release views before _base: each view holds a _base reference and a
         # direct StorageImpl reference.  Freeing views first lets both refcounts
