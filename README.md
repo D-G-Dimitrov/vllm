@@ -13,13 +13,13 @@ Prebuilt images are published to Docker Hub on every push:
 | `lazymio/vllm-backport:latest-sm86` (also `:latest`) | Ampere sm86 (A6000, RTX 30xx) |
 | `lazymio/vllm-backport:latest-sm80` | Ampere sm80 (A100) |
 | `lazymio/vllm-backport:latest-sm89` | Ada sm89 (RTX 4090, L40S) |
-| `lazymio/vllm-backport:v0.5.2-sm86` / `-sm80` / `-sm89` | pinned release builds |
+| `lazymio/vllm-backport:v0.6.1-sm86` / `-sm80` / `-sm89` | pinned release builds |
 
 Images are single-arch builds (no FA3/Hopper kernels), so pick the tag matching your GPU. The entrypoint is `vllm serve`.
 
 On sm89, set `VLLM_TEST_FORCE_FP8_MARLIN=1` in the container environment.
 
-`:latest*` tags track the main branch; each release also ships versioned tags like `:v0.5.2-sm86` if you want to pin.
+`:latest*` tags track the main branch; each release also ships versioned tags like `:v0.6.1-sm86` if you want to pin.
 
 ### Docker Compose
 
@@ -65,7 +65,8 @@ vllm serve /path/to/your/deepseek \
   --gpu-memory-utilization 0.90 \
   --kv-cache-dtype fp8_ds_mla \
   --trust-remote-code \
-  --compilation-config '{"cudagraph_mode":"PIECEWISE"}' \
+  --disable-custom-all-reduce \
+  --compilation-config '{"cudagraph_mode":"FULL_AND_PIECEWISE","cudagraph_capture_sizes":[1,2,4,8,16,32,64],"max_cudagraph_capture_size":64}' \
   --speculative-config '{"method":"dspark","num_speculative_tokens":5}' \
   --enable-auto-tool-choice --tool-call-parser deepseek_v4 \
   --host 0.0.0.0 --port 8000 \
@@ -73,8 +74,18 @@ vllm serve /path/to/your/deepseek \
   --served-model-name deepseek-v4-flash
 ```
 
+with these environment variables (required for `FULL_AND_PIECEWISE`, see the cudagraph tip below):
+
+```bash
+export NCCL_ALGO=Ring
+export NCCL_PROTO=Simple
+```
+
 Tips:
 
+- `FULL_AND_PIECEWISE` (v0.6.x default recommendation, previously `PIECEWISE`) captures the whole decode step — attention, MoE dispatch, NCCL all-reduce and the DSpark draft loop — into one CUDA graph. Measured on 4x/8x A6000: single-stream decode 45.6 -> 67-70 tok/s (+47%); prefill is unchanged (compute-bound). Two prerequisites:
+  - Pin NCCL with `NCCL_ALGO=Ring NCCL_PROTO=Simple` (and prefer `--disable-custom-all-reduce`). Graph replay must re-issue the exact captured collective; NCCL's size-adaptive algorithm switching is what made FULL capture "crash on Ampere" — Ampere itself is fine.
+  - Bound `cudagraph_capture_sizes` as shown. FULL graphs keep private memory pools; capturing every batch size up to `--max-num-seqs` can cost >800 MB per GPU and OOM warmup at high `--gpu-memory-utilization`.
 - Adjust your TP (--tensor-parallel-size) and PP (--pipeline-parallel-size) accordingly.
 - head dtype override helps reduce garbage outputs.
 - DSpark is not working very well if you have PP>1.
