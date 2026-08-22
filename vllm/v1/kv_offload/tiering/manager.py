@@ -514,6 +514,18 @@ class TieringOffloadingManager(OffloadingManager):
         return self.primary_tier.prepare_load(keys, req_context)
 
     @override
+    def reserve_hits(
+        self, keys: Collection[OffloadKey], req_context: ReqContext
+    ) -> list[OffloadKey]:
+        return self.primary_tier.reserve_hits(keys, req_context)
+
+    @override
+    def release_reservation(
+        self, keys: Collection[OffloadKey], req_context: ReqContext
+    ) -> None:
+        self.primary_tier.release_reservation(keys, req_context)
+
+    @override
     def touch(self, keys: Collection[OffloadKey], req_context: ReqContext):
         """
         Mark blocks as recently used in all tiers.
