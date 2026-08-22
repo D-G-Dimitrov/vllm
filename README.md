@@ -2,7 +2,7 @@
 
 A VLLM fork that focuses on running Deepseek V4 Flash 0731 on Ampere at this moment.
 
-Currently achieving 3435 tps prefill and 948 tps decoding on 8xA6000 (TP4PP2)  and this should also work on A100.
+Currently achieving ~4.3k tps prefill (single 30k-token request), ~70 tok/s single-stream decode and ~800 tps aggregate decode (64 concurrent streams, engine gauge) on 8xA6000 (TP4PP2) with v0.6.1 defaults — FULL_AND_PIECEWISE cudagraph and DSpark n=5 — and this should also work on A100.
 
 ## Docker Usage
 
