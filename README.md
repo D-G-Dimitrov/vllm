@@ -13,7 +13,7 @@ Prebuilt images are published to Docker Hub on every push:
 | `lazymio/vllm-backport:latest-sm86` (also `:latest`) | Ampere sm86 (A6000, RTX 30xx) |
 | `lazymio/vllm-backport:latest-sm80` | Ampere sm80 (A100) |
 | `lazymio/vllm-backport:latest-sm89` | Ada sm89 (RTX 4090, L40S) |
-| `lazymio/vllm-backport:v0.6.1-sm86` / `-sm80` / `-sm89` | pinned release builds |
+| `lazymio/vllm-backport:v0.6.4-sm86` / `-sm80` / `-sm89` | pinned release builds |
 
 Images are single-arch builds (no FA3/Hopper kernels), so pick the tag matching your GPU. The entrypoint is `vllm serve`.
 
