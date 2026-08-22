@@ -148,6 +148,18 @@ class SharedOffloadRegion:
             prot=mmap.PROT_READ | mmap.PROT_WRITE,
         )
 
+        # Forbid transparent huge pages on this mapping. khugepaged collapses
+        # neighbouring 4K pages into 2M pages asynchronously; a huge page
+        # spanning two ranks' slot boundaries makes their per-slot
+        # cudaHostRegister ranges overlap at the physical-page level, and the
+        # cross-process pin/DMA-map churn during early warmup surfaces as a
+        # probabilistic async cudaErrorInvalidValue (boot-time crash race).
+        _MADV_NOHUGEPAGE = getattr(mmap, "MADV_NOHUGEPAGE", 15)
+        try:
+            self.mmap_obj.madvise(_MADV_NOHUGEPAGE)
+        except OSError:
+            logger.warning("MADV_NOHUGEPAGE not supported; leaving THP enabled")
+
         # MADV_POPULATE_WRITE was added in Linux 5.14 (value 23).
         _MADV_POPULATE_WRITE = getattr(mmap, "MADV_POPULATE_WRITE", 23)
         if rank is not None:
