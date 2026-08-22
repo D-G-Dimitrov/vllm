@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import errno
 import fcntl
+import json
 import mmap
 import os
 import platform
@@ -253,46 +254,98 @@ class SharedOffloadRegion:
             # exclusive upper bound for this worker's area within each row
             self._worker_area_end = (rank + 1) * cpu_page_size
         try:
+            # Exclusive create — only one worker succeeds
             self.fd: int | None = os.open(
                 self.mmap_path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600
             )
-        except FileExistsError:
-            # Joiner path — another worker won O_EXCL. Reopen and wait
-            # for the file to reach expected size.
-            self.fd = os.open(self.mmap_path, os.O_RDWR)
+            # Advertise liveness: hold a shared lock on the region file for
+            # as long as this process lives (fd stays open until cleanup).
+            # The reaper below only deletes region files nobody holds a
+            # lock on, so this is what protects OUR region from a sibling
+            # engine's reaper.
             fcntl.flock(self.fd, fcntl.LOCK_SH)
-            try:
-                _wait_for_file_size(self.fd, self.total_size_bytes)
-            except (TimeoutError, OSError):
+            # Reap regions leaked by dead engines (fail-fast crashes are
+            # SIGKILLed and cannot clean up after themselves) BEFORE the
+            # free-space check, so a crash loop frees its own garbage and
+            # the restart policy can actually self-heal.
+            _reclaim_stale_regions(self.mmap_path)
+            # Fail fast with an actionable message if /dev/shm cannot hold the
+            # region. Otherwise page allocation fails later as an inscrutable
+            # EFAULT/SIGBUS. Stale regions from SIGKILLed engines (e.g.
+            # docker force-recreate) are the usual culprit.
+            vfs = os.statvfs("/dev/shm")
+            free = vfs.f_bavail * vfs.f_frsize
+            if free < self.total_size_bytes:
+                stale = [
+                    f
+                    for f in os.listdir("/dev/shm")
+                    if f.startswith("vllm_offload_") and f != os.path.basename(self.mmap_path)
+                ]
                 os.close(self.fd)
-                raise
-            logger.info("Opened existing mmap file %s", self.mmap_path)
-        else:
-            # Creator path. We won O_EXCL, so we own the file: any
-            # failure here must clean up so concurrent joiners don't
-            # land on a 0-byte stub and spin in _wait_for_file_size
-            # for the full 30 s timeout.
-            try:
-                # Liveness lock (fork feature): every process holds a shared
-                # flock on its region file for the fd's lifetime; the kernel
-                # drops flocks on death (SIGKILL included), so the reaper can
-                # identify truly orphaned regions.
-                fcntl.flock(self.fd, fcntl.LOCK_SH)
-                # Reap regions leaked by dead engines BEFORE the free-space
-                # check so crash loops free their own garbage.
-                _reclaim_stale_regions(self.mmap_path)
-                check_shm_free_space(self.total_size_bytes)
-                os.ftruncate(self.fd, self.total_size_bytes)
-            except (RuntimeError, OSError):
                 os.unlink(self.mmap_path)
-                os.close(self.fd)
-                raise
+                raise RuntimeError(
+                    f"/dev/shm has {free / 1e9:.1f} GB free but the KV offload "
+                    f"region needs {self.total_size_bytes / 1e9:.1f} GB "
+                    "(after reaping stale regions). Other offload regions "
+                    f"present: {stale or 'none'} - these are live (lock held) "
+                    "or too young to reap. Free /dev/shm space or increase "
+                    "its size."
+                )
+            os.ftruncate(self.fd, self.total_size_bytes)
+            # Publish the region geometry so late-joining processes can verify
+            # they agree. PP stages computing different geometries used to
+            # race on this file: the loser waited forever for a size the
+            # winner never set, or worse, mapped overlapping incompatible
+            # layouts. Written atomically so openers never see a partial file.
+            meta_tmp = self.mmap_path + ".meta.tmp"
+            with open(meta_tmp, "w") as f:
+                json.dump(
+                    {
+                        "num_blocks": self.num_blocks,
+                        "row_stride": self._row_stride,
+                        "total_size_bytes": self.total_size_bytes,
+                    },
+                    f,
+                )
+            os.replace(meta_tmp, self.mmap_path + ".meta")
             self._creator = True
             logger.info(
                 "Created mmap file %s (%.2f GB)",
                 self.mmap_path,
                 self.total_size_bytes / 1e9,
             )
+        except FileExistsError:
+            self.fd = os.open(self.mmap_path, os.O_RDWR)
+            # Same liveness lock as the creator: joiners keep the region
+            # alive too (the creator process alone may die first).
+            fcntl.flock(self.fd, fcntl.LOCK_SH)
+            meta_path = self.mmap_path + ".meta"
+            deadline = time.monotonic() + 30.0
+            while not os.path.exists(meta_path):
+                if time.monotonic() > deadline:
+                    raise TimeoutError(
+                        f"Timed out waiting for {meta_path}; the region "
+                        "creator did not publish its geometry."
+                    )
+                time.sleep(0.05)
+            with open(meta_path) as f:
+                meta = json.load(f)
+            expected = {
+                "num_blocks": self.num_blocks,
+                "row_stride": self._row_stride,
+                "total_size_bytes": self.total_size_bytes,
+            }
+            if meta != expected:
+                raise RuntimeError(
+                    "Shared KV offload region geometry mismatch: creator "
+                    f"published {meta} but this process computed {expected}. "
+                    "All workers and the scheduler must derive one geometry "
+                    "(see KVCacheConfig.max_worker_kv_bytes_per_block); with "
+                    "pipeline parallelism a per-stage mismatch here would "
+                    "silently corrupt offloaded KV."
+                )
+            _wait_for_file_size(self.fd, self.total_size_bytes)
+            logger.info("Opened existing mmap file %s", self.mmap_path)
 
         self.mmap_obj: mmap.mmap | None = mmap.mmap(
             self.fd,
@@ -477,6 +530,10 @@ class SharedOffloadRegion:
         if self._creator and getattr(self, "mmap_path", None):
             try:
                 os.unlink(self.mmap_path)
+                try:
+                    os.unlink(self.mmap_path + ".meta")
+                except OSError:
+                    pass
                 logger.info("Removed mmap file %s", self.mmap_path)
             except Exception:
                 logger.warning(
