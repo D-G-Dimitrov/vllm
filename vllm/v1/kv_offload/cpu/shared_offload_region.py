@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import json
 import mmap
 import os
 import time
@@ -88,6 +89,22 @@ class SharedOffloadRegion:
                     "increase the /dev/shm size."
                 )
             os.ftruncate(self.fd, self.total_size_bytes)
+            # Publish the region geometry so late-joining processes can verify
+            # they agree. PP stages computing different geometries used to
+            # race on this file: the loser waited forever for a size the
+            # winner never set, or worse, mapped overlapping incompatible
+            # layouts. Written atomically so openers never see a partial file.
+            meta_tmp = self.mmap_path + ".meta.tmp"
+            with open(meta_tmp, "w") as f:
+                json.dump(
+                    {
+                        "num_blocks": self.num_blocks,
+                        "row_stride": self._row_stride,
+                        "total_size_bytes": self.total_size_bytes,
+                    },
+                    f,
+                )
+            os.replace(meta_tmp, self.mmap_path + ".meta")
             self._creator = True
             logger.info(
                 "Created mmap file %s (%.2f GB)",
@@ -96,6 +113,31 @@ class SharedOffloadRegion:
             )
         except FileExistsError:
             self.fd = os.open(self.mmap_path, os.O_RDWR)
+            meta_path = self.mmap_path + ".meta"
+            deadline = time.monotonic() + 30.0
+            while not os.path.exists(meta_path):
+                if time.monotonic() > deadline:
+                    raise TimeoutError(
+                        f"Timed out waiting for {meta_path}; the region "
+                        "creator did not publish its geometry."
+                    )
+                time.sleep(0.05)
+            with open(meta_path) as f:
+                meta = json.load(f)
+            expected = {
+                "num_blocks": self.num_blocks,
+                "row_stride": self._row_stride,
+                "total_size_bytes": self.total_size_bytes,
+            }
+            if meta != expected:
+                raise RuntimeError(
+                    "Shared KV offload region geometry mismatch: creator "
+                    f"published {meta} but this process computed {expected}. "
+                    "All workers and the scheduler must derive one geometry "
+                    "(see KVCacheConfig.max_worker_kv_bytes_per_block); with "
+                    "pipeline parallelism a per-stage mismatch here would "
+                    "silently corrupt offloaded KV."
+                )
             _wait_for_file_size(self.fd, self.total_size_bytes)
             logger.info("Opened existing mmap file %s", self.mmap_path)
 
@@ -235,6 +277,10 @@ class SharedOffloadRegion:
         if self._creator and getattr(self, "mmap_path", None):
             try:
                 os.unlink(self.mmap_path)
+                try:
+                    os.unlink(self.mmap_path + ".meta")
+                except OSError:
+                    pass
                 logger.info("Removed mmap file %s", self.mmap_path)
             except Exception:
                 logger.warning(

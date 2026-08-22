@@ -305,6 +305,22 @@ class EngineCore:
             vllm_config, kv_cache_specs, available_gpu_memory
         )
 
+        # Attach the global per-worker KV bytes/block maximum to every config
+        # (and thus to the scheduler config derived from configs[0] below).
+        # PP stages hold different layer sets, so their local values differ;
+        # shared-memory KV offload sizes its worker slots by this maximum so
+        # every process agrees on one region geometry.
+        if vllm_config.kv_transfer_config is not None:
+            from vllm.distributed.kv_transfer.kv_connector.v1.offloading.config import (  # noqa: E501
+                compute_worker_kv_bytes_per_block,
+            )
+
+            max_kv_bytes = max(
+                compute_worker_kv_bytes_per_block(cfg) for cfg in kv_cache_configs
+            )
+            for cfg in kv_cache_configs:
+                cfg.max_worker_kv_bytes_per_block = max_kv_bytes
+
         # If auto-fit reduced max_model_len, sync the new value to workers.
         # This is needed because workers were spawned before memory profiling
         # and have the original (larger) max_model_len cached.
