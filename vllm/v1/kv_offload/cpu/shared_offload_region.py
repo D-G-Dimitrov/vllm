@@ -4,6 +4,7 @@ import fcntl
 import json
 import mmap
 import os
+import platform
 import time
 
 import torch
@@ -69,6 +70,98 @@ def _reclaim_stale_regions(exclude_path: str) -> int:
         finally:
             os.close(fd)
     return reclaimed
+
+
+def _interleave_across_numa_nodes(mm: mmap.mmap, length: int) -> None:
+    """mbind(MPOL_INTERLEAVE) the region across all online NUMA nodes.
+
+    Under the kernel's default first-touch policy every populated page
+    lands on the toucher's node, and all workers run next to their GPUs
+    on one socket. A region approaching that node's capacity starves it:
+    observed on a 2-node 2 TB box, 888 GiB of a 1 TiB region landed on
+    node0 (1009 GiB), leaving ~10 GiB free there, and the driver's
+    node-local allocations during cudaHostRegister then failed with
+    cudaErrorMemoryAllocation - a boot crash loop. Interleaving spreads
+    the footprint evenly; remote-socket DMA is slower but this is a
+    staging tier. Must run BEFORE population: mbind only affects pages
+    that are not yet allocated.
+    """
+    knob = os.environ.get("VLLM_KV_OFFLOAD_NUMA_INTERLEAVE", "auto")
+    if knob == "0":
+        return
+    if platform.machine() != "x86_64":
+        return
+    try:
+        online = open("/sys/devices/system/node/online").read().strip()
+    except OSError:
+        return
+    nodes: set[int] = set()
+    for part in online.split(","):
+        if "-" in part:
+            lo, hi = part.split("-")
+            nodes.update(range(int(lo), int(hi) + 1))
+        elif part:
+            nodes.add(int(part))
+    if len(nodes) < 2 or max(nodes) >= 64:
+        return
+    if knob != "1":
+        # auto: interleave ONLY when the region is big enough to threaten a
+        # single node. Small regions are better off with first-touch - each
+        # rank's slots land on its GPU-local node and transfers stay on-socket.
+        # Threshold: half the smallest node's capacity.
+        min_node_bytes = None
+        for n in nodes:
+            try:
+                with open(f"/sys/devices/system/node/node{n}/meminfo") as f:
+                    for line in f:
+                        if "MemTotal" in line:
+                            b = int(line.split()[-2]) * 1024
+                            if min_node_bytes is None or b < min_node_bytes:
+                                min_node_bytes = b
+                            break
+            except OSError:
+                return
+        if min_node_bytes is None or length < min_node_bytes // 2:
+            logger.info(
+                "Offload region (%.0f GB) fits comfortably in one NUMA node; "
+                "keeping first-touch placement for transfer locality "
+                "(set VLLM_KV_OFFLOAD_NUMA_INTERLEAVE=1 to force interleave)",
+                length / 1e9,
+            )
+            return
+    import ctypes
+
+    libc = ctypes.CDLL("libc.so.6", use_errno=True)
+    mask = 0
+    for n in nodes:
+        mask |= 1 << n
+    nodemask = (ctypes.c_ulong * 1)(mask)
+    buf = ctypes.c_char.from_buffer(mm)
+    try:
+        addr = ctypes.addressof(buf)
+        _SYS_MBIND = 237  # x86_64
+        _MPOL_INTERLEAVE = 3
+        ret = libc.syscall(
+            _SYS_MBIND,
+            ctypes.c_void_p(addr),
+            ctypes.c_size_t(length),
+            ctypes.c_int(_MPOL_INTERLEAVE),
+            nodemask,
+            ctypes.c_ulong(max(nodes) + 2),
+            ctypes.c_uint(0),
+        )
+    finally:
+        del buf
+    if ret != 0:
+        logger.warning(
+            "mbind(MPOL_INTERLEAVE) failed (errno=%d); offload region pages "
+            "will follow first-touch NUMA placement",
+            ctypes.get_errno(),
+        )
+    else:
+        logger.info(
+            "Offload region interleaved across NUMA nodes %s", sorted(nodes)
+        )
 
 
 def _wait_for_file_size(fd: int, expected_size: int, timeout: float = 30.0) -> None:
@@ -220,6 +313,11 @@ class SharedOffloadRegion:
             flags=mmap.MAP_SHARED,
             prot=mmap.PROT_READ | mmap.PROT_WRITE,
         )
+
+        # Before any page is touched: spread the region across NUMA nodes so
+        # a near-node-sized region cannot starve the GPU-local node (which
+        # breaks cudaHostRegister later). See _interleave_across_numa_nodes.
+        _interleave_across_numa_nodes(self.mmap_obj, self.total_size_bytes)
 
         # Forbid transparent huge pages on this mapping. khugepaged collapses
         # neighbouring 4K pages into 2M pages asynchronously; a huge page
