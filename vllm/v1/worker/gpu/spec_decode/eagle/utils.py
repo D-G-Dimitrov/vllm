@@ -52,17 +52,24 @@ def load_eagle_model(target_model: nn.Module, vllm_config: VllmConfig) -> nn.Mod
     # then fails on data-dependent asserts in some draft models (observed:
     # Qwen3.5 MTP head), and concurrent draft+target AOT compiles race in
     # TritonBundler's cache.
+    #
+    # Mutate the mode in place instead of dataclasses.replace(): the draft's
+    # attention layers register into THIS compilation_config's
+    # static_forward_context at construction, and the runtime forward context
+    # looks them up in the original object — a replaced copy strands the
+    # draft's layers in a dict nobody reads (KeyError
+    # 'mtp.layers.0.self_attn.attn' during profiling).
+    compilation_config = vllm_config.compilation_config
+    original_mode = compilation_config.mode
     if speculative_config.enforce_eager:
-        vllm_config = replace(
-            vllm_config,
-            compilation_config=replace(
-                vllm_config.compilation_config, mode=CompilationMode.NONE
-            ),
-        )
-    with set_model_tag("eagle_head"):
-        eagle_model = get_model(
-            vllm_config=vllm_config, model_config=draft_model_config
-        )
+        compilation_config.mode = CompilationMode.NONE
+    try:
+        with set_model_tag("eagle_head"):
+            eagle_model = get_model(
+                vllm_config=vllm_config, model_config=draft_model_config
+            )
+    finally:
+        compilation_config.mode = original_mode
 
     target_language_model = (
         target_model.get_language_model()
