@@ -547,9 +547,17 @@ class Worker(WorkerBase):
         # XPU stays excluded (see #39977).
         cudagraph_memory_estimate = 0
         if (
-            current_platform.is_cuda_alike()
+            envs.VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS
+            and current_platform.is_cuda_alike()
             and self.vllm_config.compilation_config.cudagraph_mode != CUDAGraphMode.NONE
         ):
+            # The profiling pass runs initialize_kv_cache twice (a throwaway
+            # minimal KV cache is allocated, captured against, and freed before
+            # the real allocation). Lazily-initialized state that caches raw
+            # device pointers during the throwaway pass (mamba spec-decode ctx,
+            # inductor cudagraph-tree bindings) is left dangling by
+            # _teardown_profiling_state, producing async IMAs on the first real
+            # warmup forward. Only run it when the estimate is actually wanted.
             cudagraph_memory_estimate = self.model_runner.profile_cudagraph_memory()
 
         # Respect the opt-in flag as originally designed.

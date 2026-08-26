@@ -2414,9 +2414,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     ),
     # If set to 1, enable CUDA graph memory estimation during memory profiling.
     # This profiles CUDA graph memory usage to provide more accurate KV cache
-    # memory allocation. Enabled by default as of v0.21.0
+    # memory allocation. Fork default: off. The profiling pass double-runs
+    # initialize_kv_cache and leaves dangling device pointers in lazily
+    # initialized state (see gpu_worker.py), crashing hybrid GDN models.
     "VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS": lambda: bool(
-        int(os.getenv("VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS", "1"))
+        int(os.getenv("VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS", "0"))
     ),
     # Island partition for the hierarchical allreduce, e.g. "0,1,2,3;4,5,6,7"
     # for a 2x4 PCIe box. Empty disables it.
