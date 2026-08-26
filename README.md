@@ -1,110 +1,133 @@
-<!-- markdownlint-disable MD001 MD041 -->
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vllm-project/vllm/main/docs/assets/logos/vllm-logo-text-dark.png">
-    <img alt="vLLM" src="https://raw.githubusercontent.com/vllm-project/vllm/main/docs/assets/logos/vllm-logo-text-light.png" width=55%>
-  </picture>
-</p>
+# VLLM Backport
 
-<h3 align="center">
-Easy, fast, and cheap LLM serving for everyone
-</h3>
+A VLLM fork that focuses on running Deepseek V4 Flash 0731 on Ampere at this moment.
 
-<p align="center">
-| <a href="https://docs.vllm.ai"><b>Documentation</b></a> | <a href="https://blog.vllm.ai/"><b>Blog</b></a> | <a href="https://arxiv.org/abs/2309.06180"><b>Paper</b></a> | <a href="https://x.com/vllm_project"><b>Twitter/X</b></a> | <a href="https://discuss.vllm.ai"><b>User Forum</b></a> | <a href="https://slack.vllm.ai"><b>Developer Slack</b></a> |
-</p>
+Currently achieving 3435 tps prefill and 948 tps decoding on 8xA6000 (TP4PP2)  and this should also work on A100.
 
-🔥 We have built a vLLM website to help you get started with vLLM. Please visit [vllm.ai](https://vllm.ai) to learn more.
-For events, please visit [vllm.ai/events](https://vllm.ai/events) to join us.
+## Docker Usage
 
----
+Prebuilt images are published to Docker Hub on every push:
 
-## About
+| Image | Target GPUs |
+| --- | --- |
+| `lazymio/vllm-backport:latest-sm86` (also `:latest`) | Ampere sm86 (A6000, RTX 30xx) |
+| `lazymio/vllm-backport:latest-sm80` | Ampere sm80 (A100) |
+| `lazymio/vllm-backport:latest-sm89` | Ada sm89 (RTX 4090, L40S) |
+| `lazymio/vllm-backport:v0.6.4-sm86` / `-sm80` / `-sm89` | pinned release builds |
 
-vLLM is a fast and easy-to-use library for LLM inference and serving.
+Images are single-arch builds (no FA3/Hopper kernels), so pick the tag matching your GPU. The entrypoint is `vllm serve`.
 
-Originally developed in the [Sky Computing Lab](https://sky.cs.berkeley.edu) at UC Berkeley, vLLM has grown into one of the most active open-source AI projects built and maintained by a diverse community of many dozens of academic institutions and companies from over 2000 contributors.
+On sm89, set `VLLM_TEST_FORCE_FP8_MARLIN=1` in the container environment.
 
-vLLM is fast with:
+`:latest*` tags track the main branch; each release also ships versioned tags like `:v0.6.1-sm86` if you want to pin.
 
-- State-of-the-art serving throughput
-- Efficient management of attention key and value memory with [**PagedAttention**](https://blog.vllm.ai/2023/06/20/vllm.html)
-- Continuous batching of incoming requests, chunked prefill, prefix caching
-- Fast and flexible model execution with piecewise and full CUDA/HIP graphs
-- Quantization: FP8, MXFP8/MXFP4, NVFP4, INT8, INT4, GPTQ/AWQ, GGUF, compressed-tensors, ModelOpt, TorchAO, and [more](https://docs.vllm.ai/en/latest/features/quantization/index.html)
-- Optimized attention kernels including FlashAttention, FlashInfer, TRTLLM-GEN, FlashMLA, and Triton
-- Optimized GEMM/MoE kernels for various precisions using CUTLASS, TRTLLM-GEN, CuTeDSL
-- Speculative decoding including n-gram, suffix, EAGLE, DFlash
-- Automatic kernel generation and graph-level transformations using torch.compile
-- Disaggregated prefill, decode, and encode
+### Docker Compose
 
-vLLM is flexible and easy to use with:
+```yaml
+services:
+  vllm:
+    image: lazymio/vllm-backport:latest-sm86  # A100: use :latest-sm80
+    command: >
+      deepseek-ai/DeepSeek-V4-Flash-0731
+      --tensor-parallel-size 8
+    ports:
+      - "8000:8000"
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+    ipc: host
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+```
 
-- Seamless integration with popular Hugging Face models
-- High-throughput serving with various decoding algorithms, including *parallel sampling*, *beam search*, and more
-- Tensor, pipeline, data, expert, and context parallelism for distributed inference
-- Streaming outputs
-- Generation of structured outputs using xgrammar or guidance
-- Tool calling and reasoning parsers
-- OpenAI-compatible API server, plus Anthropic Messages API and gRPC support
-- Efficient multi-LoRA support for dense and MoE layers
-- Support for NVIDIA GPUs, AMD GPUs, Intel GPUs, and x86/ARM/PowerPC CPUs. Additionally, diverse hardware plugins such as Google TPUs, Intel Gaudi, IBM Spyre, Huawei Ascend, Rebellions NPU, Apple Silicon, MetaX GPU, and more.
-
-vLLM seamlessly supports 200+ model architectures on Hugging Face, including:
-
-- Decoder-only LLMs (e.g., Llama, Qwen, Gemma)
-- Mixture-of-Expert LLMs (e.g., Mixtral, DeepSeek-V3, Qwen-MoE, GPT-OSS)
-- Hybrid attention and state-space models (e.g., Mamba, Qwen3.5)
-- Multi-modal models (e.g., LLaVA, Qwen-VL, Pixtral)
-- Embedding and retrieval models (e.g., E5-Mistral, GTE, ColBERT)
-- Reward and classification models (e.g., Qwen-Math)
-
-Find the full list of supported models [here](https://docs.vllm.ai/en/latest/models/supported_models.html).
-
-## Getting Started
-
-Install vLLM with [`uv`](https://docs.astral.sh/uv/) (recommended) or `pip`:
+Then:
 
 ```bash
-uv pip install vllm
+docker compose up -d
+curl http://localhost:8000/v1/models
 ```
 
-Or [build from source](https://docs.vllm.ai/en/latest/getting_started/installation/gpu/index.html#build-wheel-from-source) for development.
+Adjust the model and `--tensor-parallel-size` to your setup; `ipc: host` is required for multi-GPU tensor parallelism.
 
-Visit our [documentation](https://docs.vllm.ai/en/latest/) to learn more.
+## Recommend Setup
 
-- [Installation](https://docs.vllm.ai/en/latest/getting_started/installation.html)
-- [Quickstart](https://docs.vllm.ai/en/latest/getting_started/quickstart.html)
-- [List of Supported Models](https://docs.vllm.ai/en/latest/models/supported_models.html)
-
-## Contributing
-
-We welcome and value any contributions and collaborations.
-Please check out [Contributing to vLLM](https://docs.vllm.ai/en/latest/contributing/index.html) for how to get involved.
-
-## Citation
-
-If you use vLLM for your research, please cite our [paper](https://arxiv.org/abs/2309.06180):
-
-```bibtex
-@inproceedings{kwon2023efficient,
-  title={Efficient Memory Management for Large Language Model Serving with PagedAttention},
-  author={Woosuk Kwon and Zhuohan Li and Siyuan Zhuang and Ying Sheng and Lianmin Zheng and Cody Hao Yu and Joseph E. Gonzalez and Hao Zhang and Ion Stoica},
-  booktitle={Proceedings of the ACM SIGOPS 29th Symposium on Operating Systems Principles},
-  year={2023}
-}
+```bash
+vllm serve /path/to/your/deepseek \
+  --tensor-parallel-size 8 \
+  --max-model-len 1048576 \
+  --gpu-memory-utilization 0.90 \
+  --kv-cache-dtype fp8_ds_mla \
+  --trust-remote-code \
+  --disable-custom-all-reduce \
+  --compilation-config '{"cudagraph_mode":"FULL_AND_PIECEWISE","cudagraph_capture_sizes":[1,2,4,8,16,32,64],"max_cudagraph_capture_size":64}' \
+  --speculative-config '{"method":"dspark","num_speculative_tokens":5}' \
+  --enable-auto-tool-choice --tool-call-parser deepseek_v4 \
+  --host 0.0.0.0 --port 8000 \
+  --hf-overrides '{"head_dtype": "float32"}' \
+  --served-model-name deepseek-v4-flash
 ```
 
-## Contact Us
+with these environment variables (required for `FULL_AND_PIECEWISE`, see the cudagraph tip below):
 
-<!-- --8<-- [start:contact-us] -->
-- For technical questions and feature requests, please use GitHub [Issues](https://github.com/vllm-project/vllm/issues)
-- For discussing with fellow users, please use the [vLLM Forum](https://discuss.vllm.ai)
-- For coordinating contributions and development, please use [Slack](https://slack.vllm.ai)
-- For security disclosures, please use GitHub's [Security Advisories](https://github.com/vllm-project/vllm/security/advisories) feature
-- For collaborations and partnerships, please contact us at [collaboration@vllm.ai](mailto:collaboration@vllm.ai)
-<!-- --8<-- [end:contact-us] -->
+```bash
+export NCCL_ALGO=Ring
+export NCCL_PROTO=Simple
+```
 
-## Media Kit
+Tips:
 
-- If you wish to use vLLM's logo, please refer to [our media kit repo](https://github.com/vllm-project/media-kit)
+- `FULL_AND_PIECEWISE` (v0.6.x default recommendation, previously `PIECEWISE`) captures the whole decode step — attention, MoE dispatch, NCCL all-reduce and the DSpark draft loop — into one CUDA graph. Measured on 4x/8x A6000: single-stream decode 45.6 -> 67-70 tok/s (+47%); prefill is unchanged (compute-bound). Two prerequisites:
+  - Pin NCCL with `NCCL_ALGO=Ring NCCL_PROTO=Simple` (and prefer `--disable-custom-all-reduce`). Graph replay must re-issue the exact captured collective; NCCL's size-adaptive algorithm switching is what made FULL capture "crash on Ampere" — Ampere itself is fine.
+  - Bound `cudagraph_capture_sizes` as shown. FULL graphs keep private memory pools; capturing every batch size up to `--max-num-seqs` can cost >800 MB per GPU and OOM warmup at high `--gpu-memory-utilization`.
+- Adjust your TP (--tensor-parallel-size) and PP (--pipeline-parallel-size) accordingly.
+- head dtype override helps reduce garbage outputs.
+- DSpark is not working very well if you have PP>1.
+- The single quotes around the `--speculative-config` JSON are required — without them bash brace-expands the braces at the comma and vLLM receives the literal `method:dspark` (`Value method:dspark cannot be converted` error).
+- Keep `num_speculative_tokens` at 5 on Ampere. Values below 5 (the checkpoint's `dspark_block_size`) are rejected, and 7 needs ~200 KB of shared memory vs the 163 KB Ampere limit (`triton OutOfResources` error). 6 does start, but draft positions past the native block are almost never accepted (3–13% in our measurements), so it only wastes draft compute — output quality and speed are the same as 5.
+- Requests that set neither `thinking` nor `reasoning_effort` now get thinking mode with high effort, matching the official 0731 API mapping (`reasoning_effort: "none"` restores plain chat mode). Agentic/tool-calling clients should pass a `reasoning_effort` explicitly from the first turn of a session — sessions that run without the effort prefix gradually stop thinking and can enter self-reinforcing reasoning loops.
+
+## Environment Variables (Warning: Huge AI generated contents!)
+
+All knobs this fork has added over stock vLLM. Defaults are what the images ship with; you normally don't need to touch anything.
+
+### On by default (correctness / batch-invariance)
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `VLLM_DETERMINISTIC_MOE_ALIGN` | `1` | Deterministic MoE token grouping (stable sort instead of atomic-order). `0` restores the historical CUDA kernel. |
+| `VLLM_DSV4_FIXED_DECODE_SPLITS` | `16` | Pin the sparse-decode attention split-k so a request's numerics don't depend on what else is co-batched. `0` restores the batch-adaptive heuristic. |
+| `VLLM_TOKEN_BUCKET_PAD` | `1` | Pad batches to fixed token buckets (16/32/64/128/256, then ×256) so GEMM tiling stops shifting with exact batch size. `0` disables. |
+| `VLLM_DSPARK_FUSED_MARKOV` | `1` | Fused DSpark Markov draft-sampling chain. `0` falls back to the eager op chain. |
+| `VLLM_DSV4_LOGITS_ROW_CHUNK` | `128` | Row-chunk the sparse-indexer prefill logits so the `[chunk_rows, context/4]` fp32 transient stays bounded at long context (fixes crashes beyond ~134k tokens; needed for 256k+). `0` restores the monolithic allocation; the unprefixed `DSV4_LOGITS_ROW_CHUNK` spelling also works. |
+
+### Opt-in performance knobs (default `0` — measure on your topology first)
+
+| Variable | Meaning |
+| --- | --- |
+| `VLLM_MHC_PRENORM_SHARD` | Shard the mHC prenorm GEMM across TP ranks (pays off at TP8, hurts at TP4). |
+| `VLLM_MHC_POST_FUSE_SQRSUM` | Fold the mHC prenorm row-sqrsum into `mhc_post`. |
+| `VLLM_UNREPLICATE_ATTN_GEMMS` | De-duplicate attention GEMMs that are replicated across TP ranks. |
+| `VLLM_INDEXER_QUERY_SHARD` / `VLLM_INDEXER_QUERY_SHARD_QPATH` | Shard the sparse-indexer query projection across TP ranks. |
+| `VLLM_SPARSE_RAGGED_FAST_SCAN` | Faster ragged-index scan in sparse prefill. |
+| `VLLM_SPARSE_PREFILL_EXACT_TILE` | Mask-free sparse-prefill kernel specialization for exact-tile shapes. |
+| `VLLM_DSPARK_VOCAB_SHARD` | Vocab-sharded DSpark greedy draft selection (less draft-side communication). |
+| `VLLM_MARLIN_FP8_DEQUANT_BF16` | Route dense block-fp8 GEMMs through cuBLAS (dequant→bf16) instead of Marlin. |
+| `VLLM_HIER_ALL_REDUCE` | Island-aware hierarchical all-reduce for boxes with multiple PCIe islands. |
+| `VLLM_MAX_SIZE_MB_CUSTOM_ALL_REDUCE` | Override the custom all-reduce payload cap (MB). |
+| `VLLM_MHC_FIXED_NUM_SPLIT` | Pin the mHC TileLang GEMM split-k (only reachable on DeepGEMM-capable GPUs; no effect on sm86/sm80). |
+
+### Ops / debug
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `VLLM_MQ_MAX_CHUNK_BYTES_MB` | `16` | Worker message-queue chunk size. Lower it (e.g. `1`) when the container has a small `/dev/shm` and you cannot use `--ipc=host`. |
+| `VLLM_DISABLE_MULTI_STREAM_PARALLEL` | `0` | Debug kill-switch: run aux-stream work serially on the default stream. |
+
+For strict temperature-0 stability under concurrency, also consider `--hf-overrides '{"head_dtype": "float32"}'` (fp32 logits head) — a CLI flag, not an env.
