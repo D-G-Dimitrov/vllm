@@ -247,6 +247,17 @@ def pin_mmap_region(region: SharedOffloadRegion) -> None:
                 attempt,
                 result.value,
             )
+            # Consume the stale last-error IMMEDIATELY, not just in the
+            # post-loop fence: on this code base NCCL collectives can run
+            # interleaved with registration, and NCCL's internal error
+            # checks inherit the stale code as "unhandled cuda error",
+            # killing the boot before the fence ever runs.
+            try:
+                _probe = torch.zeros(1, device="cuda")
+                _probe += 1
+                torch.cuda.synchronize()
+            except Exception:
+                pass
             time.sleep(0.5 * (attempt + 1))
         if result.value != 0:
             for done in registered:
