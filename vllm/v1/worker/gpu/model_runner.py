@@ -1978,12 +1978,6 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 self.adaptive_verification.record_confidences(
                     self.speculator.draft_token_confidence_probs, input_batch
                 )
-            if self.pp_handler is not None:
-                # Relay the proposed draft tokens to non-last PP ranks so their
-                # next-step combine_sampled_and_draft_tokens reads real values
-                # instead of zero-init (otherwise spec acceptance ~= 0 / garbage).
-                self.pp_handler.broadcast_draft(draft_tokens, input_batch)
-
         if self.pp_handler is not None:
             # Broadcast to non-last PP ranks (handles spec decode multi-token).
             # Deliberately after `propose`: the drafts for the next step must be
@@ -1994,6 +1988,15 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 num_rejected,
                 input_batch,
             )
+            if self.speculator is not None:
+                # Relay the proposed draft tokens to non-last PP ranks so their
+                # next-step combine_sampled_and_draft_tokens reads real values
+                # instead of zero-init (otherwise spec acceptance ~= 0 / garbage).
+                # MUST come after `broadcast`: the receiver posts its recvs in
+                # the order (sampled, combined, draft) and NCCL matches ops on
+                # this communicator strictly by order — sending draft first
+                # pairs it with the wider sampled recv and deadlocks the group.
+                self.pp_handler.broadcast_draft(draft_tokens, input_batch)
 
         if self.num_speculative_steps > 0:
             # Spec-decode and diffusion LLMs both use draft tokens but the latter does
