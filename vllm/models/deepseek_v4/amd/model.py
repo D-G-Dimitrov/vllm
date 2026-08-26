@@ -1047,6 +1047,7 @@ class DeepseekV4ForCausalLM(nn.Module, SupportsPP, SupportsEagle3):
         for module in self.modules():
             if isinstance(module, DeepseekV4ROCMAiterMLAAttention):
                 module.prepare_attn_preshuffle()
+                module.fuse_input_gemm_weights()
             elif isinstance(module, DeepseekV4MLP):
                 module.prepare_gateup_preshuffle()
 

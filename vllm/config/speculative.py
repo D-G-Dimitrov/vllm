@@ -1636,7 +1636,13 @@ class SpeculativeConfig:
         This is mostly a copy of the target parallel config, except the tp_size.
         """
         draft_parallel_config = ParallelConfig(
-            pipeline_parallel_size=target_parallel_config.pipeline_parallel_size,
+            # Not the target's pipeline_parallel_size. A drafter is built and
+            # run only on the last pipeline stage (see GPUModelRunner: the
+            # speculator is constructed under is_last_pp_rank and execute_model
+            # returns early everywhere else), so it never spans stages.
+            # Inheriting pp>1 only made it fail the SupportsPP check that guards
+            # models whose layers actually get split.
+            pipeline_parallel_size=1,
             tensor_parallel_size=speculative_draft_tensor_parallel_size,
             distributed_executor_backend=target_parallel_config.distributed_executor_backend,
             max_parallel_loading_workers=target_parallel_config.max_parallel_loading_workers,

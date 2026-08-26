@@ -1028,6 +1028,24 @@ def _select_dsv4_attn_cls(vllm_config: VllmConfig) -> type[DeepseekV4Attention]:
     """
     backend = vllm_config.attention_config.backend
     device_capability = current_platform.get_device_capability()
+    if device_capability is not None and device_capability.major == 8:
+        if backend is not None and (
+            backend != AttentionBackendEnum.TRITON_MLA_SPARSE_DSV4
+        ):
+            raise ValueError(
+                f"{backend.name} is not supported for DeepSeek V4 on SM8x; "
+                "use TRITON_MLA_SPARSE_DSV4 (default)."
+            )
+        if vllm_config.attention_config.use_fp4_indexer_cache:
+            raise ValueError(
+                "attention_config.use_fp4_indexer_cache requires SM100; "
+                "the MXFP4 indexer kernels emit Blackwell-only PTX."
+            )
+        from vllm.models.deepseek_v4.ampere.ampere_sparse import (
+            DeepseekV4AmpereMLAAttention,
+        )
+
+        return DeepseekV4AmpereMLAAttention
     if backend in (
         AttentionBackendEnum.FLASHINFER_MLA_SPARSE,
         AttentionBackendEnum.FLASHINFER_MLA_SPARSE_SM120,
@@ -1240,6 +1258,19 @@ class DeepseekV4DecoderLayer(nn.Module):
         return x, residual, post_mix, res_mix
 
 
+def _drafter_needs_target_embed(vllm_config: VllmConfig) -> bool:
+    """Does a speculative drafter on the last stage alias the target embedding?
+
+    True only for methods whose draft weights ship without an embedding table
+    and are therefore aliased to the target's. Anything else keeps the stock
+    first-stage-only placement.
+    """
+    speculative_config = vllm_config.speculative_config
+    if speculative_config is None:
+        return False
+    return speculative_config.method in ("dspark", "dflash")
+
+
 class DeepseekV4Model(nn.Module, EagleModelMixin):
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
@@ -1276,7 +1307,18 @@ class DeepseekV4Model(nn.Module, EagleModelMixin):
             dtype=torch.int32,
         )
 
-        if get_pp_group().is_first_rank:
+        # The last stage also needs the table when a drafter runs there: DSpark
+        # embeds its own proposed tokens every step and aliases this module
+        # (the checkpoint carries no separate draft embedding -- see
+        # DSparkDeepseekV4ForCausalLM.has_own_embed_tokens). Without this the
+        # alias would resolve to PPMissingLayer and drafting would read garbage.
+        # Costs one extra vocab-parallel table on the last stage only
+        # (129280x4096 bf16 = 1.06 GB, ~265 MB/GPU at TP4).
+        needs_embed = get_pp_group().is_first_rank or (
+            get_pp_group().is_last_rank
+            and _drafter_needs_target_embed(vllm_config)
+        )
+        if needs_embed:
             self.embed_tokens = VocabParallelEmbedding(
                 config.vocab_size,
                 config.hidden_size,
@@ -1811,14 +1853,17 @@ class DeepseekV4ForCausalLM(
         return getattr(self.model, "_mtp_hidden_buffer", None)
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
-        loader = AutoWeightsLoader(self)
-        loaded_params = loader.load_weights(weights, mapper=self.hf_to_vllm_mapper)
-        self.process_weights_after_loading()
-        return loaded_params
+        loader = AutoWeightsLoader(self, skip_substrs=["mtp."])
+        return loader.load_weights(weights, mapper=self.hf_to_vllm_mapper)
 
     def process_weights_after_loading(self) -> None:
+        # Model-level post-load hook: runs for every loader, including
+        # DummyModelLoader, which never calls load_weights().
         self.model.finalize_mega_moe_weights()
         self.model.finalize_mhc_broadcast_weights()
+        for module in self.modules():
+            if isinstance(module, DeepseekV4Attention):
+                module.fuse_input_gemm_weights()
 
     def get_expert_mapping(self) -> list[tuple[str, str, int, str]]:
         return self.model.get_expert_mapping()

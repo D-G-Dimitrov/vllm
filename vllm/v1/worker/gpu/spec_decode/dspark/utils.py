@@ -39,7 +39,10 @@ def load_dspark_model(target_model: nn.Module, vllm_config: VllmConfig) -> nn.Mo
     from vllm.compilation.backends import set_model_tag
     from vllm.model_executor.model_loader import get_model
     from vllm.model_executor.models.qwen3_dflash import dflash_has_any_non_causal
-    from vllm.model_executor.models.utils import get_draft_quant_config
+    from vllm.model_executor.models.utils import (
+        PPMissingLayer,
+        get_draft_quant_config,
+    )
     from vllm.v1.worker.gpu.spec_decode.eagle.utils import (
         _should_share,
         get_target_lm_head,
@@ -76,9 +79,6 @@ def load_dspark_model(target_model: nn.Module, vllm_config: VllmConfig) -> nn.Mo
             vllm_config=draft_vllm_config, model_config=draft_model_config
         )
 
-    if get_pp_group().world_size != 1:
-        raise NotImplementedError("DSpark does not support pipeline parallelism.")
-
     target_language_model = (
         target_model.get_language_model()
         if hasattr(target_model, "get_language_model")
@@ -90,6 +90,16 @@ def load_dspark_model(target_model: nn.Module, vllm_config: VllmConfig) -> nn.Mo
 
     target_embed = getattr(target_inner, "embed_tokens", None)
     draft_embed = getattr(draft_inner, "embed_tokens", None)
+
+    # Under PP the target only builds the embedding where it is needed. The
+    # drafter runs on the last stage and owns no table of its own, so aliasing a
+    # PPMissingLayer here would embed garbage instead of failing. Fail loudly.
+    if get_pp_group().world_size != 1 and isinstance(target_embed, PPMissingLayer):
+        raise RuntimeError(
+            "DSpark under pipeline parallelism needs the target's embedding on "
+            "the last stage, but it is a PPMissingLayer there. The target model "
+            "must build embed_tokens on the last rank when a drafter aliases it."
+        )
     if (
         target_embed is not None
         and draft_model_config.get_vocab_size() <= target_vocab_size
