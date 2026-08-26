@@ -301,6 +301,18 @@ class SharedOffloadRegion:
             prot=mmap.PROT_READ | mmap.PROT_WRITE,
         )
 
+        # Forbid transparent huge pages on this mapping. khugepaged collapses
+        # neighbouring 4K pages into 2M pages asynchronously; a huge page
+        # spanning two ranks' slot boundaries makes their per-slot
+        # cudaHostRegister ranges overlap at the physical-page level, and the
+        # cross-process pin/DMA-map churn during early warmup surfaces as a
+        # probabilistic async cudaErrorInvalidValue (boot-time crash race).
+        _MADV_NOHUGEPAGE = getattr(mmap, "MADV_NOHUGEPAGE", 15)
+        try:
+            self.mmap_obj.madvise(_MADV_NOHUGEPAGE)
+        except OSError:
+            logger.warning("MADV_NOHUGEPAGE not supported; leaving THP enabled")
+
         # Spread a near-node-sized region across NUMA nodes before any page
         # is touched (fork feature; auto-gated inside).
         _interleave_across_numa_nodes(self.mmap_obj, self.total_size_bytes)
@@ -434,16 +446,14 @@ class SharedOffloadRegion:
         return memoryview(np_arr)
 
     def cleanup(self) -> None:
+        # Do NOT cudaHostUnregister here: with per-slot pinning that is tens
+        # of thousands of driver calls taking minutes, during which a crashed
+        # engine looks hung -- the container never exits, so the docker
+        # restart policy cannot self-heal a boot-time failure. The driver
+        # releases every pin automatically when the process exits, which is
+        # exactly where cleanup() runs.
         if self.is_pinned and self._base is not None:
-            if current_platform.is_cuda_alike():
-                base_ptr = self._base.data_ptr()
-                result = torch.cuda.cudart().cudaHostUnregister(base_ptr)
-                if result.value != 0:
-                    logger.warning(
-                        "cudaHostUnregister failed for rank=%d (code=%d)",
-                        self.rank,
-                        result,
-                    )
+            self._pinned_slot_offsets = []
             self.is_pinned = False
         # Release views before _base: each view holds a _base reference and a
         # direct StorageImpl reference.  Freeing views first lets both refcounts

@@ -734,6 +734,22 @@ class Worker(WorkerBase):
             self.model_runner._dummy_run(size, skip_eplb=True, remove_lora=False)
         self.model_runner.maybe_remove_all_loras(self.model_runner.lora_config)
 
+        # Prime the unbatched pipeline-parallel NCCL communicators before any
+        # warmup step that may open a CUDA graph capture. ProcessGroupNCCL
+        # creates the 2-rank send/recv communicator lazily on first use; when
+        # that first use lands inside an open capture window (kernel warmup
+        # and capture_model both drive decode steps under FULL cudagraph
+        # modes), communicator initialization invalidates the capture and the
+        # engine later dies on an async cudaErrorInvalidValue far from here.
+        pp_group = get_pp_group()
+        if pp_group.world_size > 1:
+            primer = torch.zeros(1, dtype=torch.int32, device=self.device)
+            if not pp_group.is_first_rank:
+                pp_group.recv(primer.shape, primer.dtype)
+            if not pp_group.is_last_rank:
+                pp_group.send(primer)
+            torch.accelerator.synchronize()
+
         # Warmup and tune the kernels used during model execution before
         # cuda graph capture.
         kernel_warmup(self)
