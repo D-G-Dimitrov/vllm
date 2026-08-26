@@ -608,6 +608,37 @@ class DeepseekV4Attention(nn.Module, AttentionLayerBase, ABC):
             o_padded,
         )
 
+    @staticmethod
+    def _shard_tokens(x: torch.Tensor) -> tuple[torch.Tensor, list[int]]:
+        """This rank's slice of the token dim, plus the split it came from.
+
+        `balanced_row_counts` is the split the indexer query-shard and the mHC
+        prenorm shard also use; sharing one partition is what lets these
+        features compose (refutations rule 19).
+        """
+        tp = get_tensor_model_parallel_world_size()
+        rows = balanced_row_counts(x.shape[0], tp)
+        lo, hi = balanced_row_bounds(
+            0, x.shape[0], get_tensor_model_parallel_rank(), tp
+        )
+        return x[lo:hi], rows
+
+    @staticmethod
+    def _gather_tokens(y: torch.Tensor, rows: list[int]) -> torch.Tensor:
+        """Undo `_shard_tokens`: reassemble the exact rows each rank owned."""
+        return get_tp_group().all_gatherv(y, dim=0, sizes=rows)
+
+    def _unreplicate_tokens(self, n_tokens: int) -> bool:
+        """Whether to token-shard the replicated input GEMMs for this batch.
+
+        Both GEMMs are replicated because their consumers need full-width
+        output on every rank (see the flag's note in envs.py), so sharding
+        costs an all-gather. That only pays at prefill widths: at decode the
+        GEMM is far smaller than the collective's fixed cost, and below one
+        row per rank there is nothing to split.
+        """
+        return self._unreplicate_gemms and n_tokens >= _UNREPLICATE_MIN_TOKENS
+
     def _fused_wqa_wkv_gemm(self, hidden_states: torch.Tensor) -> torch.Tensor:
         # Override point: the ROCm layer preshuffles this weight in place, so
         # it cannot go through fused_wqa_wkv directly.
