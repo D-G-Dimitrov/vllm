@@ -20,7 +20,12 @@ from vllm.v1.kv_offload.config import (
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
-    from vllm.v1.kv_cache_interface import KVCacheConfig
+    from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheTensor
+
+
+def is_kv_cache_tensor_packed(kv_cache_tensor: "KVCacheTensor") -> bool:
+    """Return whether a KV cache tensor uses a packed block stride."""
+    return bool(kv_cache_tensor.block_stride)
 
 
 def compute_worker_kv_bytes_per_block(kv_cache_config: "KVCacheConfig") -> int:
