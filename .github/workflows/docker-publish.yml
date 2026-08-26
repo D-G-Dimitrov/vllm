@@ -36,8 +36,10 @@ jobs:
           done
 
   build-and-push:
-    runs-on: ubuntu-latest
-    timeout-minutes: 360
+    # On a repo with a self-hosted builder, set the repo variable
+    # BUILD_RUNNER (e.g. "self-hosted"); GitHub-hosted otherwise.
+    runs-on: ${{ vars.BUILD_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 2880
     strategy:
       fail-fast: false
       matrix:
@@ -53,6 +55,9 @@ jobs:
             tags: lazymio/vllm-backport:latest-sm89
     steps:
       - name: Free disk space
+        # GitHub-hosted runners only: a cold build overflows their small
+        # root disk. Self-hosted builders manage their own storage.
+        if: ${{ runner.environment == 'github-hosted' }}
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
             /opt/hostedtoolcache /usr/local/share/boost \
@@ -103,7 +108,7 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - uses: docker/build-push-action@v6
-        timeout-minutes: 320
+        timeout-minutes: 2400
         with:
           context: .
           file: docker/Dockerfile
