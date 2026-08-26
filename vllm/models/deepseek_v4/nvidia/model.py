@@ -1853,8 +1853,11 @@ class DeepseekV4ForCausalLM(
         return getattr(self.model, "_mtp_hidden_buffer", None)
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
-        loader = AutoWeightsLoader(self, skip_substrs=["mtp."])
-        return loader.load_weights(weights, mapper=self.hf_to_vllm_mapper)
+        loader = AutoWeightsLoader(self)
+        mapper = self.hf_to_vllm_mapper | WeightsMapper(
+            orig_to_new_substr={"mtp.": None}
+        )
+        return loader.load_weights(weights, mapper=mapper)
 
     def process_weights_after_loading(self) -> None:
         # Model-level post-load hook: runs for every loader, including
