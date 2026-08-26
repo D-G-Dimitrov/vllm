@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import errno
+import ctypes
 import fcntl
 import json
 import mmap
@@ -22,6 +23,61 @@ logger = init_logger(__name__)
 
 # MADV_POPULATE_WRITE was added in Linux 5.14 (value 23).
 _MADV_POPULATE_WRITE = getattr(mmap, "MADV_POPULATE_WRITE", 23)
+
+
+# Backing store for the shared region. "shm" (default) is a file in /dev/shm;
+# "memfd" is an anonymous memfd published to sibling processes through
+# /proc/<pid>/fd/<n>, which sidesteps a small /dev/shm (containers often cap it
+# well below RAM) -- the region is then bounded only by the memory cgroup.
+_REGION_BACKEND = os.environ.get("VLLM_KV_OFFLOAD_REGION_BACKEND", "shm")
+
+
+def _memfd_create(name: str) -> int:
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.memfd_create.argtypes = [ctypes.c_char_p, ctypes.c_uint]
+    libc.memfd_create.restype = ctypes.c_int
+    fd = libc.memfd_create(name.encode(), 0)
+    if fd < 0:
+        err = ctypes.get_errno()
+        raise OSError(err, f"memfd_create failed: {os.strerror(err)}")
+    return fd
+
+
+def _reclaim_stale_memfd_markers(exclude_path: str) -> int:
+    """memfd regions die with their last fd holder, so only the rendezvous
+    marker in /dev/shm can leak; reap markers nobody holds a lock on."""
+    reclaimed = 0
+    try:
+        names = os.listdir("/dev/shm")
+    except OSError:
+        return 0
+    for name in names:
+        if not (name.startswith("vllm_offload_") and name.endswith(".memfd")):
+            continue
+        path = os.path.join("/dev/shm", name)
+        if path == exclude_path:
+            continue
+        try:
+            if time.time() - os.stat(path).st_mtime < 60.0:
+                continue
+            fd = os.open(path, os.O_RDWR)
+        except OSError:
+            continue
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                continue
+            for q in (path, path + ".meta"):
+                try:
+                    os.unlink(q)
+                except OSError:
+                    pass
+            reclaimed += 1
+            logger.warning("Reclaimed stale KV offload memfd marker %s", path)
+        finally:
+            os.close(fd)
+    return reclaimed
 
 
 def _reclaim_stale_regions(exclude_path: str) -> int:
@@ -245,7 +301,16 @@ class SharedOffloadRegion:
         self._row_stride = kv_bytes_per_block
         self.total_size_bytes = self.num_blocks * self._row_stride
 
-        self.mmap_path = f"/dev/shm/vllm_offload_{engine_id}.mmap"
+        self.backend = _REGION_BACKEND
+        if self.backend not in ("shm", "memfd"):
+            raise ValueError(
+                f"VLLM_KV_OFFLOAD_REGION_BACKEND={self.backend!r}; use shm or memfd"
+            )
+        suffix = "memfd" if self.backend == "memfd" else "mmap"
+        # For memfd this is only the rendezvous marker (a few bytes); the
+        # region itself is anonymous memory reachable via meta["memfd"].
+        self.mmap_path = f"/dev/shm/vllm_offload_{engine_id}.{suffix}"
+        self._marker_fd: int | None = None
         self._creator = False  # set True only if this worker creates the file
         self.rank = rank
         if rank is not None:
@@ -253,6 +318,92 @@ class SharedOffloadRegion:
             self._worker_offset = rank * cpu_page_size
             # exclusive upper bound for this worker's area within each row
             self._worker_area_end = (rank + 1) * cpu_page_size
+        if self.backend == "memfd":
+            self._init_memfd(engine_id)
+        else:
+            self._init_shm()
+        self._map_and_populate(rank, num_blocks, cpu_page_size)
+
+    def _init_memfd(self, engine_id: str) -> None:
+        meta_path = self.mmap_path + ".meta"
+        try:
+            self._marker_fd = os.open(
+                self.mmap_path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600
+            )
+            fcntl.flock(self._marker_fd, fcntl.LOCK_SH)
+            _reclaim_stale_memfd_markers(self.mmap_path)
+            self.fd: int | None = _memfd_create(f"vllm_offload_{engine_id}")
+            os.ftruncate(self.fd, self.total_size_bytes)
+            meta_tmp = meta_path + ".tmp"
+            with open(meta_tmp, "w") as f:
+                json.dump(
+                    {
+                        "num_blocks": self.num_blocks,
+                        "row_stride": self._row_stride,
+                        "total_size_bytes": self.total_size_bytes,
+                        "memfd": f"/proc/{os.getpid()}/fd/{self.fd}",
+                    },
+                    f,
+                )
+            os.replace(meta_tmp, meta_path)
+            self._creator = True
+            logger.info(
+                "Created memfd offload region %s (%.2f GB), marker %s",
+                f"/proc/{os.getpid()}/fd/{self.fd}",
+                self.total_size_bytes / 1e9,
+                self.mmap_path,
+            )
+        except FileExistsError:
+            self._marker_fd = os.open(self.mmap_path, os.O_RDWR)
+            fcntl.flock(self._marker_fd, fcntl.LOCK_SH)
+            meta = self._wait_for_meta(meta_path)
+            memfd_path = meta.pop("memfd", None)
+            self._check_geometry(meta)
+            if not memfd_path:
+                raise RuntimeError(f"{meta_path} carries no memfd path")
+            deadline = time.monotonic() + 30.0
+            while True:
+                try:
+                    self.fd = os.open(memfd_path, os.O_RDWR)
+                    break
+                except OSError as e:
+                    if time.monotonic() > deadline:
+                        raise TimeoutError(
+                            f"Cannot open the creator's memfd {memfd_path}: {e}"
+                        ) from e
+                    time.sleep(0.05)
+            _wait_for_file_size(self.fd, self.total_size_bytes)
+            logger.info("Opened existing memfd offload region %s", memfd_path)
+
+    def _wait_for_meta(self, meta_path: str) -> dict:
+        deadline = time.monotonic() + 30.0
+        while not os.path.exists(meta_path):
+            if time.monotonic() > deadline:
+                raise TimeoutError(
+                    f"Timed out waiting for {meta_path}; the region "
+                    "creator did not publish its geometry."
+                )
+            time.sleep(0.05)
+        with open(meta_path) as f:
+            return json.load(f)
+
+    def _check_geometry(self, meta: dict) -> None:
+        expected = {
+            "num_blocks": self.num_blocks,
+            "row_stride": self._row_stride,
+            "total_size_bytes": self.total_size_bytes,
+        }
+        if meta != expected:
+            raise RuntimeError(
+                "Shared KV offload region geometry mismatch: creator "
+                f"published {meta} but this process computed {expected}. "
+                "All workers and the scheduler must derive one geometry "
+                "(see KVCacheConfig.max_worker_kv_bytes_per_block); with "
+                "pipeline parallelism a per-stage mismatch here would "
+                "silently corrupt offloaded KV."
+            )
+
+    def _init_shm(self) -> None:
         try:
             # Exclusive create — only one worker succeeds
             self.fd: int | None = os.open(
@@ -288,8 +439,8 @@ class SharedOffloadRegion:
                     f"region needs {self.total_size_bytes / 1e9:.1f} GB "
                     "(after reaping stale regions). Other offload regions "
                     f"present: {stale or 'none'} - these are live (lock held) "
-                    "or too young to reap. Free /dev/shm space or increase "
-                    "its size."
+                    "or too young to reap. Free /dev/shm space, increase its "
+                    "size, or set VLLM_KV_OFFLOAD_REGION_BACKEND=memfd."
                 )
             os.ftruncate(self.fd, self.total_size_bytes)
             # Publish the region geometry so late-joining processes can verify
@@ -319,34 +470,11 @@ class SharedOffloadRegion:
             # Same liveness lock as the creator: joiners keep the region
             # alive too (the creator process alone may die first).
             fcntl.flock(self.fd, fcntl.LOCK_SH)
-            meta_path = self.mmap_path + ".meta"
-            deadline = time.monotonic() + 30.0
-            while not os.path.exists(meta_path):
-                if time.monotonic() > deadline:
-                    raise TimeoutError(
-                        f"Timed out waiting for {meta_path}; the region "
-                        "creator did not publish its geometry."
-                    )
-                time.sleep(0.05)
-            with open(meta_path) as f:
-                meta = json.load(f)
-            expected = {
-                "num_blocks": self.num_blocks,
-                "row_stride": self._row_stride,
-                "total_size_bytes": self.total_size_bytes,
-            }
-            if meta != expected:
-                raise RuntimeError(
-                    "Shared KV offload region geometry mismatch: creator "
-                    f"published {meta} but this process computed {expected}. "
-                    "All workers and the scheduler must derive one geometry "
-                    "(see KVCacheConfig.max_worker_kv_bytes_per_block); with "
-                    "pipeline parallelism a per-stage mismatch here would "
-                    "silently corrupt offloaded KV."
-                )
+            self._check_geometry(self._wait_for_meta(self.mmap_path + ".meta"))
             _wait_for_file_size(self.fd, self.total_size_bytes)
             logger.info("Opened existing mmap file %s", self.mmap_path)
 
+    def _map_and_populate(self, rank: int | None, num_blocks: int, cpu_page_size: int) -> None:
         self.mmap_obj: mmap.mmap | None = mmap.mmap(
             self.fd,
             self.total_size_bytes,
@@ -527,6 +655,12 @@ class SharedOffloadRegion:
             except Exception:
                 logger.warning("Failed to close fd %s", self.fd, exc_info=True)
             self.fd = None
+        if self._marker_fd is not None:
+            try:
+                os.close(self._marker_fd)
+            except Exception:
+                logger.warning("Failed to close marker fd", exc_info=True)
+            self._marker_fd = None
         if self._creator and getattr(self, "mmap_path", None):
             try:
                 os.unlink(self.mmap_path)
