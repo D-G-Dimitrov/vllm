@@ -539,20 +539,21 @@ class StreamingParserEngine:
         token_count: int = 0,
     ) -> list[SemanticEvent]:
         if self._hold_active:
-            return self._resolve_hold(transition, value)
+            return self._resolve_hold(transition, value, token_count)
         if transition.validate_tool_name:
             if self.suppress_tool_calls or self.allowed_tool_names is None:
                 # Recovery could never be accepted for this request, so
                 # the trigger text stays plain content and nothing is
                 # buffered.
-                return self._emit_for_state(value)
-            return self._begin_hold(transition, value)
-        return self._run_transition(transition, value)
+                return self._emit_for_state(value, token_count)
+            return self._begin_hold(transition, value, token_count)
+        return self._run_transition(transition, value, token_count)
 
     def _begin_hold(
         self,
         transition: Transition,
         value: str,
+        token_count: int = 0,
     ) -> list[SemanticEvent]:
         """Apply a ``validate_tool_name`` transition but hold its events.
 
@@ -562,7 +563,7 @@ class StreamingParserEngine:
         """
         prior_state = self.state
         prior_tool_index = self.tool_index
-        self._held_events = self._run_transition(transition, value)
+        self._held_events = self._run_transition(transition, value, token_count)
         self._held_raw = [value]
         self._held_name = []
         self._held_prior_state = prior_state
@@ -575,6 +576,7 @@ class StreamingParserEngine:
         self,
         transition: Transition,
         value: str,
+        token_count: int = 0,
     ) -> list[SemanticEvent]:
         """End the hold window at the name-completing transition."""
         name = "".join(self._held_name)
@@ -582,7 +584,7 @@ class StreamingParserEngine:
         if allowed is not None and name in allowed:
             events = self._held_events
             self._clear_hold()
-            events.extend(self._run_transition(transition, value))
+            events.extend(self._run_transition(transition, value, token_count))
             return events
         return self._abort_hold("".join(self._held_raw) + value)
 
@@ -618,6 +620,7 @@ class StreamingParserEngine:
         self,
         transition: Transition,
         value: str,
+        token_count: int = 0,
     ) -> list[SemanticEvent]:
         events: list[SemanticEvent] = []
         previous_state = self.state
