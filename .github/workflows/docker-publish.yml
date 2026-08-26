@@ -38,7 +38,7 @@ jobs:
   build-and-push:
     # On a repo with a self-hosted builder, set the repo variable
     # BUILD_RUNNER (e.g. "self-hosted"); GitHub-hosted otherwise.
-    runs-on: ${{ vars.BUILD_RUNNER || 'ubuntu-latest' }}
+    runs-on: self-hosted
     timeout-minutes: 2880
     strategy:
       fail-fast: false
@@ -93,6 +93,8 @@ jobs:
             ccache-${{ matrix.suffix }}-
 
       - uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker
 
       - name: Inject ccache into build
         uses: reproducible-containers/buildkit-cache-dance@v3
@@ -107,6 +109,16 @@ jobs:
           username: lazymio
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Size build parallelism to this runner
+        id: parallelism
+        run: |
+          CORES=$(nproc)
+          MEM_GB=$(( $(grep MemTotal /proc/meminfo | awk '{print $2}') / 1024 / 1024 ))
+          JOBS=$(( MEM_GB / 4 ))
+          [ "$JOBS" -gt "$CORES" ] && JOBS=$CORES
+          [ "$JOBS" -lt 2 ] && JOBS=2
+          echo "max_jobs=$JOBS" >> "$GITHUB_OUTPUT"
+
       - uses: docker/build-push-action@v6
         timeout-minutes: 2400
         with:
@@ -119,5 +131,5 @@ jobs:
           cache-to: type=registry,ref=lazymio/vllm-backport:buildcache-${{ matrix.suffix }},mode=max,compression=zstd,ignore-error=true
           build-args: |
             torch_cuda_arch_list=${{ matrix.arch }}
-            max_jobs=3
-            nvcc_threads=2
+            max_jobs=${{ steps.parallelism.outputs.max_jobs }}
+            nvcc_threads=1
