@@ -314,6 +314,21 @@ class Worker(WorkerBase):
 
     @instrument(span_name="Init device")
     def init_device(self):
+        # Give every worker process its own Triton JIT cache. By default all
+        # local ranks share one cache directory; concurrent compile+load of
+        # the same freshly-written kernel across ranks can read a partially
+        # written cubin (observed as a probabilistic warmup crash: illegal
+        # memory access surfacing at load_binary / the first launch of a
+        # just-compiled kernel, which disappears under CUDA_LAUNCH_BLOCKING's
+        # serialization). A few seconds of duplicate JIT per rank buys
+        # deterministic boots.
+        triton_cache_root = os.environ.get("TRITON_CACHE_DIR") or os.path.join(
+            os.path.expanduser("~"), ".triton", "cache"
+        )
+        os.environ["TRITON_CACHE_DIR"] = os.path.join(
+            triton_cache_root, f"rank_{self.rank}"
+        )
+
         if self.device_config.device_type == "cuda":
             # This env var set by Ray causes exceptions with graph building.
             os.environ.pop("NCCL_ASYNC_ERROR_HANDLING", None)
