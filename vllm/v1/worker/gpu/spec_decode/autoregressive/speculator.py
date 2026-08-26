@@ -462,8 +462,12 @@ class AutoRegressiveSpeculator(DraftModelSpeculator):
         # current-stream synchronize here and after each step's
         # update_draft_inputs eliminated it on SM86-SM121 alike. Matches our
         # local forensics: the crash is concurrency-sensitive and
-        # CUDA_LAUNCH_BLOCKING masks it.
-        torch.accelerator.current_stream().synchronize()
+        # CUDA_LAUNCH_BLOCKING masks it. Synchronize is illegal while a CUDA
+        # graph is being captured (cudaErrorStreamCaptureUnsupported), and
+        # unnecessary there: replay order is fixed by the capture-time stream
+        # dependencies, so the cross-launch race cannot occur inside a graph.
+        if not torch.cuda.is_current_stream_capturing():
+            torch.accelerator.current_stream().synchronize()
 
     def _multi_step_decode(
         self,
@@ -658,7 +662,8 @@ class AutoRegressiveSpeculator(DraftModelSpeculator):
             advance_draft_positions=self.advance_draft_positions,
         )
         # See the fence comment in propose(): vllm-project/vllm#40756.
-        torch.accelerator.current_stream().synchronize()
+        if not torch.cuda.is_current_stream_capturing():
+            torch.accelerator.current_stream().synchronize()
 
 
 @triton.jit
