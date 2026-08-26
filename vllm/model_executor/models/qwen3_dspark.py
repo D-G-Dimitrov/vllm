@@ -84,6 +84,8 @@ class DSparkMarkovHead(nn.Module):
         markov_rank: int,
         prefix: str,
         quant_config: QuantizationConfig | None = None,
+        *,
+        shard_vocab: bool | None = None,
     ) -> None:
         super().__init__()
         if shard_vocab is None:
