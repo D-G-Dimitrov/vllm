@@ -1992,7 +1992,6 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 sampler_output.sampled_token_ids,
                 num_sampled,
                 num_rejected,
-                self.req_states.draft_tokens[input_batch.idx_mapping],
                 input_batch,
             )
 
