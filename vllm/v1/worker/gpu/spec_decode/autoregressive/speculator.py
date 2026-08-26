@@ -454,6 +454,16 @@ class AutoRegressiveSpeculator(DraftModelSpeculator):
         else:
             self.hidden_states[:num_reqs] = hidden_states[last_token_indices]
         self.input_buffers.positions[:num_reqs] = positions
+        # Fence the draft input-buffer writes before the next step consumes
+        # them. Multiple independent reporters in vllm-project/vllm#40756
+        # traced the MTP illegal-memory-access family to exactly this window
+        # (drafter buffer writes racing the next step's plan copies /
+        # attention metadata transfers on other streams); a full
+        # current-stream synchronize here and after each step's
+        # update_draft_inputs eliminated it on SM86-SM121 alike. Matches our
+        # local forensics: the crash is concurrency-sensitive and
+        # CUDA_LAUNCH_BLOCKING masks it.
+        torch.accelerator.current_stream().synchronize()
 
     def _multi_step_decode(
         self,
@@ -647,6 +657,8 @@ class AutoRegressiveSpeculator(DraftModelSpeculator):
             self.num_speculative_steps,
             advance_draft_positions=self.advance_draft_positions,
         )
+        # See the fence comment in propose(): vllm-project/vllm#40756.
+        torch.accelerator.current_stream().synchronize()
 
 
 @triton.jit
