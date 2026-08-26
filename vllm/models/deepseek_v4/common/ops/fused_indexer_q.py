@@ -364,7 +364,7 @@ def fused_indexer_q_rope_quant(
             index_q_packed, index_q_scale, _ = output_buffers
         assert index_q_packed.shape == packed_shape
         assert index_q_scale.shape == scale_shape
-        if has_cutedsl():
+        if is_cutedsl_supported():
             # lazily import, otherwise some tests fail due to CUDA driver init failure.
             from vllm.models.deepseek_v4.nvidia.ops.fused_indexer_q_cutedsl import (
                 fused_indexer_q_rope_quant_mxfp4_cutedsl,
@@ -437,7 +437,7 @@ def fused_indexer_q_rope_quant(
     else:
         index_q_fp8, _ = output_buffers
         assert index_q_fp8.shape == index_q.shape
-    if has_cutedsl():
+    if is_cutedsl_supported():
         # lazily import, otherwise some tests fail due to CUDA driver init failure.
         from vllm.models.deepseek_v4.nvidia.ops.fused_indexer_q_cutedsl import (
             fused_indexer_q_rope_quant_fp8_cutedsl,
