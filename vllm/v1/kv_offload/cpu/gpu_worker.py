@@ -191,6 +191,9 @@ def _canonical_block_sizes(
     return canonical_bytes_per_block
 
 
+_PIN_CHUNK_BYTES = 1 << 30
+
+
 def pin_mmap_region(region: SharedOffloadRegion) -> None:
     """Register the entire mmap as CUDA pinned memory via cudaHostRegister."""
     if not current_platform.is_cuda_alike():
@@ -219,16 +222,27 @@ def pin_mmap_region(region: SharedOffloadRegion) -> None:
     # Register only the slots owned by this rank (disjoint across ranks).
     base_ptr = region._base.data_ptr()
     slot_size = region._worker_area_end - region._worker_offset
+    # The driver caps the *number* of host registrations (about 2^18 across
+    # the GPUs of a node), not the bytes: one ~1 MB registration per block
+    # tops out at ~250 GB. When this worker owns whole rows (a single worker
+    # per row, e.g. DP/TP=1) its slots are contiguous, so register them in
+    # large chunks instead. Interleaved layouts (TP>1) keep one registration
+    # per slot because a page may only be registered by one process.
+    # (row_stride is page-padded, so test "only one slot fits in a row".)
+    contiguous = region._worker_offset == 0 and region._row_stride < 2 * slot_size
+    chunk_blocks = max(1, _PIN_CHUNK_BYTES // slot_size) if contiguous else 1
     cudart = torch.cuda.cudart()
     registered: list[int] = []
     had_failed_attempt = False
     _t0 = time.perf_counter()
-    for block in range(region.num_blocks):
+    for block in range(0, region.num_blocks, chunk_blocks):
+        n_blocks = min(chunk_blocks, region.num_blocks - block)
         off = block * region._row_stride + region._worker_offset
+        reg_size = slot_size if n_blocks == 1 else n_blocks * region._row_stride
         # Transient failures happen under memory pressure (concurrent ranks
         # pinning + model weights loading); retry before giving up.
         for attempt in range(4):
-            result = cudart.cudaHostRegister(base_ptr + off, slot_size, 0)
+            result = cudart.cudaHostRegister(base_ptr + off, reg_size, 0)
             if result.value == 0:
                 break
             # NOTE: a failed runtime call also records itself in this
@@ -276,10 +290,12 @@ def pin_mmap_region(region: SharedOffloadRegion) -> None:
     region._pinned_slot_offsets = registered
     region.is_pinned = True
     logger.info(
-        "cudaHostRegister rank=%d pinned %d slots (%.2f GB) in %.1fs",
+        "cudaHostRegister rank=%d pinned %d blocks in %d registrations "
+        "(%.2f GB) in %.1fs",
         rank,
+        region.num_blocks,
         len(registered),
-        len(registered) * slot_size / 1e9,
+        region.num_blocks * slot_size / 1e9,
         time.perf_counter() - _t0,
     )
 
