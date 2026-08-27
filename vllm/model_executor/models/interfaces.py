@@ -11,6 +11,7 @@ from collections.abc import (
 )
 from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass
+from operator import attrgetter
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -45,13 +46,17 @@ if TYPE_CHECKING:
     from vllm.inputs import PromptType, TokensPrompt
     from vllm.lora.model_manager import LoRAModelManager
     from vllm.model_executor.layers.fused_moe import MoERunner
-    from vllm.model_executor.layers.mamba.mamba_utils import MambaStateCopyFunc
+    from vllm.model_executor.layers.mamba.mamba_utils import (
+        MambaStateCopyFunc,
+        MambaStateCopyFuncsByType,
+    )
     from vllm.model_executor.models.interfaces_base import VllmModel
     from vllm.model_executor.models.utils import WeightsMapper
     from vllm.multimodal.inputs import MultiModalFeatureSpec, MultiModalKwargsItem
     from vllm.multimodal.registry import _ProcessorFactories
     from vllm.sequence import IntermediateTensors
     from vllm.tasks import ScoreType
+    from vllm.v1.attention.backends.registry import MambaAttentionBackendEnum
     from vllm.v1.worker.encoder_cudagraph_defs import (
         EncoderCudaGraphCaptureInputs,
         EncoderCudaGraphConfig,
@@ -321,7 +326,13 @@ class SupportsMultiModal(SupportsMultiModalEmbeddings, Protocol):
 
         If `targets` is set, instead include descendants that are an instance
         of `targets`, even if they aren't direct children.
+
+        Marked components are also routed through the active offloader (when
+        it supports tower offloading), since `make_layers` only ever sees the
+        decoder layer stack.
         """
+        from vllm.model_executor.offloader import get_offloader
+
         from .utils import StageMissingLayer, collect_children, no_init_weights
 
         if isinstance(modalities, str):
@@ -347,6 +358,14 @@ class SupportsMultiModal(SupportsMultiModalEmbeddings, Protocol):
                 yield
 
         self._tower_model_names = children_names
+
+        # Towers are constructed directly, so `make_layers` never routes them
+        # through the offloader. Do it here, at the same construction stage,
+        # so offloaded tower weights are never allocated on the device.
+        offloader = get_offloader()
+        if offloader.supports_tower_offload:
+            for name in children_names:
+                offloader.wrap_modules(iter([attrgetter(name)(self)]), prefix=name)
 
     @contextmanager
     def _mark_composite_model(
@@ -928,6 +947,14 @@ class IsHybrid(Protocol):
             caching in align mode.
         """
         ...
+
+    @classmethod
+    def get_mamba_state_copy_funcs(
+        cls,
+        mamba_types: set["MambaAttentionBackendEnum"],
+    ) -> "MambaStateCopyFuncsByType":
+        copy_funcs = cls.get_mamba_state_copy_func()
+        return {mamba_type: copy_funcs for mamba_type in mamba_types}
 
 
 @overload
