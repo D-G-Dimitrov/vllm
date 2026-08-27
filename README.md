@@ -106,6 +106,10 @@ Tips:
 - Keep `num_speculative_tokens` at 5 on Ampere. Values below 5 (the checkpoint's `dspark_block_size`) are rejected, and 7 needs ~200 KB of shared memory vs the 163 KB Ampere limit (`triton OutOfResources` error). 6 does start, but draft positions past the native block are almost never accepted (3–13% in our measurements), so it only wastes draft compute — output quality and speed are the same as 5.
 - Requests that set neither `thinking` nor `reasoning_effort` now get thinking mode with high effort, matching the official 0731 API mapping (`reasoning_effort: "none"` restores plain chat mode). Agentic/tool-calling clients should pass a `reasoning_effort` explicitly from the first turn of a session — sessions that run without the effort prefix gradually stop thinking and can enter self-reinforcing reasoning loops.
 
+## LMCache RAM + disk tiered offload
+
+Both DeepSeek-V4-Flash and Qwen3.8-Flash-Next can offload prefix KV to an LMCache MP server (pinned-RAM L1 + local-disk L2, LRU on both, write-through, disk hits promoted back to RAM). This needs the patched LMCache branch described in [docs/features/lmcache_tiered_offload.md](docs/features/lmcache_tiered_offload.md), which also lists the required vLLM flags, chunk sizes and the validation results.
+
 ## Environment Variables (Warning: Huge AI generated contents!)
 
 All knobs this fork has added over stock vLLM. Defaults are what the images ship with; you normally don't need to touch anything.
