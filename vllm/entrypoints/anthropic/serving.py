@@ -13,6 +13,7 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 import jinja2
+import pydantic
 from fastapi import Request
 
 from vllm.engine.protocol import EngineClient
@@ -825,9 +826,35 @@ class AnthropicServingMessages(OpenAIServingChat):
                         )
                         yield wrap_data_with_event(data, "message_stop")
                     else:
-                        origin_chunk = ChatCompletionStreamResponse.model_validate_json(
-                            data_str
-                        )
+                        try:
+                            origin_chunk = (
+                                ChatCompletionStreamResponse.model_validate_json(
+                                    data_str
+                                )
+                            )
+                        except pydantic.ValidationError:
+                            # The chat stream emits a bare {"error": ...} payload
+                            # when the request fails mid-stream (e.g. a chat
+                            # template rejection). Relay it as an Anthropic error
+                            # event and end the stream instead of letting the
+                            # validation error escape and kill the API server.
+                            try:
+                                err = json.loads(data_str).get("error", {})
+                                message = err.get("message") or data_str
+                            except (ValueError, AttributeError):
+                                message = data_str
+                            error_response = AnthropicStreamEvent(
+                                type="error",
+                                error=AnthropicError(
+                                    type="invalid_request_error",
+                                    message=sanitize_message(str(message)),
+                                ),
+                            )
+                            yield wrap_data_with_event(
+                                error_response.model_dump_json(exclude_unset=True),
+                                "error",
+                            )
+                            return
 
                         if first_item:
                             chunk = AnthropicStreamEvent(
