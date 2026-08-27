@@ -93,6 +93,25 @@ Tips:
 - Keep `num_speculative_tokens` at 5 on Ampere. Values below 5 (the checkpoint's `dspark_block_size`) are rejected, and 7 needs ~200 KB of shared memory vs the 163 KB Ampere limit (`triton OutOfResources` error). 6 does start, but draft positions past the native block are almost never accepted (3–13% in our measurements), so it only wastes draft compute — output quality and speed are the same as 5.
 - Requests that set neither `thinking` nor `reasoning_effort` now get thinking mode with high effort, matching the official 0731 API mapping (`reasoning_effort: "none"` restores plain chat mode). Agentic/tool-calling clients should pass a `reasoning_effort` explicitly from the first turn of a session — sessions that run without the effort prefix gradually stop thinking and can enter self-reinforcing reasoning loops.
 
+## Qwen3.8-Flash-Next (v0.9.0+)
+
+`Qwen/Qwen3.8-Flash-Next-FP8` runs on 4x A6000 (backport of vllm#53896 + vllm#53899). Two things are mandatory on Ampere:
+
+```bash
+VLLM_PLE_CPU_OFFLOAD=1 NCCL_ALGO=Ring NCCL_PROTO=Simple \
+vllm serve /path/to/Qwen3.8-Flash-Next-FP8 \
+  --tensor-parallel-size 4 --enable-expert-parallel \
+  --max-model-len 262144 --max-num-seqs 16 --max-num-batched-tokens 2048 \
+  --gpu-memory-utilization 0.9 --disable-custom-all-reduce \
+  --speculative-config '{"method":"mtp","num_speculative_tokens":3}' \
+  --enable-auto-tool-choice --tool-call-parser qwen3_xml --reasoning-parser qwen3 \
+  --served-model-name qwen3.8-flash-next
+```
+
+- `VLLM_PLE_CPU_OFFLOAD=1` keeps the 51B n-gram embedding (fp8, ~51 GiB) in pinned host RAM via a separate `PleOffloadWorker` process. Without it the TP-sharded embedding adds ~12.8 GiB per GPU and KV memory goes negative on 48 GB cards.
+- `--enable-expert-parallel` is required, not optional: with plain TP the 640-wide expert intermediate becomes 160 per rank, which is not a multiple of the 128x128 fp8 block, and vLLM then forces the Triton fp8 MoE kernel (no fp8 tensor cores on sm86). With EP the experts stay whole and the Marlin W8A16 backend is used.
+- Measured (2k in / 256 out, 4x A6000, PLE offloaded): single-stream 43 tok/s (TPOT 23 ms; 15 ms with MTP3), 8 concurrent ~99 tok/s aggregate, prefill ~1.4k tok/s.
+
 ## Environment Variables (Warning: Huge AI generated contents!)
 
 All knobs this fork has added over stock vLLM. Defaults are what the images ship with; you normally don't need to touch anything.
