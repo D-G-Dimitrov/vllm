@@ -310,10 +310,14 @@ def _build_ragged_into_graph_buffers(
     NNZ), which is also what the gfx950 sync-free split selector expects.
     """
     max_entries = max(num_rows * max_entries_per_row, 1)
+    # NOTE: build_ragged_indices_from_dense's third argument is a clamp on
+    # index *values* (the KV row count), not the query-row count; the callers
+    # already bound their indices, so pass -1 (no clamp) like the pre-in-place
+    # implementation did.
     return build_ragged_indices_from_dense(
         dense_indices,
         lengths,
-        num_rows,
+        -1,
         indices_out=ragged_indices_buffer[:max_entries],
         indptr_out=ragged_indptr_buffer[: num_rows + 1],
     )
