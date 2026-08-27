@@ -53,19 +53,30 @@ VLLM_PLE_CPU_OFFLOAD=1 vllm serve /data/Qwen38-Flash-Next-FP8 \
 older copy vendored in `vllm/distributed/kv_transfer`. `--kv-offloading-backend
 lmcache` maps to the vendored copy and does not carry the module path.
 
-## Validated (2026-08-27, 4x A6000, server5)
+## Status (2026-08-27, 4x A6000, server5)
 
-| model | groups registered | store -> APC reset -> L1 hit | L1 cleared -> L2 hit |
+| model | groups registered | transfer mechanics | output equivalence (temperature 0, 220-token generations) |
 |---|---|---|---|
-| Qwen3.8-Flash-Next-FP8 | 6 kernel groups (QSA main bs=784, compressed keys bs=196, 3 GDN + 1 PLE recurrent, ring buffer excluded) | identical output, 3 chunks / 2352 tokens hit | identical output, 16 keys from disk in 26 ms |
-| DeepSeek-V4-Flash | 8 kernel groups (indexer 132 B rows, C4A/C128A 584 B rows, SWA, fp32 compressor states) | 15 chunks / 3840 tokens hit | 15 chunks from disk in 42 ms |
+| Qwen3.8-Flash-Next-FP8 | 6 kernel groups (QSA main bs=784, compressed keys bs=196, 3 GDN + 1 PLE recurrent, ring buffer excluded) | store -> APC reset -> L1 hit and L1 eviction -> L2 hit (12 keys / 18 ms) both work | 3-chunk hits and the L2 2-chunk hit were bit-identical; 5- and 8-chunk hits diverged (prefix 18/986 and 802/931 chars) in both `align` and `all` Mamba cache modes |
+| DeepSeek-V4-Flash | 8 kernel groups (indexer 132 B rows, C4A/C128A 584 B rows, SWA, fp32 compressor states) | 15 chunks / 3840 tokens hit from L1 and from L2 (42 ms) | not assessable: `master` DSv4 output is wrong on SM86 even without LMCache |
 
-DeepSeek-V4-Flash output on `master` is currently wrong on SM86 with or
-without LMCache (port fallout in the ROCm-shared sparse decode path; three
-crashes were fixed in 9cc0fd80a0 / 68b5981ee9 / ebf17a7aa5, the remaining
-numerical issue is open), so its LMCache validation covers the transfer
-mechanics only. Keep DSv4 deployments on the v0.6.x images until that is
-resolved.
+Open issues:
 
-Known gap: the connector stores only whole chunks that every positional group
-has blocks for; on Qwen3.8 a 4116-token prompt stored 3 of 5 chunks.
+- **Recurrent-state correctness.** vLLM's `align` Mamba mode keeps only the
+  latest boundary snapshot; earlier chunks report the null block (id 0), so
+  LMCache stores null pages (`[5, 0, 0]` at store, `[0, 0, 4]` at retrieve
+  in the connector debug log). A hit whose tail chunk carries a null page
+  resumes from a wrong state. `--mamba-cache-mode all` did not fix the
+  divergence either, so the stored/retrieved recurrent pages need the
+  "tail-only" handling LMCache's hybrid design doc defers. Until then treat
+  LMCache hits on Qwen3.8 as **not bit-exact**; use the fork's native
+  `TieringOffloadingSpec` for production.
+- Store coverage is capped by the recurrent groups' allocated block count
+  (`min` over positional groups); 2-chunk prefixes also failed to look up
+  right after being stored. Both need the same recurrent-group semantics.
+- `POST /cache/clear` (L1) leaves the server unable to find anything stored
+  afterwards; do not use it in tests.
+- DeepSeek-V4-Flash on `master` is broken on SM86 with or without LMCache:
+  three crashes from the 915f59b6a1 port were fixed (9cc0fd80a0, 68b5981ee9,
+  ebf17a7aa5) but decode still produces garbage. Keep DSv4 deployments on the
+  v0.6.x images.
