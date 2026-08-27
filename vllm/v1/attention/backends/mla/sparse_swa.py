@@ -718,6 +718,12 @@ class DeepseekSparseSWAMetadataBuilder(AttentionMetadataBuilder):
             or current_platform.is_rocm()
             or current_platform.is_xpu()
             or current_platform.is_device_capability_family(120)
+            # CUDA SM8x shares the ROCm ragged Triton decode kernels (see
+            # get_builder_cls) and never calls flash_mla_with_kvcache.
+            or (
+                current_platform.is_cuda()
+                and not current_platform.has_device_capability(90)
+            )
         ):
             return out
         for layer_type in self._layer_types:
