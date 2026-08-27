@@ -30,7 +30,6 @@ from vllm.v1.attention.backends.mla.sparse_swa import (
     _LAYER_TYPE_SWAONLY,
     DeepseekSparseSWAMetadata,
     DeepseekSparseSWAMetadataBuilder,
-    FlashMLASchedMeta,
 )
 from vllm.v1.attention.ops.rocm_aiter_mla_sparse import (
     build_ragged_indices_from_dense,
@@ -306,21 +305,18 @@ def _build_ragged_into_graph_buffers(
     tensors have to be backed by stable storage; indptr continues to bound
     reads. Building in place gets that for free -- the previous form allocated
     fresh tensors and copied them over, which cost two device-to-device
-    memcpy nodes per builder per step.
+    memcpy nodes per builder per step. The returned indices view keeps the
+    full ``num_rows * max_entries_per_row`` capacity (indptr carries the true
+    NNZ), which is also what the gfx950 sync-free split selector expects.
     """
-    indptr_out = ragged_indptr_buffer[: num_rows + 1]
-    indptr_out.copy_(ragged_indptr, non_blocking=True)
-
     max_entries = max(num_rows * max_entries_per_row, 1)
-    ragged_out = ragged_indices_buffer[:max_entries]
-    source_entries = ragged_indices.numel()
-    if source_entries > 0:
-        ragged_out[:source_entries].copy_(ragged_indices, non_blocking=True)
-    if _ON_GFX950:
-        # Preserve the graph-stable base pointer while exposing source capacity
-        # to the sync-free split selector; indptr still carries the true NNZ.
-        ragged_out = ragged_out[: max(source_entries, 1)]
-    return ragged_out, indptr_out
+    return build_ragged_indices_from_dense(
+        dense_indices,
+        lengths,
+        num_rows,
+        indices_out=ragged_indices_buffer[:max_entries],
+        indptr_out=ragged_indptr_buffer[: num_rows + 1],
+    )
 
 
 @dataclass
@@ -467,7 +463,7 @@ class DeepseekV4ROCMAiterSparseSWAMetadataBuilder(DeepseekSparseSWAMetadataBuild
             and base.decode_swa_indices is not None
             and base.decode_swa_lens is not None
         ):
-            ragged_indices, ragged_indptr = build_ragged_indices_from_dense(
+            ragged_indices, ragged_indptr = _build_ragged_into_graph_buffers(
                 base.decode_swa_indices.reshape(
                     base.num_decode_tokens, base.decode_swa_width
                 ),
