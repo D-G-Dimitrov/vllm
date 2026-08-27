@@ -86,6 +86,7 @@ def _restore_default_dtype():
     yield
     torch.set_default_dtype(old)
 
+
 def test_ple_offload_h2h_uses_bound_input_buffers() -> None:
     """Stage MRV1 inputs from allocations bound during connector setup."""
     source_input_ids = torch.tensor([7, -1, 11, -1], dtype=torch.int32)
