@@ -1,8 +1,15 @@
-# VLLM Backport
+# vLLM Backport
 
-A VLLM fork that focuses on running Deepseek V4 Flash 0731 on Ampere at this moment.
+A vLLM fork that focuses on running frontier models on older cards like A6000, 3090 and A100.
 
-Currently achieving 3435 tps prefill and 948 tps decoding on 8xA6000 (TP4PP2)  and this should also work on A100.
+Status:
+
+| Supported Models | Quantization | Status |
+| --- | --- | --- |
+| `DeepSeek-v4-Flash-0731` | Native FP4 | Fully Supported |
+| `Qwen3.8-27B` | BF16, AWQ | Fully Supported |
+| `Qwen3.8-Flash-Next` | FP8 | Fully Supported (AWQ in progress!) |
+| `GLM-5.3-Flash` | - | WIP |
 
 ## Docker Usage
 
@@ -13,11 +20,9 @@ Prebuilt images are published to Docker Hub on every push:
 | `lazymio/vllm-backport:latest-sm86` (also `:latest`) | Ampere sm86 (A6000, RTX 30xx) |
 | `lazymio/vllm-backport:latest-sm80` | Ampere sm80 (A100) |
 | `lazymio/vllm-backport:latest-sm89` | Ada sm89 (RTX 4090, L40S) |
-| `lazymio/vllm-backport:v0.6.4-sm86` / `-sm80` / `-sm89` | pinned release builds |
+| `lazymio/vllm-backport:v0.9.0-sm86` / `-sm80` / `-sm89` | pinned release builds |
 
 Images are single-arch builds (no FA3/Hopper kernels), so pick the tag matching your GPU. The entrypoint is `vllm serve`.
-
-On sm89, set `VLLM_TEST_FORCE_FP8_MARLIN=1` in the container environment.
 
 `:latest*` tags track the main branch; each release also ships versioned tags like `:v0.6.1-sm86` if you want to pin.
 
@@ -87,30 +92,19 @@ Tips:
   - Pin NCCL with `NCCL_ALGO=Ring NCCL_PROTO=Simple` (and prefer `--disable-custom-all-reduce`). Graph replay must re-issue the exact captured collective; NCCL's size-adaptive algorithm switching is what made FULL capture "crash on Ampere" — Ampere itself is fine.
   - Bound `cudagraph_capture_sizes` as shown. FULL graphs keep private memory pools; capturing every batch size up to `--max-num-seqs` can cost >800 MB per GPU and OOM warmup at high `--gpu-memory-utilization`.
 - Adjust your TP (--tensor-parallel-size) and PP (--pipeline-parallel-size) accordingly.
-- head dtype override helps reduce garbage outputs.
-- DSpark is not working very well if you have PP>1.
 - The single quotes around the `--speculative-config` JSON are required — without them bash brace-expands the braces at the comma and vLLM receives the literal `method:dspark` (`Value method:dspark cannot be converted` error).
-- Keep `num_speculative_tokens` at 5 on Ampere. Values below 5 (the checkpoint's `dspark_block_size`) are rejected, and 7 needs ~200 KB of shared memory vs the 163 KB Ampere limit (`triton OutOfResources` error). 6 does start, but draft positions past the native block are almost never accepted (3–13% in our measurements), so it only wastes draft compute — output quality and speed are the same as 5.
-- Requests that set neither `thinking` nor `reasoning_effort` now get thinking mode with high effort, matching the official 0731 API mapping (`reasoning_effort: "none"` restores plain chat mode). Agentic/tool-calling clients should pass a `reasoning_effort` explicitly from the first turn of a session — sessions that run without the effort prefix gradually stop thinking and can enter self-reinforcing reasoning loops.
 
-## Qwen3.8-Flash-Next (v0.9.0+)
+### Model Specific setups
 
-`Qwen/Qwen3.8-Flash-Next-FP8` runs on 4x A6000 (backport of vllm#53896 + vllm#53899). Two things are mandatory on Ampere:
-
-```bash
-VLLM_PLE_CPU_OFFLOAD=1 NCCL_ALGO=Ring NCCL_PROTO=Simple \
-vllm serve /path/to/Qwen3.8-Flash-Next-FP8 \
-  --tensor-parallel-size 4 --enable-expert-parallel \
-  --max-model-len 262144 --max-num-seqs 16 --max-num-batched-tokens 2048 \
-  --gpu-memory-utilization 0.9 --disable-custom-all-reduce \
-  --speculative-config '{"method":"mtp","num_speculative_tokens":3}' \
-  --enable-auto-tool-choice --tool-call-parser qwen3_xml --reasoning-parser qwen3 \
-  --served-model-name qwen3.8-flash-next
-```
+#### Qwen3.8-Flash-Next (v0.9.0+)
 
 - `VLLM_PLE_CPU_OFFLOAD=1` keeps the 51B n-gram embedding (fp8, ~51 GiB) in pinned host RAM via a separate `PleOffloadWorker` process. Without it the TP-sharded embedding adds ~12.8 GiB per GPU and KV memory goes negative on 48 GB cards.
 - `--enable-expert-parallel` is required, not optional: with plain TP the 640-wide expert intermediate becomes 160 per rank, which is not a multiple of the 128x128 fp8 block, and vLLM then forces the Triton fp8 MoE kernel (no fp8 tensor cores on sm86). With EP the experts stay whole and the Marlin W8A16 backend is used.
-- Measured (2k in / 256 out, 4x A6000, PLE offloaded): single-stream 43 tok/s (TPOT 23 ms; 15 ms with MTP3), 8 concurrent ~99 tok/s aggregate, prefill ~1.4k tok/s.
+
+#### DeepSeek V4 Flash
+
+- Keep `num_speculative_tokens` at 5 on Ampere. Values below 5 (the checkpoint's `dspark_block_size`) are rejected, and 7 needs ~200 KB of shared memory vs the 163 KB Ampere limit (`triton OutOfResources` error). 6 does start, but draft positions past the native block are almost never accepted (3–13% in our measurements), so it only wastes draft compute — output quality and speed are the same as 5.
+- Requests that set neither `thinking` nor `reasoning_effort` now get thinking mode with high effort, matching the official 0731 API mapping (`reasoning_effort: "none"` restores plain chat mode). Agentic/tool-calling clients should pass a `reasoning_effort` explicitly from the first turn of a session — sessions that run without the effort prefix gradually stop thinking and can enter self-reinforcing reasoning loops.
 
 ## Environment Variables (Warning: Huge AI generated contents!)
 
