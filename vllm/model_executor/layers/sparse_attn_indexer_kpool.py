@@ -4,6 +4,8 @@
 
 from typing import TYPE_CHECKING
 
+import os
+
 import torch
 
 import vllm.envs as envs
@@ -868,6 +870,20 @@ def sparse_attn_indexer_kpool(
                 "kpool indexer: fp4 index cache needs DeepGEMM; the Triton "
                 "fallback is fp8-only."
             )
+            if os.environ.get("VLLM_GLM5_KPOOL_DEBUG") and not torch.cuda.is_current_stream_capturing():
+                import logging
+
+                bt = decode_metadata.block_table
+                logging.getLogger(__name__).error(
+                    "[kpool-decode-mqa] kv_cache.shape=%s dtype=%s | q=%s | "
+                    "bt.shape=%s max=%d | seq_lens shape=%s max=%d | "
+                    "max_model_len=%d index_kpool=%d num_padded_tokens=%d",
+                    tuple(kv_cache.shape), kv_cache.dtype,
+                    tuple(padded_q_quant_cast.shape), tuple(bt.shape),
+                    int(bt.max().item()), tuple(seq_lens.shape),
+                    int(seq_lens.max().item()), max_model_len, index_kpool,
+                    num_padded_tokens,
+                )
             logits = fp8_paged_mqa_logits_triton(
                 padded_q_quant_cast,
                 kv_cache,

@@ -12,6 +12,8 @@ helpers (select pools -> expand to tokens -> append tail).
 
 from __future__ import annotations
 
+import os
+
 import torch
 
 from vllm.triton_utils import tl, triton
@@ -469,6 +471,18 @@ def kpool_seed_tail_cache(
     n = tslot.shape[0]
     if n == 0:
         return
+    if os.environ.get("VLLM_GLM5_KPOOL_DEBUG") and not torch.cuda.is_current_stream_capturing():
+        import logging
+
+        valid = tslot[tslot >= 0]
+        mx = int(valid.max().item()) if valid.numel() else -1
+        logging.getLogger(__name__).error(
+            "[kpool-tail-seed] tail.shape=%s n=%d key=%s kpool=%d max_slot=%d "
+            "-> blk=%d (nblk=%d)%s",
+            tuple(tail_kv_cache.shape), n, tuple(key.shape), kpool, mx,
+            mx // kpool, tail_kv_cache.shape[0],
+            "  <<< OOR" if mx // kpool >= tail_kv_cache.shape[0] else "",
+        )
     _kpool_tail_seed_kernel[(n,)](
         key,
         gate_score,

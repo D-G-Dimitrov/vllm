@@ -712,7 +712,15 @@ def compute_kpool_tail_slot_mapping(
     kpool: int,
 ) -> torch.Tensor:
     """Map every token to its request's one circular tail block."""
-    out = slot_mapping.clone()
+    # -1, not a clone of `slot_mapping`: only [:num_actual_tokens] is filled
+    # below, and the remainder is read whenever the batch is padded to a
+    # captured cudagraph size (KDA reclassifies non-spec decodes as prefills,
+    # so the kpool prefill branch slices out to the *padded* token count).
+    # Inheriting the caller's mapping there hands the tail-seed kernel
+    # main-granularity block ids for a per-request ring cache -- an out of
+    # bounds write. -1 marks "this token has no tail slot"; the kernel
+    # already returns early on a negative slot.
+    out = torch.full_like(slot_mapping, -1)
     if num_actual_tokens == 0:
         return out
     tokens = torch.arange(num_actual_tokens, device=slot_mapping.device)
@@ -721,6 +729,21 @@ def compute_kpool_tail_slot_mapping(
     own_block = block_table[:num_reqs, 0].index_select(0, req).to(torch.int64)
     pos = positions[:num_actual_tokens].to(torch.int64)
     out[:num_actual_tokens] = own_block * kpool + torch.remainder(pos, kpool)
+    if os.environ.get("VLLM_GLM5_KPOOL_DEBUG") and not torch.cuda.is_current_stream_capturing():
+        import logging
+
+        logging.getLogger(__name__).error(
+            "[kpool-tail-slots] bt.shape=%s dtype=%s num_reqs=%d n_act=%d "
+            "sm.numel=%d | col0 min=%d max=%d first8=%s | own_block max=%d "
+            "| out[:n] max=%d",
+            tuple(block_table.shape), block_table.dtype, num_reqs,
+            num_actual_tokens, slot_mapping.numel(),
+            int(block_table[:num_reqs, 0].min().item()),
+            int(block_table[:num_reqs, 0].max().item()),
+            block_table[: min(8, num_reqs), 0].tolist(),
+            int(own_block.max().item()),
+            int(out[:num_actual_tokens].max().item()),
+        )
     return out
 
 
