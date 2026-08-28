@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from typing import NamedTuple
 
+import os
+
 import torch
 
 import vllm.envs as envs
@@ -747,18 +749,26 @@ class KpoolTailMetadataBuilder(AttentionMetadataBuilder):
         num_decodes, num_prefills, num_decode_tokens, num_prefill_tokens = (
             split_decodes_and_prefills(common_attn_metadata)
         )
-        slot_mapping = common_attn_metadata.slot_mapping
         positions = common_attn_metadata.positions
-        if positions is not None:
-            slot_mapping = compute_kpool_tail_slot_mapping(
-                slot_mapping,
-                common_attn_metadata.block_table_tensor,
-                common_attn_metadata.query_start_loc,
-                positions,
-                common_attn_metadata.num_actual_tokens,
-                common_attn_metadata.num_reqs,
-                self.kv_cache_spec.block_size,
+        if positions is None:
+            # Falling back to common_attn_metadata.slot_mapping is never
+            # correct here: that mapping addresses the pool-granular indexer
+            # cache, while this builder addresses the per-request tail ring.
+            # Using it writes far outside the tail tensor (illegal access).
+            raise ValueError(
+                "KpoolTailMetadataBuilder requires CommonAttentionMetadata."
+                "positions; the model runner must pass it (see "
+                "gpu/model_states/*.py -> build_attn_metadata)."
             )
+        slot_mapping = compute_kpool_tail_slot_mapping(
+            common_attn_metadata.slot_mapping,
+            common_attn_metadata.block_table_tensor,
+            common_attn_metadata.query_start_loc,
+            positions,
+            common_attn_metadata.num_actual_tokens,
+            common_attn_metadata.num_reqs,
+            self.kv_cache_spec.block_size,
+        )
         return DeepseekV32IndexerMetadata(
             seq_lens=common_attn_metadata.seq_lens,
             max_seq_len=common_attn_metadata.max_seq_len,
