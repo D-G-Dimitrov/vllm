@@ -11,6 +11,8 @@ Status:
 | `Qwen3.8-Flash-Next` | FP8, [AWQ W4A16](https://huggingface.co/wtdcode/Qwen3.8-Flash-Next-AWQ-W4A16) | Fully Supported |
 | `GLM-5.3-Flash` | [AWQ W4A16](https://huggingface.co/wtdcode/GLM-5.3-Flash-AWQ-W4A16) | WIP |
 
+Note we have a paired [LMCache](https://github.com/wtdcode/LMCache/tree/vllm-backport) fork for production kvcache serving.
+
 ## Docker Usage
 
 Prebuilt images are published to Docker Hub on every push:
