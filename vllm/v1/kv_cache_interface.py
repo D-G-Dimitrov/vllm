@@ -793,7 +793,7 @@ class CircularBufferSpec(AttentionSpec):
         )
 
     @property
-    def prefix_cacheable(self) -> bool:
+    def participates_in_prefix_caching(self) -> bool:
         return False
 
 
