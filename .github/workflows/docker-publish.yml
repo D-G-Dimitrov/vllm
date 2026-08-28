@@ -126,7 +126,10 @@ jobs:
           file: docker/Dockerfile
           target: vllm-openai
           push: true
-          tags: ${{ startsWith(github.ref, 'refs/tags/') && format('lazymio/vllm-backport:{0}-{1}', github.ref_name, matrix.suffix) || matrix.tags }}
+          # Tag builds publish the version tag *and* the rolling latest tags,
+          # so latest always tracks the newest build rather than the last
+          # branch push.
+          tags: ${{ startsWith(github.ref, 'refs/tags/') && format('lazymio/vllm-backport:{0}-{1},{2}', github.ref_name, matrix.suffix, matrix.tags) || matrix.tags }}
           cache-from: type=registry,ref=lazymio/vllm-backport:buildcache-${{ matrix.suffix }}
           cache-to: type=registry,ref=lazymio/vllm-backport:buildcache-${{ matrix.suffix }},mode=max,compression=zstd,ignore-error=true
           build-args: |

@@ -7,7 +7,7 @@ Status:
 | Supported Models | Quantization | Status |
 | --- | --- | --- |
 | `DeepSeek-v4-Flash-0731` | Native FP4 | Fully Supported |
-| `Qwen3.8-27B` | BF16, AWQ | Fully Supported |
+| `Qwen3.8-27B` | BF16, AWQ W4A16 | Fully Supported |
 | `Qwen3.8-Flash-Next` | FP8, AWQ W4A16 | Fully Supported |
 | `GLM-5.3-Flash` | - | WIP |
 
@@ -100,48 +100,10 @@ Tips:
 
 - `VLLM_PLE_CPU_OFFLOAD=1` keeps the 51B n-gram embedding (fp8, ~51 GiB) in pinned host RAM via a separate `PleOffloadWorker` process. Without it the TP-sharded embedding adds ~12.8 GiB per GPU and KV memory goes negative on 48 GB cards.
 - `--enable-expert-parallel` is required, not optional: with plain TP the 640-wide expert intermediate becomes 160 per rank, which is not a multiple of the 128x128 fp8 block, and vLLM then forces the Triton fp8 MoE kernel (no fp8 tensor cores on sm86). With EP the experts stay whole and the Marlin W8A16 backend is used.
-- AWQ W4A16 ([`wtdcode/Qwen3.8-Flash-Next-AWQ-W4A16`](https://huggingface.co/wtdcode/Qwen3.8-Flash-Next-AWQ-W4A16), compressed-tensors `pack-quantized`, routed experts INT4 g128, everything else BF16): loads through `CompressedTensorsWNA16MoEMethod` (Marlin), so it runs on any Ampere including sm80/A100 — no FP8 hardware needed. `--enable-expert-parallel` is still required (640-wide expert intermediate is not TP-shardable), and with the BF16 n-gram table `VLLM_PLE_CPU_OFFLOAD=1` needs ~102 GiB of host RAM instead of ~51 GiB. MTP speculative decoding works (the BF16 MTP draft is kept unquantized automatically). Verified on 4x A100-80GB: `VLLM_PLE_CPU_OFFLOAD=1 vllm serve wtdcode/Qwen3.8-Flash-Next-AWQ-W4A16 --tensor-parallel-size 4 --enable-expert-parallel --compilation-config '{"mode":0,"cudagraph_mode":"FULL_DECODE_ONLY"}' --speculative-config '{"method":"mtp","num_speculative_tokens":3}'`.
+- AWQ W4A16 ([`wtdcode/Qwen3.8-Flash-Next-AWQ-W4A16`](https://huggingface.co/wtdcode/Qwen3.8-Flash-Next-AWQ-W4A16), compressed-tensors `pack-quantized`, routed experts INT4 g128, everything else BF16): MTP speculative decoding works (the BF16 MTP draft is kept unquantized automatically). Verified on 4x A100-80GB: `VLLM_PLE_CPU_OFFLOAD=1 vllm serve wtdcode/Qwen3.8-Flash-Next-AWQ-W4A16 --tensor-parallel-size 4 --enable-expert-parallel --compilation-config '{"mode":0,"cudagraph_mode":"FULL_DECODE_ONLY"}' --speculative-config '{"method":"mtp","num_speculative_tokens":3}'`. This achives up to 936 tps.
 
 #### DeepSeek V4 Flash
 
 - Keep `num_speculative_tokens` at 5 on Ampere. Values below 5 (the checkpoint's `dspark_block_size`) are rejected, and 7 needs ~200 KB of shared memory vs the 163 KB Ampere limit (`triton OutOfResources` error). 6 does start, but draft positions past the native block are almost never accepted (3–13% in our measurements), so it only wastes draft compute — output quality and speed are the same as 5.
 - Requests that set neither `thinking` nor `reasoning_effort` now get thinking mode with high effort, matching the official 0731 API mapping (`reasoning_effort: "none"` restores plain chat mode). Agentic/tool-calling clients should pass a `reasoning_effort` explicitly from the first turn of a session — sessions that run without the effort prefix gradually stop thinking and can enter self-reinforcing reasoning loops.
 
-## Environment Variables (Warning: Huge AI generated contents!)
-
-All knobs this fork has added over stock vLLM. Defaults are what the images ship with; you normally don't need to touch anything.
-
-### On by default (correctness / batch-invariance)
-
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `VLLM_DETERMINISTIC_MOE_ALIGN` | `1` | Deterministic MoE token grouping (stable sort instead of atomic-order). `0` restores the historical CUDA kernel. |
-| `VLLM_DSV4_FIXED_DECODE_SPLITS` | `16` | Pin the sparse-decode attention split-k so a request's numerics don't depend on what else is co-batched. `0` restores the batch-adaptive heuristic. |
-| `VLLM_TOKEN_BUCKET_PAD` | `1` | Pad batches to fixed token buckets (16/32/64/128/256, then ×256) so GEMM tiling stops shifting with exact batch size. `0` disables. |
-| `VLLM_DSPARK_FUSED_MARKOV` | `1` | Fused DSpark Markov draft-sampling chain. `0` falls back to the eager op chain. |
-| `VLLM_DSV4_LOGITS_ROW_CHUNK` | `128` | Row-chunk the sparse-indexer prefill logits so the `[chunk_rows, context/4]` fp32 transient stays bounded at long context (fixes crashes beyond ~134k tokens; needed for 256k+). `0` restores the monolithic allocation; the unprefixed `DSV4_LOGITS_ROW_CHUNK` spelling also works. |
-
-### Opt-in performance knobs (default `0` — measure on your topology first)
-
-| Variable | Meaning |
-| --- | --- |
-| `VLLM_MHC_PRENORM_SHARD` | Shard the mHC prenorm GEMM across TP ranks (pays off at TP8, hurts at TP4). |
-| `VLLM_MHC_POST_FUSE_SQRSUM` | Fold the mHC prenorm row-sqrsum into `mhc_post`. |
-| `VLLM_UNREPLICATE_ATTN_GEMMS` | De-duplicate attention GEMMs that are replicated across TP ranks. |
-| `VLLM_INDEXER_QUERY_SHARD` / `VLLM_INDEXER_QUERY_SHARD_QPATH` | Shard the sparse-indexer query projection across TP ranks. |
-| `VLLM_SPARSE_RAGGED_FAST_SCAN` | Faster ragged-index scan in sparse prefill. |
-| `VLLM_SPARSE_PREFILL_EXACT_TILE` | Mask-free sparse-prefill kernel specialization for exact-tile shapes. |
-| `VLLM_DSPARK_VOCAB_SHARD` | Vocab-sharded DSpark greedy draft selection (less draft-side communication). |
-| `VLLM_MARLIN_FP8_DEQUANT_BF16` | Route dense block-fp8 GEMMs through cuBLAS (dequant→bf16) instead of Marlin. |
-| `VLLM_HIER_ALL_REDUCE` | Island-aware hierarchical all-reduce for boxes with multiple PCIe islands. |
-| `VLLM_MAX_SIZE_MB_CUSTOM_ALL_REDUCE` | Override the custom all-reduce payload cap (MB). |
-| `VLLM_MHC_FIXED_NUM_SPLIT` | Pin the mHC TileLang GEMM split-k (only reachable on DeepGEMM-capable GPUs; no effect on sm86/sm80). |
-
-### Ops / debug
-
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `VLLM_MQ_MAX_CHUNK_BYTES_MB` | `16` | Worker message-queue chunk size. Lower it (e.g. `1`) when the container has a small `/dev/shm` and you cannot use `--ipc=host`. |
-| `VLLM_DISABLE_MULTI_STREAM_PARALLEL` | `0` | Debug kill-switch: run aux-stream work serially on the default stream. |
-
-For strict temperature-0 stability under concurrency, also consider `--hf-overrides '{"head_dtype": "float32"}'` (fp32 logits head) — a CLI flag, not an env.
