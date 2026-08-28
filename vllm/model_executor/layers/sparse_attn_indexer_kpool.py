@@ -17,10 +17,36 @@ from vllm.platforms import current_platform
 
 if TYPE_CHECKING:
     from vllm.models.glm5next.nvidia.ops import kpool_compress as kpool_ops
-elif current_platform.is_rocm():
-    from vllm.models.glm5next.amd.ops import kpool_compress as kpool_ops
 else:
-    from vllm.models.glm5next.nvidia.ops import kpool_compress as kpool_ops
+
+    class _LazyKpoolOps:
+        """Resolve the glm5next kpool ops on first attribute access.
+
+        ``vllm.models.glm5next.__init__`` eagerly imports the model, whose
+        attention module imports *this* module -- so importing this module
+        first (a layer-level import in a test, an op-registry scan) walks
+        into a partially initialised cycle and fails on
+        ``SparseAttnIndexerKpool``. Every ``kpool_ops`` use here is inside a
+        function, so deferring the import breaks the cycle without changing
+        behaviour.
+        """
+
+        _mod = None
+
+        def __getattr__(self, name: str):
+            if _LazyKpoolOps._mod is None:
+                if current_platform.is_rocm():
+                    from vllm.models.glm5next.amd.ops import (
+                        kpool_compress as mod,
+                    )
+                else:
+                    from vllm.models.glm5next.nvidia.ops import (
+                        kpool_compress as mod,
+                    )
+                _LazyKpoolOps._mod = mod
+            return getattr(_LazyKpoolOps._mod, name)
+
+    kpool_ops = _LazyKpoolOps()
 
 from vllm.utils.deep_gemm import has_deep_gemm, is_deep_gemm_supported
 from vllm.utils.torch_utils import (
