@@ -8,8 +8,8 @@ Status:
 | --- | --- | --- |
 | `DeepSeek-v4-Flash-0731` | Native FP4 | Fully Supported |
 | `Qwen3.8-27B` | BF16, AWQ W4A16 | Fully Supported |
-| `Qwen3.8-Flash-Next` | FP8, AWQ W4A16 | Fully Supported |
-| `GLM-5.3-Flash` | - | WIP |
+| `Qwen3.8-Flash-Next` | FP8, [AWQ W4A16](https://huggingface.co/wtdcode/Qwen3.8-Flash-Next-AWQ-W4A16) | Fully Supported |
+| `GLM-5.3-Flash` | [AWQ W4A16](https://huggingface.co/wtdcode/GLM-5.3-Flash-AWQ-W4A16) | WIP |
 
 ## Docker Usage
 
