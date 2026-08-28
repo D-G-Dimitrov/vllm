@@ -136,3 +136,4 @@ jobs:
             torch_cuda_arch_list=${{ matrix.arch }}
             max_jobs=${{ steps.parallelism.outputs.max_jobs }}
             nvcc_threads=1
+            INSTALL_LMCACHE=true
