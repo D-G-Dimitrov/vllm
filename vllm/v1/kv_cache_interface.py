@@ -156,6 +156,18 @@ class KVCacheSpec:
         return True
 
     @property
+    def prefix_cacheable(self) -> bool:
+        """Deprecated alias for :attr:`participates_in_prefix_caching`.
+
+        Out-of-tree KV connectors probe this with ``getattr(spec,
+        "prefix_cacheable", True)``, so dropping it during the upstream rename
+        would silently default per-request scratch groups (the GLM-5.3-Flash
+        kpool tail, the DSV4 compressor ring) back to "cacheable" and let a
+        connector store and serve them as prefix KV.
+        """
+        return self.participates_in_prefix_caching
+
+    @property
     def num_heads(self) -> int:
         raise NotImplementedError
 
