@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar, Optional
 
 import numpy as np
-import os
 
 import torch
 
@@ -287,20 +286,6 @@ class XPUMLASparseImpl(MLAAttentionImpl[XPUMLASparseMetadata]):
             NUM_TOPK_TOKENS=topk_indices.shape[1],
         )
 
-        if os.environ.get(
-            "VLLM_GLM5_KPOOL_DEBUG"
-        ) and not torch.cuda.is_current_stream_capturing():
-            import logging
-
-            _n = kv_rows.shape[0]
-            _v = topk_indices_global[topk_indices_global >= 0]
-            _mx = int(_v.max().item()) if _v.numel() else -1
-            logging.getLogger(__name__).error(
-                "[sparse-mla] kv_rows=%s q=%s idx=%s max_idx=%d rows=%d%s",
-                tuple(kv_rows.shape), tuple(q.shape),
-                tuple(topk_indices_global.shape), _mx, _n,
-                "  <<< OOR" if _mx >= _n else "",
-            )
         attn_out = self._forward_bf16_kv(q, kv_rows, topk_indices_global, attn_metadata)
 
         return attn_out, None

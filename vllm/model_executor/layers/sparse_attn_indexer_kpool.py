@@ -4,7 +4,6 @@
 
 from typing import TYPE_CHECKING
 
-import os
 
 import torch
 
@@ -769,35 +768,6 @@ def sparse_attn_indexer_kpool(
                 # provided. Inputs are already grouped per request (uniform:
                 # view; non-uniform: _scatter_decode_tokens_by_request padded to
                 # [B, lmax]) — no per-token .contiguous() copies needed.
-                if os.environ.get(
-                    "VLLM_GLM5_KPOOL_DEBUG"
-                ) and not torch.cuda.is_current_stream_capturing():
-                    import logging
-
-                    def _rng(t):
-                        if t is None:
-                            return "None"
-                        v = t[t >= 0]
-                        return (
-                            f"[{int(v.min().item())},{int(v.max().item())}]"
-                            if v.numel()
-                            else "[all<0]"
-                        )
-
-                    logging.getLogger(__name__).error(
-                        "[kpool-decode-upd] kv_raw=%s tail=%s | dec_slot%s "
-                        "dec_tail_slot%s dec_pos%s | ndec=%d nreq=%d kpool=%d "
-                        "| slot_max_ok=%s tail_max_ok=%s",
-                        tuple(kv_cache_raw.shape),
-                        tuple(tail_kv_cache.shape),
-                        _rng(dec_slot), _rng(dec_tail_slot), _rng(dec_pos),
-                        num_decode_tokens, num_requests, index_kpool,
-                        (dec_slot.max().item() // kv_cache_raw.shape[1])
-                        < kv_cache_raw.shape[0],
-                        "n/a" if dec_tail_slot is None else
-                        (dec_tail_slot.max().item() // index_kpool)
-                        < tail_kv_cache.shape[0],
-                    )
                 kpool_ops.kpool_decode_update_and_maybe_write_cache_batched(
                     kv_cache_raw,
                     tail_kv_cache,
@@ -899,20 +869,6 @@ def sparse_attn_indexer_kpool(
                 "kpool indexer: fp4 index cache needs DeepGEMM; the Triton "
                 "fallback is fp8-only."
             )
-            if os.environ.get("VLLM_GLM5_KPOOL_DEBUG") and not torch.cuda.is_current_stream_capturing():
-                import logging
-
-                bt = decode_metadata.block_table
-                logging.getLogger(__name__).error(
-                    "[kpool-decode-mqa] kv_cache.shape=%s dtype=%s | q=%s | "
-                    "bt.shape=%s max=%d | seq_lens shape=%s max=%d | "
-                    "max_model_len=%d index_kpool=%d num_padded_tokens=%d",
-                    tuple(kv_cache.shape), kv_cache.dtype,
-                    tuple(padded_q_quant_cast.shape), tuple(bt.shape),
-                    int(bt.max().item()), tuple(seq_lens.shape),
-                    int(seq_lens.max().item()), max_model_len, index_kpool,
-                    num_padded_tokens,
-                )
             logits = fp8_paged_mqa_logits_triton(
                 padded_q_quant_cast,
                 kv_cache,

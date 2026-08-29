@@ -740,21 +740,6 @@ def compute_kpool_tail_slot_mapping(
     own_block = block_table[:num_reqs, 0].index_select(0, req).to(torch.int64)
     pos = positions[:num_actual_tokens].to(torch.int64)
     out[:num_actual_tokens] = own_block * kpool + torch.remainder(pos, kpool)
-    if os.environ.get("VLLM_GLM5_KPOOL_DEBUG") and not torch.cuda.is_current_stream_capturing():
-        import logging
-
-        logging.getLogger(__name__).error(
-            "[kpool-tail-slots] bt.shape=%s dtype=%s num_reqs=%d n_act=%d "
-            "sm.numel=%d | col0 min=%d max=%d first8=%s | own_block max=%d "
-            "| out[:n] max=%d",
-            tuple(block_table.shape), block_table.dtype, num_reqs,
-            num_actual_tokens, slot_mapping.numel(),
-            int(block_table[:num_reqs, 0].min().item()),
-            int(block_table[:num_reqs, 0].max().item()),
-            block_table[: min(8, num_reqs), 0].tolist(),
-            int(own_block.max().item()),
-            int(out[:num_actual_tokens].max().item()),
-        )
     return out
 
 
