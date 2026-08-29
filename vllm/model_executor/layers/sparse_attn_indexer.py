@@ -953,8 +953,8 @@ class SparseAttnIndexer(CustomOp):
         parallel_config = get_current_vllm_config().parallel_config
         self.dcp_world_size = parallel_config.decode_context_parallel_size
         self.dcp_rank = get_dcp_group().rank_in_group if self.dcp_world_size > 1 else 0
-        self.cp_kv_cache_interleave_size = parallel_config.cp_kv_cache_interleave_size
         self.use_pcp = parallel_config.prefill_context_parallel_size > 1
+        self._cp_kv_cache_interleave_size: int | None = None
         # On SM80/SM121 (A100, GB10) DeepGEMM is unavailable — fall back to
         # the Triton sparse-MLA path. is_deep_gemm_supported() encodes the
         # SM-arch + has_deep_gemm() gate; if not supported, downgrade the
@@ -990,6 +990,22 @@ class SparseAttnIndexer(CustomOp):
                     warmup_fp8_paged_mqa_logits_triton(
                         num_heads, head_dim, kernel_block_size, device
                     )
+
+    @property
+    def cp_kv_cache_interleave_size(self) -> int:
+        """With PD+DCP, the real value isn't known until block_size is finalized,
+        which happens after this layer is built. Safe to cache after the first access,
+        as long as the adjustment always runs before any forward pass
+        (it's set up in Worker.initialize_from_config, ahead of warmup/serving).
+        """
+        if self._cp_kv_cache_interleave_size is None:
+            value = (
+                get_current_vllm_config().parallel_config.cp_kv_cache_interleave_size
+            )
+            if isinstance(get_forward_context().attn_metadata, dict):
+                self._cp_kv_cache_interleave_size = value
+            return value
+        return self._cp_kv_cache_interleave_size
 
     def forward_native(
         self,
