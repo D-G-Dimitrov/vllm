@@ -710,17 +710,28 @@ def compute_kpool_tail_slot_mapping(
     num_actual_tokens: int,
     num_reqs: int,
     kpool: int,
+    out_full: torch.Tensor,
 ) -> torch.Tensor:
-    """Map every token to its request's one circular tail block."""
-    # -1, not a clone of `slot_mapping`: only [:num_actual_tokens] is filled
-    # below, and the remainder is read whenever the batch is padded to a
-    # captured cudagraph size (KDA reclassifies non-spec decodes as prefills,
-    # so the kpool prefill branch slices out to the *padded* token count).
-    # Inheriting the caller's mapping there hands the tail-seed kernel
-    # main-granularity block ids for a per-request ring cache -- an out of
-    # bounds write. -1 marks "this token has no tail slot"; the kernel
-    # already returns early on a negative slot.
-    out = torch.full_like(slot_mapping, -1)
+    """Map every token to its request's one circular tail block.
+
+    ``out`` must be a persistent buffer owned by the builder: under FULL
+    cudagraph capture the tail-consuming kernels are recorded with this
+    tensor's address baked in (the eager-break wrapper deliberately passes
+    FULL-mode captures through), so a fresh allocation per build leaves the
+    captured kernels reading freed memory on replay. That was the decode
+    warmup illegal-access: _kpool_decode_update_batched_kernel replayed with
+    grid = the captured padded batch and read garbage tail slots from the
+    reused allocation (cuda-gdb: 'Warp Out of range Address', block 252 of
+    grid 256).
+
+    The whole buffer is re-filled with -1 every build: replayed kernels index
+    up to the *captured* padded length, which can exceed this step's padded
+    length, and -1 marks "no tail slot" (every consumer early-outs on
+    negative slots).
+    """
+    n = slot_mapping.shape[0]
+    out_full.fill_(-1)
+    out = out_full[:n]
     if num_actual_tokens == 0:
         return out
     tokens = torch.arange(num_actual_tokens, device=slot_mapping.device)
@@ -762,6 +773,14 @@ class KpoolTailMetadataBuilder(AttentionMetadataBuilder):
         device: torch.device,
     ):
         super().__init__(kv_cache_spec, layer_names, vllm_config, device)
+        # Persistent tail slot mapping. Address stability is load-bearing:
+        # see compute_kpool_tail_slot_mapping.
+        self.tail_slot_mapping_buffer = torch.full(
+            (vllm_config.scheduler_config.max_num_batched_tokens,),
+            -1,
+            dtype=torch.int64,
+            device=device,
+        )
 
     def build(
         self,
@@ -791,6 +810,7 @@ class KpoolTailMetadataBuilder(AttentionMetadataBuilder):
             common_attn_metadata.num_actual_tokens,
             common_attn_metadata.num_reqs,
             self.kv_cache_spec.block_size,
+            out_full=self.tail_slot_mapping_buffer,
         )
         return DeepseekV32IndexerMetadata(
             seq_lens=common_attn_metadata.seq_lens,
