@@ -2,6 +2,8 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """GLM-5.3-Flash KDA layer with separate convolutions and a bounded safe gate."""
 
+import os
+
 import torch
 from torch import nn
 
@@ -368,6 +370,28 @@ class Glm5NextLinearAttention(GatedDeltaNetAttention):
         beta = beta[:, :num_actual_tokens]
 
         (conv_state, recurrent_state) = constant_caches
+        if os.environ.get(
+            "VLLM_GLM5_KPOOL_DEBUG"
+        ) and not torch.cuda.is_current_stream_capturing():
+            import logging
+
+            def _mx(t):
+                if t is None:
+                    return -1
+                v = t[t >= 0]
+                return int(v.max().item()) if v.numel() else -1
+
+            _ns, _sp = _mx(non_spec_state_indices_tensor), _mx(
+                spec_state_indices_tensor
+            )
+            _lim = recurrent_state.shape[0]
+            logging.getLogger(__name__).error(
+                "[kda-state] recurrent=%s conv=%s | non_spec_max=%d spec_max=%d "
+                "limit=%d n_act=%d%s",
+                tuple(recurrent_state.shape), tuple(conv_state.shape),
+                _ns, _sp, _lim, num_actual_tokens,
+                "  <<< OOR" if max(_ns, _sp) >= _lim else "",
+            )
         # conv_state must be (..., dim, width-1) for the conv kernels.
         # DS layout stores it that way directly; SD layout needs a transpose.
         # Layout is process-global and resolved once at init (see __init__).

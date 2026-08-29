@@ -119,7 +119,7 @@ def _sparse_mla_compute_tile(
         mask_kv = (indices >= 0) & (indices < seq_kv)
 
         offs_k = (
-            indices[None, :] * stride_kv_token
+            indices[None, :].to(tl.int64) * stride_kv_token
             + cur_kv_head_id * stride_kv_head
             + offs_d[:, None]
         )
@@ -128,7 +128,7 @@ def _sparse_mla_compute_tile(
 
         if BLOCK_DPE > 0:
             offs_kpe = (
-                indices[None, :] * stride_kv_token
+                indices[None, :].to(tl.int64) * stride_kv_token
                 + cur_kv_head_id * stride_kv_head
                 + offs_dpe[:, None]
             )
@@ -143,7 +143,7 @@ def _sparse_mla_compute_tile(
         qk = tl.where((mask_h[:, None]) & (mask_kv[None, :]), qk, NEG_LARGE)
 
         offs_v = (
-            indices[:, None] * stride_kv_token
+            indices[:, None].to(tl.int64) * stride_kv_token
             + cur_kv_head_id * stride_kv_head
             + offs_dv[None, :]
         )

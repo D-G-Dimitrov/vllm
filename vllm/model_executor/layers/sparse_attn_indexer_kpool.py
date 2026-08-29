@@ -769,6 +769,35 @@ def sparse_attn_indexer_kpool(
                 # provided. Inputs are already grouped per request (uniform:
                 # view; non-uniform: _scatter_decode_tokens_by_request padded to
                 # [B, lmax]) — no per-token .contiguous() copies needed.
+                if os.environ.get(
+                    "VLLM_GLM5_KPOOL_DEBUG"
+                ) and not torch.cuda.is_current_stream_capturing():
+                    import logging
+
+                    def _rng(t):
+                        if t is None:
+                            return "None"
+                        v = t[t >= 0]
+                        return (
+                            f"[{int(v.min().item())},{int(v.max().item())}]"
+                            if v.numel()
+                            else "[all<0]"
+                        )
+
+                    logging.getLogger(__name__).error(
+                        "[kpool-decode-upd] kv_raw=%s tail=%s | dec_slot%s "
+                        "dec_tail_slot%s dec_pos%s | ndec=%d nreq=%d kpool=%d "
+                        "| slot_max_ok=%s tail_max_ok=%s",
+                        tuple(kv_cache_raw.shape),
+                        tuple(tail_kv_cache.shape),
+                        _rng(dec_slot), _rng(dec_tail_slot), _rng(dec_pos),
+                        num_decode_tokens, num_requests, index_kpool,
+                        (dec_slot.max().item() // kv_cache_raw.shape[1])
+                        < kv_cache_raw.shape[0],
+                        "n/a" if dec_tail_slot is None else
+                        (dec_tail_slot.max().item() // index_kpool)
+                        < tail_kv_cache.shape[0],
+                    )
                 kpool_ops.kpool_decode_update_and_maybe_write_cache_batched(
                     kv_cache_raw,
                     tail_kv_cache,
@@ -916,7 +945,16 @@ def sparse_attn_indexer_kpool(
                 topk_dst,
                 topk_workspace,
                 select_k,
-                attn_metadata_narrowed.max_seq_len,
+                # The logits buffer width, not the token-granular max_seq_len.
+                # persistent_topk uses this host scalar to pick its CTA
+                # participation path (see persistent_topk.cuh: CTAs other than
+                # the group leader exit early when it is <= RADIX_THRESHOLD),
+                # so it has to agree with the device-side `lengths`. kpool
+                # logits are pool-granular while max_seq_len counts tokens, so
+                # passing the latter makes the host scalar and the per-row
+                # lengths disagree by index_kpool. sparse_attn_indexer.py
+                # passes logits.shape[1] here for the same reason.
+                logits.shape[1],
             )
         else:
             if current_platform.is_xpu():
