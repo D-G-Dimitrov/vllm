@@ -971,8 +971,8 @@ RUN --mount=type=cache,target=/opt/uv/cache \
 
 # Install FlashInfer from release assets.
 # https://docs.flashinfer.ai/installation.html
-ARG FLASHINFER_VERSION=0.6.18rc10
-ARG FLASHINFER_RELEASE_TAG=v0.6.18rc10
+ARG FLASHINFER_VERSION=0.6.18
+ARG FLASHINFER_RELEASE_TAG=v0.6.18
 ARG TARGETARCH
 RUN --mount=type=cache,target=/opt/uv/cache \
     if [ "${INSTALL_RUBIN_PRERELEASE}" != "true" ]; then \
