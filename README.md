@@ -36,6 +36,7 @@ Note the sample below includes `LMCache`. If you do not have enough RAM or disk,
 services:
   vllm:
     image: lazymio/vllm-backport:latest
+    depends_on: [lmcache] # Remove this line if you remove the lmcache section below
     command:
       - deepseek-ai/DeepSeek-V4-Flash-0731
       - '--kv-transfer-config={"kv_connector":"LMCacheMPConnector","kv_connector_module_path":"lmcache.integration.vllm.lmcache_mp_connector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"127.0.0.1","lmcache.mp.port":5556}}'
