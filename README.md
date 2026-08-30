@@ -57,7 +57,7 @@ services:
               capabilities: [gpu]
   lmcache:
     image: lazymio/vllm-backport:latest
-    entrypoint: ["numactl", "--interleave=all", "lmcache", "server"]
+    entrypoint: ["lmcache", "server"]
     command:
       - --host=127.0.0.1
       - --port=5556
