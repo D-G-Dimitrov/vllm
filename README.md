@@ -100,32 +100,19 @@ curl http://localhost:8000/v1/models
 
 ### Model Specific setups
 
-#### GLM-5.3-Flash (`latest-sm80`)
-
-The AWQ W4A16 checkpoint has been verified with MTP speculative decoding on
-4x A100-80GB. The following command serves it directly from its Hugging Face
-repository ID; no source patching or manual snapshot-path resolution is needed:
+#### GLM-5.3-Flash (v0.11.0+)
 
 ```bash
-docker run --rm \
-  --gpus all \
-  --ipc=host \
-  -p 8000:8000 \
-  -v ~/.cache/huggingface:/root/.cache/huggingface \
-  -e HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-} \
-  -e NCCL_ALGO=Ring \
-  -e NCCL_PROTO=Simple \
-  lazymio/vllm-backport:latest-sm80 \
-  wtdcode/GLM-5.3-Flash-AWQ-W4A16 \
+NCCL_ALGO=Ring NCCL_PROTO=Simple
+vllm serve wtdcode/GLM-5.3-Flash-AWQ-W4A16 \
   --host 0.0.0.0 \
   --port 8000 \
+  --served-model-name glm-5.3-flash \
   --tensor-parallel-size 4 \
   --max-model-len 524288 \
   --gpu-memory-utilization 0.92 \
-  --kv-cache-dtype bfloat16 \
   --max-num-seqs 16 \
   --max-num-batched-tokens 8192 \
-  --enable-chunked-prefill \
   --enable-prefix-caching \
   --enable-prompt-tokens-details \
   --disable-custom-all-reduce \
@@ -133,18 +120,11 @@ docker run --rm \
   --speculative-config '{"method":"mtp","num_speculative_tokens":3}' \
   --enable-auto-tool-choice \
   --tool-call-parser glm47 \
-  --reasoning-parser glm45 \
-  --served-model-name GLM-5.3-Flash
+  --reasoning-parser glm45
 ```
 
-Observed single-stream decode throughput with MTP-3 on 4x A100-80GB:
-
-| MTP acceptance rate | Decode throughput |
-| --- | --- |
-| 40-50% | 90-100 tok/s |
-| 50-60% | 100-112 tok/s |
-| 70-80% | 125-135 tok/s |
-| 90%+ | 145-155 tok/s |
+- Verified with MTP-3 on 4x A100-80GB (sm80). On 8x RTX A6000 (sm86) use `--tensor-parallel-size 8` and drop `--gpu-memory-utilization` to 0.85 — with the MTP draft loaded, 0.9+ OOMs during cudagraph warmup on 48 GB cards.
+- Serving directly from the Hugging Face repository ID works; no manual snapshot-path resolution is needed.
 
 #### Qwen3.8-Flash-Next (v0.9.0+)
 
