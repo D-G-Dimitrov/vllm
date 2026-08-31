@@ -94,12 +94,57 @@ curl http://localhost:8000/v1/models
 ### General Tips
 
 - `FULL_AND_PIECEWISE` captures the whole decode step — attention, MoE dispatch, NCCL all-reduce and the DSpark draft loop — into one CUDA graph. Measured on 4x/8x A6000: single-stream decode 45.6 -> 67-70 tok/s (+47%); prefill is unchanged (compute-bound). Two prerequisites:
-  - Pin NCCL with `NCCL_ALGO=Ring NCCL_PROTO=Simple` (and prefer `--disable-custom-all-reduce`). Graph replay must re-issue the exact captured collective; NCCL's size-adaptive algorithm switching is what made FULL capture "crash on Ampere" — Ampere itself is fine.
-  - Bound `cudagraph_capture_sizes` as shown. FULL graphs keep private memory pools; capturing every batch size up to `--max-num-seqs` can cost >800 MB per GPU and OOM warmup at high `--gpu-memory-utilization`.
+    - Pin NCCL with `NCCL_ALGO=Ring NCCL_PROTO=Simple` (and prefer `--disable-custom-all-reduce`). Graph replay must re-issue the exact captured collective; NCCL's size-adaptive algorithm switching is what made FULL capture "crash on Ampere" — Ampere itself is fine.
+    - Bound `cudagraph_capture_sizes` as shown. FULL graphs keep private memory pools; capturing every batch size up to `--max-num-seqs` can cost >800 MB per GPU and OOM warmup at high `--gpu-memory-utilization`.
 - Adjust your TP (--tensor-parallel-size), PP (--pipeline-parallel-size) and EP (--enable-expert-parallel) accordingly.
 
-
 ### Model Specific setups
+
+#### GLM-5.3-Flash (`latest-sm80`)
+
+The AWQ W4A16 checkpoint has been verified with MTP speculative decoding on
+4x A100-80GB. The following command serves it directly from its Hugging Face
+repository ID; no source patching or manual snapshot-path resolution is needed:
+
+```bash
+docker run --rm \
+  --gpus all \
+  --ipc=host \
+  -p 8000:8000 \
+  -v ~/.cache/huggingface:/root/.cache/huggingface \
+  -e HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-} \
+  -e NCCL_ALGO=Ring \
+  -e NCCL_PROTO=Simple \
+  lazymio/vllm-backport:latest-sm80 \
+  wtdcode/GLM-5.3-Flash-AWQ-W4A16 \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --tensor-parallel-size 4 \
+  --max-model-len 524288 \
+  --gpu-memory-utilization 0.92 \
+  --kv-cache-dtype bfloat16 \
+  --max-num-seqs 16 \
+  --max-num-batched-tokens 8192 \
+  --enable-chunked-prefill \
+  --enable-prefix-caching \
+  --enable-prompt-tokens-details \
+  --disable-custom-all-reduce \
+  --compilation-config '{"cudagraph_mode":"FULL_AND_PIECEWISE","cudagraph_capture_sizes":[1,2,4,8,16],"max_cudagraph_capture_size":16}' \
+  --speculative-config '{"method":"mtp","num_speculative_tokens":3}' \
+  --enable-auto-tool-choice \
+  --tool-call-parser glm47 \
+  --reasoning-parser glm45 \
+  --served-model-name GLM-5.3-Flash
+```
+
+Observed single-stream decode throughput with MTP-3 on 4x A100-80GB:
+
+| MTP acceptance rate | Decode throughput |
+| --- | --- |
+| 40-50% | 90-100 tok/s |
+| 50-60% | 100-112 tok/s |
+| 70-80% | 125-135 tok/s |
+| 90%+ | 145-155 tok/s |
 
 #### Qwen3.8-Flash-Next (v0.9.0+)
 
@@ -129,8 +174,7 @@ vllm serve /path/to/your/qwen3.8 \
 
 - `VLLM_PLE_CPU_OFFLOAD=1` keeps the 51B n-gram embedding (fp8, ~51 GiB) in pinned host RAM via a separate `PleOffloadWorker` process. Without it the TP-sharded embedding adds ~12.8 GiB per GPU and KV memory goes negative on 48 GB cards.
 - `--enable-expert-parallel` is required, not optional: with plain TP the 640-wide expert intermediate becomes 160 per rank, which is not a multiple of the 128x128 fp8 block, and vLLM then forces the Triton fp8 MoE kernel (no fp8 tensor cores on sm86). With EP the experts stay whole and the Marlin W8A16 backend is used.
-- AWQ W4A16 ([`wtdcode/Qwen3.8-Flash-Next-AWQ-W4A16`](https://huggingface.co/wtdcode/Qwen3.8-Flash-Next-AWQ-W4A16), compressed-tensors `pack-quantized`, routed experts INT4 g128, everything else BF16): MTP speculative decoding works (the BF16 MTP draft is kept unquantized automatically). Verified on 4x A100-80GB: `VLLM_PLE_CPU_OFFLOAD=1 vllm serve wtdcode/Qwen3.8-Flash-Next-AWQ-W4A16 --tensor-parallel-size 4 --enable-expert-parallel --compilation-config '{"mode":0,"cudagraph_mode":"FULL_DECODE_ONLY"}' --speculative-config '{"method":"mtp","num_speculative_tokens":3}'`. This achives up to 936 tps.
-
+- AWQ W4A16 ([`wtdcode/Qwen3.8-Flash-Next-AWQ-W4A16`](https://huggingface.co/wtdcode/Qwen3.8-Flash-Next-AWQ-W4A16), compressed-tensors `pack-quantized`, routed experts INT4 g128, everything else BF16): MTP speculative decoding works (the BF16 MTP draft is kept unquantized automatically). Verified on 4x A100-80GB: `VLLM_PLE_CPU_OFFLOAD=1 vllm serve wtdcode/Qwen3.8-Flash-Next-AWQ-W4A16 --tensor-parallel-size 4 --enable-expert-parallel --compilation-config '{"mode":0,"cudagraph_mode":"FULL_DECODE_ONLY"}' --speculative-config '{"method":"mtp","num_speculative_tokens":3}'`. This achieves up to 936 tps.
 
 #### DeepSeek V4 Flash
 
@@ -151,4 +195,4 @@ vllm serve /path/to/your/deepseek \
 
 - Keep `num_speculative_tokens` at 5 on Ampere. Values below 5 (the checkpoint's `dspark_block_size`) are rejected, and 7 needs ~200 KB of shared memory vs the 163 KB Ampere limit (`triton OutOfResources` error). 6 does start, but draft positions past the native block are almost never accepted (3–13% in our measurements), so it only wastes draft compute — output quality and speed are the same as 5.
 - Requests that set neither `thinking` nor `reasoning_effort` now get thinking mode with high effort, matching the official 0731 API mapping (`reasoning_effort: "none"` restores plain chat mode). Agentic/tool-calling clients should pass a `reasoning_effort` explicitly from the first turn of a session — sessions that run without the effort prefix gradually stop thinking and can enter self-reinforcing reasoning loops.
-- `--hf-overrides '{"head_dtype": "float32"}'` once helpped reduce garbage outputs by improving precisions but might be not compulsory.
+- `--hf-overrides '{"head_dtype": "float32"}'` once helped reduce garbage outputs by improving precisions but might be not compulsory.
