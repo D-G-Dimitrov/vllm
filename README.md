@@ -100,7 +100,7 @@ curl http://localhost:8000/v1/models
 
 ### Model Specific setups
 
-#### GLM-5.3-Flash (v0.11.0+)
+#### GLM-5.3-Flash (v0.11.2+)
 
 ```bash
 NCCL_ALGO=Ring NCCL_PROTO=Simple
