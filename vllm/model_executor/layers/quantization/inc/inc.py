@@ -29,6 +29,26 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 
+def _mtp_checkpoint_prefix(prefix: str, block_names: list[str] | None) -> str:
+    """Map an MTP draft module prefix onto the checkpoint's layer namespace.
+
+    MTP draft layers are built at ``model.layers.<i>.mtp_block.*``, but
+    checkpoints with a nested language tower (e.g.
+    ``model.language_model.layers.*``) declare ``block_name_to_quantize``
+    in that form. Resolving the draft prefix verbatim marks every draft
+    module unquantized, so its quantized weights fail to load.
+    """
+    if ".mtp_block." not in prefix:
+        return prefix
+    stripped = prefix.replace(".mtp_block.", ".", 1)
+    if any(stripped.startswith(block) for block in block_names or ()):
+        return stripped
+    for block in block_names or ():
+        if block.endswith(".layers") and ".layers." in stripped:
+            return f"{block}.{stripped.split('.layers.', 1)[1]}"
+    return stripped
+
+
 class INCConfig(QuantizationConfig):
     """Config class for Intel Neural Compressor (INC).
     Repo: https://github.com/intel/neural-compressor
@@ -202,7 +222,9 @@ class INCConfig(QuantizationConfig):
         return quant_config
 
     def get_layer_config(self, layer, layer_name: str):
-        return self.config_parser.get_layer_config(layer, layer_name)
+        return self.config_parser.get_layer_config(
+            layer, _mtp_checkpoint_prefix(layer_name, self.block_name_to_quantize)
+        )
 
     def apply_vllm_mapper(self, hf_to_vllm_mapper: "WeightsMapper"):
         if self.block_name_to_quantize is not None:
@@ -215,17 +237,21 @@ class INCConfig(QuantizationConfig):
     def get_quant_method(self, layer: torch.nn.Module, prefix: str):
         from .schemes.factory import resolve_scheme
 
+        # MTP draft modules use a synthetic runtime prefix; resolve their
+        # quant config against the checkpoint's layer namespace.
+        name = _mtp_checkpoint_prefix(prefix, self.block_name_to_quantize)
+
         # Match original: check model.-prefixed names for unquantized layers
-        if prefix and self.extra_config:
+        if name and self.extra_config:
             for layer_name in self.extra_config:
                 if (
-                    layer_name == prefix or layer_name == f"model.{prefix}"
+                    layer_name == name or layer_name == f"model.{name}"
                 ) and self.extra_config[layer_name].get("bits", 16) >= 16:
                     if isinstance(layer, RoutedExperts):
                         return UnquantizedFusedMoEMethod(layer.moe_config)
                     return UnquantizedLinearMethod()
 
-        layer_config = self.config_parser.resolve(layer, prefix)
+        layer_config = self.config_parser.resolve(layer, name)
         if not layer_config.quantized:
             if isinstance(layer, (LinearBase, ParallelLMHead)):
                 return UnquantizedLinearMethod()

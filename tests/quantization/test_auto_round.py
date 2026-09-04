@@ -20,6 +20,7 @@ from vllm.model_executor.layers.linear import LinearBase, UnquantizedLinearMetho
 from vllm.model_executor.layers.quantization.auto_gptq import AutoGPTQConfig
 from vllm.model_executor.layers.quantization.inc import INCConfig
 from vllm.model_executor.layers.quantization.inc.config_parser import INCLayerConfig
+from vllm.model_executor.layers.quantization.inc.inc import _mtp_checkpoint_prefix
 from vllm.model_executor.layers.quantization.inc.inc_linear import INCLinearMethod
 from vllm.model_executor.layers.quantization.inc.schemes import (
     INCMxfp4Scheme,
@@ -327,6 +328,91 @@ def test_inc_config_parser_block_name_to_quantize_marks_unquantized() -> None:
     assert layer_config.group_size == -1
     assert layer_config.sym is True
     assert layer_config.quantized is False
+
+
+def test_inc_mtp_draft_prefix_reanchors_to_block_name() -> None:
+    """MTP draft modules must resolve against the checkpoint's layer path.
+
+    Draft layers are built at model.layers.<i>.mtp_block.* while the
+    checkpoint (and block_name_to_quantize) use model.language_model.layers.*.
+    Without re-anchoring, the draft's quantized experts resolve unquantized
+    and loading their weights raises KeyError.
+    """
+    config = make_config(block_name_to_quantize=["model.language_model.layers"])
+
+    raw = config.config_parser.resolve(DummyLayer(), "model.layers.45.mlp.experts")
+    assert raw.quantized is False
+
+    reanchored = config.config_parser.resolve(
+        DummyLayer(), "model.language_model.layers.45.mlp.experts"
+    )
+    assert reanchored.quantized is True
+    assert reanchored.bits == 4
+    assert reanchored.group_size == 128
+
+
+def test_inc_mtp_checkpoint_prefix_mapping() -> None:
+    block = ["model.language_model.layers"]
+    assert (
+        _mtp_checkpoint_prefix("model.layers.45.mtp_block.mlp.experts", block)
+        == "model.language_model.layers.45.mlp.experts"
+    )
+    assert (
+        _mtp_checkpoint_prefix(
+            "model.layers.45.mtp_block.mlp.experts", ["model.layers"]
+        )
+        == "model.layers.45.mlp.experts"
+    )
+    assert (
+        _mtp_checkpoint_prefix("model.layers.45.mtp_block.mlp.experts", None)
+        == "model.layers.45.mlp.experts"
+    )
+    assert (
+        _mtp_checkpoint_prefix("model.layers.45.mlp.experts", block)
+        == "model.layers.45.mlp.experts"
+    )
+
+
+def test_inc_mtp_draft_modules_keep_bf16_regexes() -> None:
+    config = make_config(
+        block_name_to_quantize=["model.language_model.layers"],
+        extra_config={
+            r".*mlp\.gate.*": {"bits": 16, "data_type": "float"},
+            r".*shared_experts.*": {"bits": 16, "data_type": "float"},
+        },
+    )
+    mapped_gate = _mtp_checkpoint_prefix(
+        "model.layers.45.mtp_block.mlp.gate", ["model.language_model.layers"]
+    )
+    assert config.config_parser.resolve(DummyLayer(), mapped_gate).quantized is False
+    mapped_shared = _mtp_checkpoint_prefix(
+        "model.layers.45.mtp_block.mlp.shared_experts.down_proj",
+        ["model.language_model.layers"],
+    )
+    assert config.config_parser.resolve(DummyLayer(), mapped_shared).quantized is False
+
+
+def test_inc_get_quant_method_resolves_mtp_prefix_via_checkpoint_name(
+    monkeypatch,
+) -> None:
+    config = make_config(
+        block_name_to_quantize=["model.language_model.layers"],
+        extra_config={r".*self_attn.*": {"bits": 16, "data_type": "float"}},
+    )
+    seen: list[str] = []
+
+    def fake_resolve(layer, layer_name):
+        seen.append(layer_name)
+        return make_layer_config(bits=16, quantized=False)
+
+    monkeypatch.setattr(config.config_parser, "resolve", fake_resolve)
+
+    method = config.get_quant_method(
+        DummyLayer(), "model.layers.45.mtp_block.self_attn.o_proj"
+    )
+
+    assert method is None
+    assert seen == ["model.language_model.layers.45.self_attn.o_proj"]
 
 
 def test_inc_config_parser_parallel_lm_head_defaults_to_unquantized() -> None:
