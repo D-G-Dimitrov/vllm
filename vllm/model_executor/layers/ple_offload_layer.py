@@ -23,9 +23,14 @@ from collections.abc import Callable
 from typing import Any, cast
 
 import torch
-from cuda.bindings import driver as cuda_driver
-from cuda.bindings.driver import CUstreamWaitValue_flags
 from torch import nn
+
+try:
+    from cuda.bindings import driver as cuda_driver
+    from cuda.bindings.driver import CUstreamWaitValue_flags
+except ImportError:  # Non-CUDA host (e.g. macOS): PLE ops stay unavailable.
+    cuda_driver = None
+    CUstreamWaitValue_flags = None
 
 import vllm.envs as envs
 from vllm.utils.torch_utils import direct_register_custom_op
