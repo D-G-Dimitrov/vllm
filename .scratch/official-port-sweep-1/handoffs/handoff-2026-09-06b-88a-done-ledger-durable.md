@@ -110,3 +110,5 @@ container up (`:8000` = 200), ledger pushed + mirrored.
 --abort` — it cannot restore a `-n` pick cleanly (documented: leaves 40+ staged/unmerged entries).
 On resume, grind item **100 `5bfd76372d`** "[Renderer] Shutdown the renderer properly (#52124)" with base
 tip `4529b9645`, `context: fresh`, brief at `worker-brief.md`; swap resumes at those 3 test files.
+
+Trap for the next session: on jetson, `origin/mitaka/backport` is **permanently stale** (that box has no GitHub credentials and never fetches), so `git rev-list --count origin/mitaka/backport..HEAD` there reports a large bogus number (63 at pause) that looks like a big unpushed backlog. Judge push state only by comparing `git ls-remote origin mitaka/backport` **from the Mac** against `git rev-parse HEAD` on jetson. Never reconcile or reset to jetson's remote-tracking ref.
