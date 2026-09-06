@@ -83,3 +83,19 @@ re-grill, do not delete or patch the test.
 and `scp` them instead. `git add` destroys stage 2/3 (compare against `git show <upstream>:<path>`, not
 `:3:`). Silent-loss scans catch real deletions (5 tests here) — always run them, even on clean merges.
 `PleOffloadLayer.__init_subclass__` wraps subclass `__init__`, so `co_varnames` probes read the wrapper.
+
+## Dispatch reliability note (after the item-99 child died)
+
+Item 99's `worker` child **terminated with no output** after ~178k tokens. It died before touching the
+tree (`~/dev/vllm` verified still `88e00426d0`, 0 dirty, no sequencer), so nothing was salvageable and
+nothing needed cleanup. Items 97 and 98 succeeded in the same window, so this is 2 successes / 1 death —
+not yet the two-deaths trigger, but the pattern is that a `worker` runs as a **fork of this orchestrator's
+context**, and by now that fork is enormous. Redispatch with **`context: fresh`** (the brief is a file, so
+nothing is lost) and re-check `git log 88e00426d..HEAD | wc -l` before adopting any report.
+
+**If a child lands a pick and this session has already ended:** the commit will sit unpushed on
+`jetson-222:~/dev/vllm`. The next session must, before anything else: read
+`git -C ~/dev/vllm log --oneline origin/mitaka/backport..HEAD`, verify faithfulness + silent-loss per
+`worker-brief.md`, then `git fetch jetson-222:~/dev/vllm mitaka/backport` → `merge --ff-only` →
+`git push -q origin mitaka/backport` → assert `ls-remote` == jetson tip → append the `outcomes.log.md`
+entry → tick the tracker → `ledger-sync.sh`. An unpushed, unbookkept landing is the item-80 gap.
