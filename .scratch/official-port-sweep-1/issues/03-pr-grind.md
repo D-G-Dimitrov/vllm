@@ -136,7 +136,7 @@ Work every official PR from the wtdcode fork point through the sweep cutoff, **o
 - [x] f9d666f917 [KV Offload] Forward ownership in KV cache events (#52067)
 - [x] 2cf82bcdd1 [Bugfix][DCP] Fix NVIDIA DeepSeek-V3.2 / GLM-5.2 fused attention (#50005)
 - [ ] fdbf2ddbd2 [Bugfix][CPU] Fix several bugs (#54042)
-- [ ] 2a61f060d3 [XPU] Ensure unquantized linear weight is N-contiguous (#53536)
+- [x] 2a61f060d3 [XPU] Ensure unquantized linear weight is N-contiguous (#53536)
 - [ ] c6c33f2b1f [CPU] Support FP16/BF16 persisted GDN state on AMX (#52191)
 - [ ] 1b9539d37c [Quantization][Autoround][XPU] Support AutoRound MXFP8 MoE models (#51248)
 - [ ] 5bfd76372d [Renderer] Shutdown the renderer properly.  (#52124)
