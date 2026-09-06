@@ -332,4 +332,97 @@ Evidence gathered:
 - `block_stride` kept as ours' generic rule (D2; upstream adopts ours at item 315).
 - `nixl/base_worker.py` `_layer_specs` leaf-vs-wrapper semantics (L3) - only exercised by the NIXL connector path.
 
-- [x] **CPU coverage attempt ABANDONED twice (env, not code)** - ran 36-suite then 13-suite CPU legs against the swap worktree (mounted :ro); both stalled after ~40 tests, and the first was found running Ray inside the container (ray::DashboardAgent/log_monitor/dashboard.py) while production served. Killed both; :8000 = 200 before and after; container removed. Evidence for 88b therefore rests on the 10/10 runtime-import gate + silent-loss scans + the predicate override-map review, NOT on test coverage - and the suites that would prove it are 4 of the 7 still-conflicted test files, so they get rerun AFTER 88a. Handoff: /var/folders/mg/nmqqj1m902b5vff55hhnbgtr0000gn/T/handoff-2026-09-06-port-grind-and-swap.md
+- [x] **CPU coverage attempt ABANDONED twice (env, not code)** - ran 36-suite then 13-suite CPU legs against the swap worktree (mounted :ro); both stalled after ~40 tests, and the first was found running Ray inside the container (ray::DashboardAgent/log_monitor/dashboard.py) while production served. Killed both; :8000 = 200 before and after; container removed. Evidence for 88b therefore rests on the 10/10 runtime-import gate + silent-loss scans + the predicate override-map review, NOT on test coverage - and the suites that would prove it are 4 of the 7 still-conflicted test files, so they get rerun AFTER 88a. Handoff: `.scratch/official-port-sweep-1/handoffs/handoff-2026-09-06-port-grind-and-swap.md` (now archived in the ledger, not a temp dir).
+
+## 88a RESOLUTION LOG (orchestrator-direct, 2026-09-06) — 9/9 model files DONE
+
+Measured divergence first (stage2 vs stage3, per file) — this **shrank** ticket 05's "re-apply ~315 lines":
+2 files provably lossless-take-THEIRS (`ours-only=0`, order-preserving containment re-proven with
+`comm -23 <(sort :2) <(sort :3)`: `amd/model.py`, `common/ple.py`), 1 lossless-take-OURS (`config.py`,
+`theirs-only=0`), 6 hunk-level unions. The `never --theirs` rule is about shared-infra files; here it was
+permitted only after that containment proof.
+
+- [x] `amd/model.py`, `common/ple.py` — take theirs (containment proven, `ours-only=0`).
+- [x] `config.py` — take ours (official adds nothing).
+- [x] `nvidia/model_state.py`, `nvidia/model.py` — **all hunks theirs; files are byte-identical to
+      official's blob**. Justification for dropping the 4+5 wtdcode-only lines: all of them are the
+      PP>1 path (`uses_ngram_embedding and get_pp_group().is_first_rank`; the `skip_substrs.append
+      ("hyper_connection_mixer.")` branch). Official's PP fail-fast already landed in 88b at
+      `model_executor/models/config.py:879-884` (gated on `ple_layer_ids`), so `is_first_rank` is True
+      whenever execution reaches it, and `ignore_unexpected_prefixes` (models/utils.py:230) is
+      equivalent when `hyper_connection_mixer is not None` (PP=1). Verified the dropped import had no
+      other use. Same-author-later-revision pattern as D1.
+- [x] `amd/mtp.py`, `nvidia/mtp.py` — unions: took official's fused-shared-expert plumbing (import,
+      `Qwen4ExpSparseMoeBlock`, `is_fused_shared_expert_enabled`, `enabled=` arg — convention already
+      matches the ported `qwen3_next.py:745`, and `maybe_fuse_shared_experts` already accepts
+      `enabled` at models/utils.py:479) and **kept both wtdcode augmentations**: the compressed-tensors
+      MTP ignore-list extension (AWQ W4A16 exports that leave the draft in bf16 — product-relevant) and
+      nvidia's `is_first_rank or hidden_states is not None` draft-PP relaxation. Diff vs official blob =
+      exactly those preserved lines, nothing else.
+- [x] `amd/ple_layer.py` — 8 hunks → all theirs except wtdcode's `# TODO: need double-check`. Every
+      wtdcode-only line here was the *same logic* official re-expressed: module-level hash helpers →
+      classmethods (formula compared line by line), inline vocab layout → `_make_vocab_layout`, and
+      `copy_ple_embedding_shard_(...)` → `PLEVocabParallelEmbedding.weight_loader`, which **calls that
+      same helper with the same `shard_indices` bounds** (read it). So this file is official's, provably.
+- [x] `nvidia/ple_layer.py` — the real work, 22 hunks. Official restructured the PLE entry point
+      (`compute_ngram_ids` + a new graph-excluded custom op `vllm::qwen4_exp_compute_ple_ngram_ids`)
+      where wtdcode has `forward_impl` under its `PleOffloadLayer` CPU-offload base.
+      **Trap: official's subclass-level `forward()` would silently clobber `PleOffloadLayer.forward`,**
+      which is what routes the GPU worker to the IPC semaphore — take-theirs there disables PLE CPU
+      offload with no error at all. Resolution: keep wtdcode's base class + official's classmethods, take
+      official's `compute_ngram_ids` (with wtdcode's offload-only buffer narrowing kept inside it), and
+      fold official's `forward` body into `forward_impl`, branching on `is_offload_process()` — direct
+      call in the CPU subprocess (no forward context to resolve `layer_name`, and it never captures a
+      CUDA Graph), the custom op on the GPU path. Kept wtdcode's `get_offload_output_dtype` and the
+      `output_buffer` IPC fast path; took official's `layer_name` param and
+      `with torch.device(PleOffloadLayer.get_target_device())` construction context together.
+      Note `PleOffloadLayer.__init_subclass__` replaces `__init__` with a `functools.wraps` wrapper, so a
+      `co_varnames` probe reads the wrapper, not the real signature — check signatures textually.
+- [x] **RUNTIME IMPORT GATE for 88a PASSED**: nvidia+shared-infra **16/16**, amd-only **6/6**, GPU hidden,
+      inside `mitakad/vllm:…d4d703c` with `PYTHONPATH` on the worktree. Importing nvidia and amd variants
+      in ONE process fails by design (both register `vllm::qwen4_exp_grouped_gemma_rmsnorm` /
+      `qwen4_exp_ple_short_conv`) — pre-existing two-variant layout, not a resolution defect; test each
+      variant in its own process.
+      Structural checks: nvidia class base=`PleOffloadLayer`, has `compute_ngram_ids` AND `forward_impl`,
+      **`forward` NOT overridden**, `get_offload_output_dtype` present, custom op registered, L1
+      `_get_kv_cache_groups_uniform_groups` callable alongside official's `_get_packed_kv_cache_groups`,
+      `prefix_cacheable` alias present, `KpoolTailSpec`/`CircularBufferSpec` intact. amd class keeps
+      official's `forward` (no offload there) and registers no op — the op is nvidia-only, while
+      `config/compilation.py` lists its name unconditionally (harmless: that list is a name allow-list).
+- Symbol-NAME silent-loss scan vs HEAD clean on all 9.
+
+Remaining for the swap: 7 test files (still unmerged), then the narrow CPU leg, rebase onto the moving
+tip, one `-x` commit, and push as a branch only.
+
+## 88c TEST FILES (4 of 7 resolved, 2026-09-06 session 2)
+
+- [x] `test_gpu_autoregressive_speculator.py`, `test_gpu_model_runner_v2.py` — 1 hunk each, take theirs,
+      both files byte-identical to official's blob. The speculator one monkeypatches
+      `_target_feeds_hc_residual`, i.e. it *follows* Fork #2's gate; taking ours there would have kept a
+      test of a guard we already deleted.
+- [x] `tests/v1/core/test_kv_cache_utils.py` — only ONE 1-line conflict (the `vllm.config` import; resolved
+      as a UNION, ours needs `KVTransferConfig`, official adds `CacheConfig`). The 605/63 line divergence
+      merged silently and that is exactly where the damage was: **the auto-merge deleted 5 wtdcode tests**
+      (`test_group_and_unify_kv_cache_specs_*` x3, `test_deepseek_v4_annotation_requires_model_version`,
+      `test_deepseek_v4_draft_group_annotated_on_group_and_unify_path`) — the tests that cover the very
+      functions 88b restored via L1 — and dropped **one official test**
+      (`test_mixed_precision_kv_cache_with_uniform_type_specs`) into a region our tree had modified.
+      Both sides re-applied; defs now 110 ours + 4 official-only = 114, LOST_FROM_OURS and
+      MISSING_OFFICIAL both empty. NOTE: whether those 5 restored tests still PASS is unresolved and is a
+      real re-grill candidate, because 88b also took official's `hf_config.model_type=="deepseek_v4"`
+      eagle gate alongside our `spec.model_version` predicate.
+- [x] `tests/v1/kv_connector/unit/test_nixl_desc_geometry.py` — all 7 hunks theirs, deliberately as a UNIT:
+      official rewrote the fixture around `tensor_regions` and its helpers arrive in the ours-empty hunks,
+      so any mix would reference undefined variables. Consistency check: our resolved interface uses
+      `tokens_per_state` (official's rename) and `compress_ratio` appears nowhere, so the fixture matches
+      the code we shipped.
+
+### The NIXL suite cannot validate anything on jetson-222 (corrects an assumption in the handoff)
+Ran it: swap tree **196 failed / 6 passed**; parent tree `e16d574bb` **200 failed / 1 passed**, both with
+`NIXL is not available` / `NIXL agent config is not available` in the log. The dominant failure is
+`assert block_stride % physical_page_size`-family arithmetic in `register_kv_caches`, and that assert
+exists in BOTH trees (1 occurrence each in ours' parent and official's blob), so it is not an auto-merge
+chimera and not introduced by the swap. Conclusion: **`test_nixl_desc_geometry.py` is NOT usable as 88b
+evidence in this image** — the handoff's "these 4 suites would prove 88b" list must drop it (or gain a
+NIXL-capable runner). The swap tree is strictly better than base here, which is reassuring but proves
+nothing. Add to the GPU/NIXL validation list.
