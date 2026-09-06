@@ -1,0 +1,15 @@
+=================== 02-fp16  (profile ds4-x4-fp16) ===================
+----------------------------------------------------------------------
+>> [jetson-233] docker rm -f any 'jetson-cluster-node*' container
+>> [jetson-234] docker rm -f any 'jetson-cluster-node*' container
+>> [jetson-223] docker rm -f any 'jetson-cluster-node*' container
+>> [jetson-232] docker rm -f any 'jetson-cluster-node*' container
+>> [jetson-233] detached launch profile=ds4-x4-fp16  (log: /tmp/campaign/02-fp16-head.log)
+launched-pid=802831
+>> [jetson-234] detached launch profile=ds4-x4-fp16-worker  (log: /tmp/campaign/02-fp16-worker-10.10.10.1.log)
+launched-pid=192252
+>> [jetson-223] detached launch profile=ds4-x4-fp16-worker  (log: /tmp/campaign/02-fp16-worker-10.10.10.2.log)
+launched-pid=183430
+>> [jetson-232] detached launch profile=ds4-x4-fp16-worker  (log: /tmp/campaign/02-fp16-worker-10.10.10.3.log)
+launched-pid=153581
+>> waiting for http://jetson-233:8000/health (timeout 1200s) ...

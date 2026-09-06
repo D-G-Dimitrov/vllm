@@ -1,0 +1,64 @@
++ set -u
+++ dirname ./01-baseline.sh
++ cd .
++ source ./lib.sh
+++++ dirname ./lib.sh
++++ cd .
++++ pwd
+++ STEP_ROOT=/Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps
++++ cd /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/..
++++ pwd
+++ CAMPAIGN_DIR=/Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign
+++ LOG_ROOT=/Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/logs
+++ REPORT=/Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/report.md
+++ DATA_DIR=/Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/data
+++ IMAGE=vllm:0.27.1-r39.2.tegra-aarch64-cp312-cu132-24.04-wtdcode.dsv4.v5
+++ HEAD_SSH=jetson-233
+++ MASTER_ADDR=10.10.10.4
+++ API_KEY=
+++ TOOLING_DIR=/Users/mitaka/.pi/agent/skills/mitaka-skills/start-jetson-cluster/scripts
+++ PROFILE_DIR=/Users/mitaka/.pi/agent/skills/mitaka-skills/start-jetson-cluster/scripts/vllm-profiles
+++ NODES=("jetson-233 10.10.10.4 head" "jetson-234 10.10.10.1 1" "jetson-223 10.10.10.2 2" "jetson-232 10.10.10.3 3")
+++ DRY_RUN=0
+++ ASSUME_YES=0
+++ VERDICT_LINE=
++ '[' '' = --dry-run ']'
++ STEP=01-baseline
++ PROFILE=ds4-x4
++ step_init 01-baseline ds4-x4 'Task 2 — pinned bf16 reference baseline'
++ STEP=01-baseline
++ PROFILE=ds4-x4
++ STEP_LOG_DIR=/Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/logs/01-baseline
++ mkdir -p /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/logs/01-baseline
++ hr
++ printf '%s\n' ----------------------------------------------------------------------
+++ rdate
+++ date '+%Y-%m-%d %H:%M:%S'
++ echo '## 2026-08-28 21:24:21  step=01-baseline  profile=ds4-x4  Task 2 — pinned bf16 reference baseline'
++ echo 'image=vllm:0.27.1-r39.2.tegra-aarch64-cp312-cu132-24.04-wtdcode.dsv4.v5  master=10.10.10.4  dry_run=0'
++ echo 'regime=262k context  num_seqs=profile  (QUICK override active when != 262k)'
+++ remote_q jetson-233 'nvpmodel -q | head -1'
+++ local a=jetson-233
+++ shift
+++ '[' 0 = 1 ']'
+++ ssh -o ConnectTimeout=12 -o BatchMode=yes jetson-233 'nvpmodel -q | head -1'
++ echo 'power_head=NV Power Mode: MODE_50W'
++ confirm_gate GO-baseline
++ local step=GO-baseline
++ '[' 0 = 1 ']'
++ '[' 0 = 1 ']'
++ echo ''
+
++ echo '!! This step RESTARTS the cluster: it kills the current serving on all 4 nodes'
+!! This step RESTARTS the cluster: it kills the current serving on all 4 nodes
++ echo '!! (including the model THIS Pi agent runs on) and launches profile ds4-x4.'
+!! (including the model THIS Pi agent runs on) and launches profile ds4-x4.
++ echo ''
+
++ echo '    Type exactly:  GO-baseline        (Ctrl-C to abort)'
+    Type exactly:  GO-baseline        (Ctrl-C to abort)
++ read -r ans
++ '[' '' = GO-baseline ']'
++ echo 'aborted — nothing was changed'
+aborted — nothing was changed
++ exit 1

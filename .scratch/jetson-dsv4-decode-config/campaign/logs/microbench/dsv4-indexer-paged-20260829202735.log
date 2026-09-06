@@ -1,0 +1,23 @@
+
+=== indexer MQA logits, paged decode (H=64, D=128, block_size=64, next_n=6, num_warps=4) ===
+ B  n_cmp     ctx   CTAs  q decode  maxnreg  stages  regs  spill   smem    CTA/SM  occ%       us  ns/CTA
+ 4    940    3760    360    kernel        -       2   136      0  18432  3 (regs)  18.8    90.03   250.1
+ 4    940    3760    360      host        -       2   133      0  18432  3 (regs)  18.8    75.91   210.9
+ 4    940    3760    360    kernel      128       2   128      2  18432  4 (regs)  25.0    87.47   243.0
+ 4    940    3760    360      host      128       2   128      0  18432  4 (regs)  25.0    72.71   202.0
+ 4  26750  107000  10032    kernel        -       2   136      0  18432  3 (regs)  18.8  2286.07   227.9
+ 4  26750  107000  10032      host        -       2   133      0  18432  3 (regs)  18.8  1969.33   196.3
+ 4  26750  107000  10032    kernel      128       2   128      2  18432  4 (regs)  25.0  2235.85   222.9
+ 4  26750  107000  10032      host      128       2   128      0  18432  4 (regs)  25.0  1808.17   180.2
+12    940    3760   1080    kernel        -       2   136      0  18432  3 (regs)  18.8   252.99   234.2
+12    940    3760   1080      host        -       2   133      0  18432  3 (regs)  18.8   213.46   197.6
+12    940    3760   1080    kernel      128       2   128      2  18432  4 (regs)  25.0   246.81   228.5
+12    940    3760   1080      host      128       2   128      0  18432  4 (regs)  25.0   200.02   185.2
+12  26750  107000  30096    kernel        -       2   136      0  18432  3 (regs)  18.8  6852.20   227.7
+12  26750  107000  30096      host        -       2   133      0  18432  3 (regs)  18.8  5971.19   198.4
+12  26750  107000  30096    kernel      128       2   128      2  18432  4 (regs)  25.0  6675.82   221.8
+12  26750  107000  30096      host      128       2   128      0  18432  4 (regs)  25.0  5420.70   180.1
+    grid=(24, 15): in-kernel vs hoisted q decode bit-identical
+    grid=(24, 418): in-kernel vs hoisted q decode bit-identical
+    grid=(72, 15): in-kernel vs hoisted q decode bit-identical
+    grid=(72, 418): in-kernel vs hoisted q decode bit-identical

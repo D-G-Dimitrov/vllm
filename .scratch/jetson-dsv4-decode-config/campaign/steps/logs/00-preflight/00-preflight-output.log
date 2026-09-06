@@ -1,0 +1,358 @@
++ set -u
+++ dirname ./00-preflight.sh
++ cd .
++ source ./lib.sh
+++++ dirname ./lib.sh
++++ cd .
++++ pwd
+++ STEP_ROOT=/Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps
++++ cd /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/..
++++ pwd
+++ CAMPAIGN_DIR=/Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign
+++ LOG_ROOT=/Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/logs
+++ REPORT=/Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/report.md
+++ DATA_DIR=/Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/data
+++ IMAGE=vllm:0.27.1-r39.2.tegra-aarch64-cp312-cu132-24.04-wtdcode.dsv4.v5
+++ HEAD_SSH=jetson-233
+++ MASTER_ADDR=10.10.10.4
+++ API_KEY=
+++ TOOLING_DIR=/Users/mitaka/.pi/agent/skills/mitaka-skills/start-jetson-cluster/scripts
+++ PROFILE_DIR=/Users/mitaka/.pi/agent/skills/mitaka-skills/start-jetson-cluster/scripts/vllm-profiles
+++ NODES=("jetson-233 10.10.10.4 head" "jetson-234 10.10.10.1 1" "jetson-223 10.10.10.2 2" "jetson-232 10.10.10.3 3")
+++ DRY_RUN=0
+++ ASSUME_YES=0
+++ VERDICT_LINE=
++ '[' '' = --dry-run ']'
++ STEP=00-preflight
++ PROFILE='(current serving — snapshot)'
++ step_init 00-preflight '(current serving — snapshot)' 'pre-campaign snapshot + dataset build'
++ STEP=00-preflight
++ PROFILE='(current serving — snapshot)'
++ STEP_LOG_DIR=/Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/logs/00-preflight
++ mkdir -p /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/logs/00-preflight
++ hr
++ printf '%s\n' ----------------------------------------------------------------------
+++ rdate
+++ date '+%Y-%m-%d %H:%M:%S'
++ echo '## 2026-08-28 21:22:50  step=00-preflight  profile=(current serving — snapshot)  pre-campaign snapshot + dataset build'
++ echo 'image=vllm:0.27.1-r39.2.tegra-aarch64-cp312-cu132-24.04-wtdcode.dsv4.v5  master=10.10.10.4  dry_run=0'
++ echo 'regime=262k context  num_seqs=profile  (QUICK override active when != 262k)'
+++ remote_q jetson-233 'nvpmodel -q | head -1'
+++ local a=jetson-233
+++ shift
+++ '[' 0 = 1 ']'
+++ ssh -o ConnectTimeout=12 -o BatchMode=yes jetson-233 'nvpmodel -q | head -1'
++ echo 'power_head=NV Power Mode: MODE_50W'
++ echo ''
+
++ say '=================== 00-preflight ==================='
++ printf '%s\n' '=================== 00-preflight ==================='
+=================== 00-preflight ===================
++ say 'image=vllm:0.27.1-r39.2.tegra-aarch64-cp312-cu132-24.04-wtdcode.dsv4.v5  head=jetson-233  master=10.10.10.4  script_dir=/Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps'
++ printf '%s\n' 'image=vllm:0.27.1-r39.2.tegra-aarch64-cp312-cu132-24.04-wtdcode.dsv4.v5  head=jetson-233  master=10.10.10.4  script_dir=/Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps'
+image=vllm:0.27.1-r39.2.tegra-aarch64-cp312-cu132-24.04-wtdcode.dsv4.v5  head=jetson-233  master=10.10.10.4  script_dir=/Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps
++ hr
++ printf '%s\n' ----------------------------------------------------------------------
+----------------------------------------------------------------------
++ check_all_nodes
++ local bad=0 entry a
++ for entry in '"${NODES[@]}"'
++ set -- jetson-233 10.10.10.4 head
++ a=jetson-233
++ ssh -o ConnectTimeout=10 -o BatchMode=yes jetson-233 true
++ for entry in '"${NODES[@]}"'
++ set -- jetson-234 10.10.10.1 1
++ a=jetson-234
++ ssh -o ConnectTimeout=10 -o BatchMode=yes jetson-234 true
++ for entry in '"${NODES[@]}"'
++ set -- jetson-223 10.10.10.2 2
++ a=jetson-223
++ ssh -o ConnectTimeout=10 -o BatchMode=yes jetson-223 true
++ for entry in '"${NODES[@]}"'
++ set -- jetson-232 10.10.10.3 3
++ a=jetson-232
++ ssh -o ConnectTimeout=10 -o BatchMode=yes jetson-232 true
++ '[' 0 = 0 ']'
++ say '>> all 4 nodes reachable'
++ printf '%s\n' '>> all 4 nodes reachable'
+>> all 4 nodes reachable
++ return 0
++ mkdir -p /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/logs/00-preflight
++ say '>> snapshot: containers + power per node'
++ printf '%s\n' '>> snapshot: containers + power per node'
+>> snapshot: containers + power per node
+++ rdate
+++ date '+%Y-%m-%d %H:%M:%S'
++ echo '--- 2026-08-28 21:22:51 pre-campaign snapshot ---'
++ echo image_pinned=vllm:0.27.1-r39.2.tegra-aarch64-cp312-cu132-24.04-wtdcode.dsv4.v5
++ for entry in '"${NODES[@]}"'
++ set -- jetson-233 10.10.10.4 head
++ a=jetson-233
++ ip=10.10.10.4
++ role=head
++ echo '--- node jetson-233 (10.10.10.4, head) ---'
+++ remote_q jetson-233 'docker ps -a --filter name=jetson-cluster-node --format '\''{{.Names}}\t{{.Status}}\t{{.Image}}'\'' 2>/dev/null'
+++ local a=jetson-233
+++ shift
+++ '[' 0 = 1 ']'
+++ ssh -o ConnectTimeout=12 -o BatchMode=yes jetson-233 'docker ps -a --filter name=jetson-cluster-node --format '\''{{.Names}}\t{{.Status}}\t{{.Image}}'\'' 2>/dev/null'
++ echo 'containers: '
+++ remote_q jetson-233 'nvpmodel -q 2>/dev/null | head -1'
+++ local a=jetson-233
+++ shift
+++ '[' 0 = 1 ']'
+++ ssh -o ConnectTimeout=12 -o BatchMode=yes jetson-233 'nvpmodel -q 2>/dev/null | head -1'
++ echo 'nvpmodel : NV Power Mode: MODE_50W'
++ for entry in '"${NODES[@]}"'
++ set -- jetson-234 10.10.10.1 1
++ a=jetson-234
++ ip=10.10.10.1
++ role=1
++ echo '--- node jetson-234 (10.10.10.1, 1) ---'
+++ remote_q jetson-234 'docker ps -a --filter name=jetson-cluster-node --format '\''{{.Names}}\t{{.Status}}\t{{.Image}}'\'' 2>/dev/null'
+++ local a=jetson-234
+++ shift
+++ '[' 0 = 1 ']'
+++ ssh -o ConnectTimeout=12 -o BatchMode=yes jetson-234 'docker ps -a --filter name=jetson-cluster-node --format '\''{{.Names}}\t{{.Status}}\t{{.Image}}'\'' 2>/dev/null'
++ echo 'containers: '
+++ remote_q jetson-234 'nvpmodel -q 2>/dev/null | head -1'
+++ local a=jetson-234
+++ shift
+++ '[' 0 = 1 ']'
+++ ssh -o ConnectTimeout=12 -o BatchMode=yes jetson-234 'nvpmodel -q 2>/dev/null | head -1'
++ echo 'nvpmodel : NV Power Mode: MODE_50W'
++ for entry in '"${NODES[@]}"'
++ set -- jetson-223 10.10.10.2 2
++ a=jetson-223
++ ip=10.10.10.2
++ role=2
++ echo '--- node jetson-223 (10.10.10.2, 2) ---'
+++ remote_q jetson-223 'docker ps -a --filter name=jetson-cluster-node --format '\''{{.Names}}\t{{.Status}}\t{{.Image}}'\'' 2>/dev/null'
+++ local a=jetson-223
+++ shift
+++ '[' 0 = 1 ']'
+++ ssh -o ConnectTimeout=12 -o BatchMode=yes jetson-223 'docker ps -a --filter name=jetson-cluster-node --format '\''{{.Names}}\t{{.Status}}\t{{.Image}}'\'' 2>/dev/null'
++ echo 'containers: '
+++ remote_q jetson-223 'nvpmodel -q 2>/dev/null | head -1'
+++ local a=jetson-223
+++ shift
+++ '[' 0 = 1 ']'
+++ ssh -o ConnectTimeout=12 -o BatchMode=yes jetson-223 'nvpmodel -q 2>/dev/null | head -1'
++ echo 'nvpmodel : NV Power Mode: MODE_50W'
++ for entry in '"${NODES[@]}"'
++ set -- jetson-232 10.10.10.3 3
++ a=jetson-232
++ ip=10.10.10.3
++ role=3
++ echo '--- node jetson-232 (10.10.10.3, 3) ---'
+++ remote_q jetson-232 'docker ps -a --filter name=jetson-cluster-node --format '\''{{.Names}}\t{{.Status}}\t{{.Image}}'\'' 2>/dev/null'
+++ local a=jetson-232
+++ shift
+++ '[' 0 = 1 ']'
+++ ssh -o ConnectTimeout=12 -o BatchMode=yes jetson-232 'docker ps -a --filter name=jetson-cluster-node --format '\''{{.Names}}\t{{.Status}}\t{{.Image}}'\'' 2>/dev/null'
++ echo 'containers: '
+++ remote_q jetson-232 'nvpmodel -q 2>/dev/null | head -1'
+++ local a=jetson-232
+++ shift
+++ '[' 0 = 1 ']'
+++ ssh -o ConnectTimeout=12 -o BatchMode=yes jetson-232 'nvpmodel -q 2>/dev/null | head -1'
++ echo 'nvpmodel : NV Power Mode: MODE_50W'
++ cat /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/logs/00-preflight/snapshot.txt
++ sed 's/^/    /'
+++ relpath /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/logs/00-preflight/snapshot.txt
+++ python3 -c 'import os,sys;print(os.path.relpath(sys.argv[1],os.getcwd()))' /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/logs/00-preflight/snapshot.txt
++ say '>> snapshot saved: logs/00-preflight/snapshot.txt'
++ printf '%s\n' '>> snapshot saved: logs/00-preflight/snapshot.txt'
+>> snapshot saved: logs/00-preflight/snapshot.txt
++ say '>> capturing current head container docker log (the pre-campaign bf16 baseline)'
++ printf '%s\n' '>> capturing current head container docker log (the pre-campaign bf16 baseline)'
+>> capturing current head container docker log (the pre-campaign bf16 baseline)
+++ remote_q jetson-233 'docker ps --filter name=jetson-cluster-node --format '\''{{.Names}}'\'' | head -1'
+++ local a=jetson-233
+++ shift
+++ '[' 0 = 1 ']'
+++ ssh -o ConnectTimeout=12 -o BatchMode=yes jetson-233 'docker ps --filter name=jetson-cluster-node --format '\''{{.Names}}'\'' | head -1'
++ hname=
++ '[' -n '' ']'
++ '[' 0 = 1 ']'
++ say '!! no running head container found — pre-campaign baseline facts unavailable'
++ printf '%s\n' '!! no running head container found — pre-campaign baseline facts unavailable'
+!! no running head container found — pre-campaign baseline facts unavailable
++ note '    NOTE: no live container at preflight time — Task 4/5 will fall back to 01-baseline facts'
+++ dirname /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/report.md
++ mkdir -p /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps
++ printf '%s\n' '    NOTE: no live container at preflight time — Task 4/5 will fall back to 01-baseline facts'
++ say '>> recording tooling versions (Mac vs head) — no overwrite'
++ printf '%s\n' '>> recording tooling versions (Mac vs head) — no overwrite'
+>> recording tooling versions (Mac vs head) — no overwrite
++ remote_q jetson-233 'md5sum ~/dev/vllm-profiles.sh ~/dev/run-head.sh ~/dev/run-worker.sh'
++ md5 -q /Users/mitaka/.pi/agent/skills/mitaka-skills/start-jetson-cluster/scripts/vllm-profiles.sh /Users/mitaka/.pi/agent/skills/mitaka-skills/start-jetson-cluster/scripts/run-head.sh /Users/mitaka/.pi/agent/skills/mitaka-skills/start-jetson-cluster/scripts/run-worker.sh
+++ relpath /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/logs/00-preflight/mac-tooling.md5
+++ python3 -c 'import os,sys;print(os.path.relpath(sys.argv[1],os.getcwd()))' /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/logs/00-preflight/mac-tooling.md5
+++ relpath /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/logs/00-preflight/node-tooling.md5
+++ python3 -c 'import os,sys;print(os.path.relpath(sys.argv[1],os.getcwd()))' /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/logs/00-preflight/node-tooling.md5
++ say '>> md5s: logs/00-preflight/mac-tooling.md5 vs logs/00-preflight/node-tooling.md5'
++ printf '%s\n' '>> md5s: logs/00-preflight/mac-tooling.md5 vs logs/00-preflight/node-tooling.md5'
+>> md5s: logs/00-preflight/mac-tooling.md5 vs logs/00-preflight/node-tooling.md5
++ say '>> building datasets (sharegpt.json, long131k.jsonl, identity_prompt.txt)'
++ printf '%s\n' '>> building datasets (sharegpt.json, long131k.jsonl, identity_prompt.txt)'
+>> building datasets (sharegpt.json, long131k.jsonl, identity_prompt.txt)
++ python3 /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/data/build_datasets.py /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/data/out
+[build] sharegpt: 16 conversations
+[build] long prompt: 552869 chars x 1162 paragraphs (~138217 tokens est.)
+[build] wrote /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/data/out/sharegpt.json (10787 bytes)
+[build] wrote /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/data/out/long131k.jsonl (555206 bytes)
+[build] wrote /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/data/out/identity_prompt.txt (754 bytes)
++ '[' -s /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/data/out/sharegpt.json ']'
++ '[' 0 = 0 ']'
++ remote_q jetson-233 'mkdir -p /tmp/campaign'
++ local a=jetson-233
++ shift
++ '[' 0 = 1 ']'
++ ssh -o ConnectTimeout=12 -o BatchMode=yes jetson-233 'mkdir -p /tmp/campaign'
++ for f in sharegpt.json long131k.jsonl identity_prompt.txt
++ scp -q -o ConnectTimeout=12 /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/data/out/sharegpt.json jetson-233:/tmp/campaign/sharegpt.json
++ for f in sharegpt.json long131k.jsonl identity_prompt.txt
++ scp -q -o ConnectTimeout=12 /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/data/out/long131k.jsonl jetson-233:/tmp/campaign/long131k.jsonl
++ for f in sharegpt.json long131k.jsonl identity_prompt.txt
++ scp -q -o ConnectTimeout=12 /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/data/out/identity_prompt.txt jetson-233:/tmp/campaign/identity_prompt.txt
++ scp -q -o ConnectTimeout=12 /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/remote-smoke.sh /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/identity_sample.sh jetson-233:/tmp/campaign/
++ say '>> datasets + remote helpers on jetson-233:/tmp/campaign/'
++ printf '%s\n' '>> datasets + remote helpers on jetson-233:/tmp/campaign/'
+>> datasets + remote helpers on jetson-233:/tmp/campaign/
+++ wc -c
+++ wc -c
++ note '    data: sharegpt=   10787B  long131k=  555206B'
+++ dirname /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/report.md
++ mkdir -p /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps
++ printf '%s\n' '    data: sharegpt=   10787B  long131k=  555206B'
++ deploy_arm_profiles
++ local i entry a prof
++ say '>> deploying arm profiles to all nodes: ds4-x4-fp16.sh ds4-x4-kv96.sh ds4-x4-btmp.sh'
++ printf '%s\n' '>> deploying arm profiles to all nodes: ds4-x4-fp16.sh ds4-x4-kv96.sh ds4-x4-btmp.sh'
+>> deploying arm profiles to all nodes: ds4-x4-fp16.sh ds4-x4-kv96.sh ds4-x4-btmp.sh
++ '[' 0 = 1 ']'
++ for i in 0 1 2 3
++ entry='jetson-233 10.10.10.4 head'
++ set -- jetson-233 10.10.10.4 head
++ a=jetson-233
++ ssh -o ConnectTimeout=12 -o BatchMode=yes jetson-233 'mkdir -p ~/dev/vllm-profiles'
++ for prof in ds4-x4-fp16.sh ds4-x4-kv96.sh ds4-x4-btmp.sh
++ scp -q -o ConnectTimeout=12 /Users/mitaka/.pi/agent/skills/mitaka-skills/start-jetson-cluster/scripts/vllm-profiles/ds4-x4-fp16.sh 'jetson-233:~/dev/vllm-profiles/ds4-x4-fp16.sh'
++ for prof in ds4-x4-fp16.sh ds4-x4-kv96.sh ds4-x4-btmp.sh
++ scp -q -o ConnectTimeout=12 /Users/mitaka/.pi/agent/skills/mitaka-skills/start-jetson-cluster/scripts/vllm-profiles/ds4-x4-kv96.sh 'jetson-233:~/dev/vllm-profiles/ds4-x4-kv96.sh'
++ for prof in ds4-x4-fp16.sh ds4-x4-kv96.sh ds4-x4-btmp.sh
++ scp -q -o ConnectTimeout=12 /Users/mitaka/.pi/agent/skills/mitaka-skills/start-jetson-cluster/scripts/vllm-profiles/ds4-x4-btmp.sh 'jetson-233:~/dev/vllm-profiles/ds4-x4-btmp.sh'
++ for i in 0 1 2 3
++ entry='jetson-234 10.10.10.1 1'
++ set -- jetson-234 10.10.10.1 1
++ a=jetson-234
++ ssh -o ConnectTimeout=12 -o BatchMode=yes jetson-234 'mkdir -p ~/dev/vllm-profiles'
++ for prof in ds4-x4-fp16.sh ds4-x4-kv96.sh ds4-x4-btmp.sh
++ scp -q -o ConnectTimeout=12 /Users/mitaka/.pi/agent/skills/mitaka-skills/start-jetson-cluster/scripts/vllm-profiles/ds4-x4-fp16.sh 'jetson-234:~/dev/vllm-profiles/ds4-x4-fp16.sh'
++ for prof in ds4-x4-fp16.sh ds4-x4-kv96.sh ds4-x4-btmp.sh
++ scp -q -o ConnectTimeout=12 /Users/mitaka/.pi/agent/skills/mitaka-skills/start-jetson-cluster/scripts/vllm-profiles/ds4-x4-kv96.sh 'jetson-234:~/dev/vllm-profiles/ds4-x4-kv96.sh'
++ for prof in ds4-x4-fp16.sh ds4-x4-kv96.sh ds4-x4-btmp.sh
++ scp -q -o ConnectTimeout=12 /Users/mitaka/.pi/agent/skills/mitaka-skills/start-jetson-cluster/scripts/vllm-profiles/ds4-x4-btmp.sh 'jetson-234:~/dev/vllm-profiles/ds4-x4-btmp.sh'
++ for i in 0 1 2 3
++ entry='jetson-223 10.10.10.2 2'
++ set -- jetson-223 10.10.10.2 2
++ a=jetson-223
++ ssh -o ConnectTimeout=12 -o BatchMode=yes jetson-223 'mkdir -p ~/dev/vllm-profiles'
++ for prof in ds4-x4-fp16.sh ds4-x4-kv96.sh ds4-x4-btmp.sh
++ scp -q -o ConnectTimeout=12 /Users/mitaka/.pi/agent/skills/mitaka-skills/start-jetson-cluster/scripts/vllm-profiles/ds4-x4-fp16.sh 'jetson-223:~/dev/vllm-profiles/ds4-x4-fp16.sh'
++ for prof in ds4-x4-fp16.sh ds4-x4-kv96.sh ds4-x4-btmp.sh
++ scp -q -o ConnectTimeout=12 /Users/mitaka/.pi/agent/skills/mitaka-skills/start-jetson-cluster/scripts/vllm-profiles/ds4-x4-kv96.sh 'jetson-223:~/dev/vllm-profiles/ds4-x4-kv96.sh'
++ for prof in ds4-x4-fp16.sh ds4-x4-kv96.sh ds4-x4-btmp.sh
++ scp -q -o ConnectTimeout=12 /Users/mitaka/.pi/agent/skills/mitaka-skills/start-jetson-cluster/scripts/vllm-profiles/ds4-x4-btmp.sh 'jetson-223:~/dev/vllm-profiles/ds4-x4-btmp.sh'
++ for i in 0 1 2 3
++ entry='jetson-232 10.10.10.3 3'
++ set -- jetson-232 10.10.10.3 3
++ a=jetson-232
++ ssh -o ConnectTimeout=12 -o BatchMode=yes jetson-232 'mkdir -p ~/dev/vllm-profiles'
++ for prof in ds4-x4-fp16.sh ds4-x4-kv96.sh ds4-x4-btmp.sh
++ scp -q -o ConnectTimeout=12 /Users/mitaka/.pi/agent/skills/mitaka-skills/start-jetson-cluster/scripts/vllm-profiles/ds4-x4-fp16.sh 'jetson-232:~/dev/vllm-profiles/ds4-x4-fp16.sh'
++ for prof in ds4-x4-fp16.sh ds4-x4-kv96.sh ds4-x4-btmp.sh
++ scp -q -o ConnectTimeout=12 /Users/mitaka/.pi/agent/skills/mitaka-skills/start-jetson-cluster/scripts/vllm-profiles/ds4-x4-kv96.sh 'jetson-232:~/dev/vllm-profiles/ds4-x4-kv96.sh'
++ for prof in ds4-x4-fp16.sh ds4-x4-kv96.sh ds4-x4-btmp.sh
++ scp -q -o ConnectTimeout=12 /Users/mitaka/.pi/agent/skills/mitaka-skills/start-jetson-cluster/scripts/vllm-profiles/ds4-x4-btmp.sh 'jetson-232:~/dev/vllm-profiles/ds4-x4-btmp.sh'
++ say '>> greedy identity reference on the CURRENT (bf16) serving arm'
++ printf '%s\n' '>> greedy identity reference on the CURRENT (bf16) serving arm'
+>> greedy identity reference on the CURRENT (bf16) serving arm
++ identity_sample baseline-bf16 /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/logs/00-preflight
++ local label=baseline-bf16 outdir=/Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/logs/00-preflight
++ local rlog=/tmp/campaign/identity-baseline-bf16.json
++ say '>> greedy identity sample (baseline-bf16) against jetson-233'
++ printf '%s\n' '>> greedy identity sample (baseline-bf16) against jetson-233'
+>> greedy identity sample (baseline-bf16) against jetson-233
++ mkdir -p /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/logs/00-preflight
++ '[' 0 = 1 ']'
++ tail -2
+++ printf %q ''
++ sed 's/^/    /'
++ remote_q jetson-233 'API_KEY='\'''\'' bash /tmp/campaign/identity_sample.sh /tmp/campaign/identity_prompt.txt /tmp/campaign/identity-baseline-bf16.json'
++ local a=jetson-233
++ shift
++ '[' 0 = 1 ']'
++ ssh -o ConnectTimeout=12 -o BatchMode=yes jetson-233 'API_KEY='\'''\'' bash /tmp/campaign/identity_sample.sh /tmp/campaign/identity_prompt.txt /tmp/campaign/identity-baseline-bf16.json'
++ true
++ scp -q -o ConnectTimeout=12 jetson-233:/tmp/campaign/identity-baseline-bf16.json /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/logs/00-preflight/identity-baseline-bf16.json
++ true
++ '[' -s /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/logs/00-preflight/identity-baseline-bf16.json ']'
++ say '!! identity-baseline-bf16.json unavailable (server down or sampler failed)'
++ printf '%s\n' '!! identity-baseline-bf16.json unavailable (server down or sampler failed)'
+!! identity-baseline-bf16.json unavailable (server down or sampler failed)
++ note '    NOTE: identity-baseline-bf16.json capture failed — deferred to a step with a live server'
+++ dirname /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/report.md
++ mkdir -p /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps
++ printf '%s\n' '    NOTE: identity-baseline-bf16.json capture failed — deferred to a step with a live server'
++ return 1
++ verdict 'preflight complete — cluster untouched, baseline facts + datasets ready'
++ VERDICT_LINE='preflight complete — cluster untouched, baseline facts + datasets ready'
++ say '  VERDICT: preflight complete — cluster untouched, baseline facts + datasets ready'
++ printf '%s\n' '  VERDICT: preflight complete — cluster untouched, baseline facts + datasets ready'
+  VERDICT: preflight complete — cluster untouched, baseline facts + datasets ready
++ say ''
++ printf '%s\n' ''
+
++ say '  Key pre-campaign baseline numbers (from current-baseline.facts):'
++ printf '%s\n' '  Key pre-campaign baseline numbers (from current-baseline.facts):'
+  Key pre-campaign baseline numbers (from current-baseline.facts):
++ '[' -s /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/logs/00-preflight/current-baseline.facts ']'
++ say ''
++ printf '%s\n' ''
+
++ finish ok 'run ./01-baseline.sh (relaunches the pinned bf16 baseline and benches it)'
++ local verdict=ok 'hint=run ./01-baseline.sh (relaunches the pinned bf16 baseline and benches it)'
++ echo '    verdict=ok'
++ hr
++ printf '%s\n' ----------------------------------------------------------------------
+----------------------------------------------------------------------
++ say ''
++ printf '%s\n' ''
+
++ say '  STEP 00-preflight done  →  verdict: preflight complete — cluster untouched, baseline facts + datasets ready'
++ printf '%s\n' '  STEP 00-preflight done  →  verdict: preflight complete — cluster untouched, baseline facts + datasets ready'
+  STEP 00-preflight done  →  verdict: preflight complete — cluster untouched, baseline facts + datasets ready
+++ relpath /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/report.md
+++ python3 -c 'import os,sys;print(os.path.relpath(sys.argv[1],os.getcwd()))' /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/report.md
++ say '    report: report.md'
++ printf '%s\n' '    report: report.md'
+    report: report.md
+++ relpath /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/logs/00-preflight
+++ python3 -c 'import os,sys;print(os.path.relpath(sys.argv[1],os.getcwd()))' /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/steps/logs/00-preflight
++ say '    logs  : logs/00-preflight'
++ printf '%s\n' '    logs  : logs/00-preflight'
+    logs  : logs/00-preflight
+++ relpath /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/ledger.md
+++ python3 -c 'import os,sys;print(os.path.relpath(sys.argv[1],os.getcwd()))' /Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/jetson-dsv4-decode-config/campaign/ledger.md
++ say '    bench  : ../ledger.md (if a bench published)'
++ printf '%s\n' '    bench  : ../ledger.md (if a bench published)'
+    bench  : ../ledger.md (if a bench published)
++ '[' -n 'run ./01-baseline.sh (relaunches the pinned bf16 baseline and benches it)' ']'
++ say '    NEXT  : run ./01-baseline.sh (relaunches the pinned bf16 baseline and benches it)'
++ printf '%s\n' '    NEXT  : run ./01-baseline.sh (relaunches the pinned bf16 baseline and benches it)'
+    NEXT  : run ./01-baseline.sh (relaunches the pinned bf16 baseline and benches it)
++ say ''
++ printf '%s\n' ''
+

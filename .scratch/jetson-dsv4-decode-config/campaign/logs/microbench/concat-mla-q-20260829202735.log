@@ -1,0 +1,17 @@
+
+======================================================================
+CONCAT MLA Q KERNEL BENCHMARKS
+======================================================================
+Dimensions: nope=512, rope=64, heads=128
+Per-head output: 576 bf16 = 1152 bytes
+num_tokens (decode=batch_size, prefill=chunk_size): [8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]
+======================================================================
+
+--- Non-contiguous nope inputs (transposed BMM output) ---
+num_tokens |   cat (ms) | direct (ms) |  Speedup | Reduction
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/kernels/bench_concat_mla_q.py", line 98, in <module>
+    ms_cat, _, _ = bench_transposed(nt, "torch_cat")
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: 'Mark' object is not callable

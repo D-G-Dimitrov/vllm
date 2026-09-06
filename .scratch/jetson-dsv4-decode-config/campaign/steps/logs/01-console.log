@@ -1,0 +1,25 @@
+=================== 01-baseline  (profile ds4-x4, bf16) ===================
+----------------------------------------------------------------------
+>> [jetson-233] docker rm -f any 'jetson-cluster-node*' container
+>> [jetson-234] docker rm -f any 'jetson-cluster-node*' container
+>> [jetson-223] docker rm -f any 'jetson-cluster-node*' container
+>> [jetson-232] docker rm -f any 'jetson-cluster-node*' container
+>> [jetson-233] nohup bash run-head.sh --profile ds4-x4 --master-addr 10.10.10.4 --image vllm:0.27.1-r39.2.tegra-aarch64-cp312-cu132-24.04-wtdcode.dsv4.v5   (log: /tmp/campaign/01-baseline-head.log)
+launched-pid=73976
+>> [jetson-234] nohup bash run-worker.sh 10.10.10.1 --profile ds4-x4-worker --master-addr 10.10.10.4 --image vllm:0.27.1-r39.2.tegra-aarch64-cp312-cu132-24.04-wtdcode.dsv4.v5   (log: /tmp/campaign/01-baseline-worker-10.10.10.1.log)
+launched-pid=8478
+>> [jetson-223] nohup bash run-worker.sh 10.10.10.2 --profile ds4-x4-worker --master-addr 10.10.10.4 --image vllm:0.27.1-r39.2.tegra-aarch64-cp312-cu132-24.04-wtdcode.dsv4.v5   (log: /tmp/campaign/01-baseline-worker-10.10.10.2.log)
+launched-pid=9728
+>> [jetson-232] nohup bash run-worker.sh 10.10.10.3 --profile ds4-x4-worker --master-addr 10.10.10.4 --image vllm:0.27.1-r39.2.tegra-aarch64-cp312-cu132-24.04-wtdcode.dsv4.v5   (log: /tmp/campaign/01-baseline-worker-10.10.10.3.log)
+launched-pid=8367
+>> waiting for http://jetson-233:8000/health (timeout 1200s) ...
+>> NOT ready after 1200s — will diagnose from captured logs
+  VERDICT: STARTUP FAILED — inspect logs/01-baseline/ (head.log tail above)
+----------------------------------------------------------------------
+
+  STEP 01-baseline done  →  verdict: STARTUP FAILED — inspect logs/01-baseline/ (head.log tail above)
+    report: report.md
+    logs  : logs/01-baseline
+    bench  : ../ledger.md (if a bench published)
+    NEXT  : fix or investigate before A/B arms; logs are in logs/01-baseline/
+

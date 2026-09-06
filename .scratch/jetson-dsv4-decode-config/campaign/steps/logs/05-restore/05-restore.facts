@@ -1,0 +1,6 @@
+model_dtype=dtype=torch.bfloat16
+marlin_line=You are running Marlin kernel with bf16
+scheduled=max_num_scheduled_tokens is set to 2032
+kv_tokens_line=GPU KV cache size: 993,278
+concurrency_line=Maximum concurrency for 393,216 tokens per request: 2.53x
+error_lines=

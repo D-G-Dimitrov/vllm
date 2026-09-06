@@ -1,0 +1,19 @@
+
+======================================================================
+CONCAT MLA Q KERNEL BENCHMARKS
+======================================================================
+Dimensions: nope=512, rope=64, heads=128
+Per-head output: 576 bf16 = 1152 bytes
+num_tokens (decode=batch_size, prefill=chunk_size): [8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]
+======================================================================
+
+--- Non-contiguous nope inputs (transposed BMM output) ---
+Traceback (most recent call last):
+  File "/kernels/bench_concat_mla_q.py", line 94, in <module>
+    bench_transposed.run(print_data=True, save_path=args.save_path)
+  File "/opt/venv/lib/python3.12/site-packages/triton/testing.py", line 392, in run
+    result_dfs.append(self._run(bench, save_path, show_plots, print_data, **kwargs))
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/venv/lib/python3.12/site-packages/triton/testing.py", line 321, in _run
+    import matplotlib.pyplot as plt
+ModuleNotFoundError: No module named 'matplotlib'

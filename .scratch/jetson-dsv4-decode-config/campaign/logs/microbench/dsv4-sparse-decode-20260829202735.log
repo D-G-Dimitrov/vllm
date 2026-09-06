@@ -1,0 +1,26 @@
+
+=== sparse MLA decode (heads=8, swa=128, topk=512, live rows=26875 = 15.0 MB) ===
+batch  block_h                   impl  CTAs     us
+    1       16            single-pass     1  281.5
+    1       16          split-k s1 w4     1  353.8
+    1       16          split-k s1 w8     1  293.0
+    1       16          split-k s4 w4     4   98.7
+    1       16          split-k s4 w8     4   81.4
+    1       16  split-k s16 w4 (live)    16   46.8
+    1       16  split-k s16 w8 (live)    16   39.6
+    6       16            single-pass     6  277.6
+    6       16          split-k s1 w4     6  385.6
+    6       16          split-k s1 w8     6  290.4
+    6       16   split-k s4 w4 (live)    24  208.4
+    6       16   split-k s4 w8 (live)    24  154.9
+    6       16         split-k s16 w4    96  282.9
+    6       16         split-k s16 w8    96  201.7
+    8       16            single-pass     8  284.2
+    8       16          split-k s1 w4     8  421.9
+    8       16          split-k s1 w8     8  303.9
+    8       16   split-k s2 w4 (live)    16  223.4
+    8       16   split-k s2 w8 (live)    16  162.7
+    8       16          split-k s4 w4    32  238.6
+    8       16          split-k s4 w8    32  170.7
+    8       16         split-k s16 w4   128  393.0
+    8       16         split-k s16 w8   128  289.6

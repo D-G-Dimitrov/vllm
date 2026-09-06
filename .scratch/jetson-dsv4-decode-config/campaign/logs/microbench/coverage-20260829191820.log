@@ -1,0 +1,20 @@
+Traceback (most recent call last):
+  File "/kernels/benchmark_dsv4_sm80.py", line 3807, in <module>
+    main()
+  File "/kernels/benchmark_dsv4_sm80.py", line 3538, in main
+    parser.add_argument(
+  File "/root/.local/share/uv/python/cpython-3.12.13-linux-aarch64-gnu/lib/python3.12/argparse.py", line 1500, in add_argument
+    return self._add_action(action)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.local/share/uv/python/cpython-3.12.13-linux-aarch64-gnu/lib/python3.12/argparse.py", line 1885, in _add_action
+    self._optionals._add_action(action)
+  File "/root/.local/share/uv/python/cpython-3.12.13-linux-aarch64-gnu/lib/python3.12/argparse.py", line 1705, in _add_action
+    action = super(_ArgumentGroup, self)._add_action(action)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.local/share/uv/python/cpython-3.12.13-linux-aarch64-gnu/lib/python3.12/argparse.py", line 1514, in _add_action
+    self._check_conflict(action)
+  File "/root/.local/share/uv/python/cpython-3.12.13-linux-aarch64-gnu/lib/python3.12/argparse.py", line 1654, in _check_conflict
+    conflict_handler(action, confl_optionals)
+  File "/root/.local/share/uv/python/cpython-3.12.13-linux-aarch64-gnu/lib/python3.12/argparse.py", line 1663, in _handle_conflict_error
+    raise ArgumentError(action, message % conflict_string)
+argparse.ArgumentError: argument --prefill-index-mode: conflicting option string: --prefill-index-mode

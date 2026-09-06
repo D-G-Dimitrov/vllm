@@ -1,0 +1,1 @@
+IDENTITY opt-bf16: EQUAL (content 2805 chars + reasoning trace 16619 chars) — numerics-preserving

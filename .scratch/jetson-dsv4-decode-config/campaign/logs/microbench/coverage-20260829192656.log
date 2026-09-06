@@ -1,0 +1,14 @@
+
+=== batch-1 decode coverage (shares are relative, from the c1 decode trace) ===
+                component  share                              where to measure
+        sparse-MLA decode   ~18%                  here: --kernel sparse-decode
+         mHC pre big-fuse    ~6%                        here: --kernel mhc-pre
+         dense Marlin fp8   ~26%    here: --kernel dense-gemv (vs GEMV routes)
+     MoE experts (Marlin)   ~10%                    here: --kernel moe-experts
+              cuBLAS GEMV   ~13%        not covered: plain torch matmul at M=1
+       indexer MQA logits   ~11%  here: --kernel indexer-logits (prefill path)
+mHC post / fused-post-pre    ~3%                                   NOT COVERED
+ norms, RoPE, elementwise   rest             NOT COVERED - ~235 small launches
+
+Do not sum only the covered rows and call it a step budget -- see the
+NOT COVERED entries above.

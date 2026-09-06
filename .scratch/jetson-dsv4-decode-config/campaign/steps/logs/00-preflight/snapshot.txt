@@ -1,0 +1,14 @@
+--- 2026-08-29 16:16:43 pre-campaign snapshot ---
+image_pinned=vllm:0.27.1-r39.2.tegra-aarch64-cp312-cu132-24.04-wtdcode.dsv4.v5
+--- node jetson-233 (10.10.10.4, head) ---
+containers: 
+nvpmodel : 
+--- node jetson-234 (10.10.10.1, 1) ---
+containers: 
+nvpmodel : 
+--- node jetson-223 (10.10.10.2, 2) ---
+containers: 
+nvpmodel : 
+--- node jetson-232 (10.10.10.3, 3) ---
+containers: 
+nvpmodel : 

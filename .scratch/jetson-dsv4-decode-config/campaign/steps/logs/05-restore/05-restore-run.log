@@ -1,0 +1,15 @@
+=================== 05-restore  (profile ds4-x4, image v5) ===================
+----------------------------------------------------------------------
+>> [jetson-233] docker rm -f any 'jetson-cluster-node*' container
+>> [jetson-234] docker rm -f any 'jetson-cluster-node*' container
+>> [jetson-223] docker rm -f any 'jetson-cluster-node*' container
+>> [jetson-232] docker rm -f any 'jetson-cluster-node*' container
+>> [jetson-233] detached launch profile=ds4-x4  (log: /tmp/campaign/05-restore-head.log)
+launched-pid=814234
+>> [jetson-234] detached launch profile=ds4-x4-worker  (log: /tmp/campaign/05-restore-worker-10.10.10.1.log)
+launched-pid=201740
+>> [jetson-223] detached launch profile=ds4-x4-worker  (log: /tmp/campaign/05-restore-worker-10.10.10.2.log)
+launched-pid=192149
+>> [jetson-232] detached launch profile=ds4-x4-worker  (log: /tmp/campaign/05-restore-worker-10.10.10.3.log)
+launched-pid=162299
+>> waiting for http://jetson-233:8000/health (timeout 1200s) ...

@@ -1,0 +1,22 @@
+Traceback (most recent call last):
+  File "/kernels/benchmark_dsv4_sm80.py", line 3797, in <module>
+    main()
+  File "/kernels/benchmark_dsv4_sm80.py", line 3793, in main
+    bench_dense_gemv(args.gemv_ms, args.gemv_block_ns, device)
+  File "/kernels/benchmark_dsv4_sm80.py", line 2633, in bench_dense_gemv
+    from vllm.model_executor.layers.quantization.utils.marlin_utils_fp8 import (
+  File "/opt/venv/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/utils/marlin_utils_fp8.py", line 9, in <module>
+    from vllm.model_executor.layers.quantization.utils.marlin_utils import (
+  File "/opt/venv/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/utils/marlin_utils.py", line 14, in <module>
+    from vllm.model_executor.layers.fused_moe import RoutedExperts
+  File "/opt/venv/lib/python3.12/site-packages/vllm/model_executor/layers/fused_moe/__init__.py", line 37, in <module>
+    from vllm.model_executor.layers.fused_moe.router.gate_linear import GateLinear
+  File "/opt/venv/lib/python3.12/site-packages/vllm/model_executor/layers/fused_moe/router/gate_linear.py", line 10, in <module>
+    from vllm.model_executor.kernels.linear.gemv_triton import (
+  File "/opt/venv/lib/python3.12/site-packages/vllm/model_executor/kernels/linear/__init__.py", line 26, in <module>
+    from vllm.model_executor.kernels.linear.mixed_precision import (
+  File "/opt/venv/lib/python3.12/site-packages/vllm/model_executor/kernels/linear/mixed_precision/__init__.py", line 28, in <module>
+    from vllm.model_executor.kernels.linear.mixed_precision.marlin import (
+  File "/opt/venv/lib/python3.12/site-packages/vllm/model_executor/kernels/linear/mixed_precision/marlin.py", line 8, in <module>
+    from vllm.model_executor.layers.quantization.utils.marlin_utils import (
+ImportError: cannot import name 'MARLIN_SUPPORTED_GROUP_SIZES' from partially initialized module 'vllm.model_executor.layers.quantization.utils.marlin_utils' (most likely due to a circular import) (/opt/venv/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/utils/marlin_utils.py)

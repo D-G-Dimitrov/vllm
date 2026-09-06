@@ -1,0 +1,36 @@
+
+=== MXFP4 Marlin MoE experts (E=256, topk=6, N=256, K=4096, per-rank TP=8) ===
+M     skew  blk_m  experts  blocks     us  wt GB/s  ms/step x43
+1  uniform      8        6       6  266.7       40        11.47
+8  uniform      8       48      48  773.7      110        33.27
+
+=== one expert call decomposed (skew=uniform) ===
+M  blk_m                    op     us
+1      8  moe_align_block_size  117.3
+1      8           gemm1 (w13)   58.5
+1      8            activation    5.3
+1      8            gemm2 (w2)   35.9
+1      8               moe_sum    4.7
+8      8  moe_align_block_size  143.2
+8      8           gemm1 (w13)  360.3
+8      8            activation    5.8
+8      8            gemm2 (w2)  266.2
+8      8               moe_sum    6.2
+
+=== block_size_m sweep (* = what the in-tree heuristic picks) ===
+M     skew  blk_m  blocks      us
+1  uniform     8*       6   106.8
+1  uniform     16       6   117.9
+1  uniform     32       6   148.9
+1  uniform     48       6   184.0
+1  uniform     64       6   222.1
+8  uniform     8*      48   628.7
+8  uniform     16      48   717.8
+8  uniform     32      48  1042.8
+8  uniform     48      48  1292.8
+8  uniform     64      48  1540.4
+
+'experts' is how many distinct experts a call touches and 'wt GB/s'
+prices only their packed weights, so it is the weight-streaming rate --
+compare it against a large streaming read on this box, not against the
+HBM datasheet number.

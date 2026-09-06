@@ -1,0 +1,554 @@
+=== launch-detached.sh 2026-08-30 12:53:17 ===
+profile=ds4-x4-opt-worker image=vllm:0.27.1-r39.2.tegra-aarch64-cp312-cu132-24.04-wtdcode.dsv4.v5 master=10.10.10.4 type=--worker node_ip=10.10.10.2
+ifaces=enP5p1s0np0 nccl_hca=mlx5_0:1 host_ip=10.10.10.2
+vllm_cmd: vllm serve deepseek-ai/DeepSeek-V4-Flash-0731 --port 8000 --trust-remote-code --enable-prefix-caching --disable-custom-all-reduce --enable-auto-tool-choice --tool-call-parser deepseek_v4 --reasoning-parser deepseek_v4 --gpu-memory-utilization 0.85 --kv-cache-memory-bytes 8.1676g --max-model-len 393216 --max-num-seqs 4 --reasoning-config \{\"reasoning_parser\":\"deepseek_v4\"\,\"reasoning_start_str\":\"\"\,\"reasoning_end_str\":\"\"\} --tokenizer-mode deepseek_v4 --block-size 256 --kv-cache-dtype fp8_ds_mla --enable-expert-parallel --enable-chunked-prefill --hf-overrides \{\"head_dtype\":\ \"float32\"\} --default-chat-template-kwargs.thinking=true --default-chat-template-kwargs.reasoning_effort=high --compilation-config \{\"cudagraph_mode\":\"FULL_AND_PIECEWISE\"\,\"custom_ops\":\[\"all\"\]\} --speculative-config \{\"method\":\"dspark\"\,\"num_speculative_tokens\":5\} --tensor-parallel-size 4 --nnodes 4 --master-addr 10.10.10.4 --headless --node-rank 2 
+extra_env: -e VLLM_USE_FLASHINFER_SAMPLER=1 -e VLLM_MARLIN_USE_ATOMIC_ADD=1 -e VLLM_FLOAT32_MATMUL_PRECISION=high -e VLLM_INDEXER_PAGED_Q_BF16=1 
+--- launching distributed-inference.sh --detach ---
+==========================================
+DEBUG: Script Arguments
+==========================================
+DOCKER_IMAGE: vllm:0.27.1-r39.2.tegra-aarch64-cp312-cu132-24.04-wtdcode.dsv4.v5
+HEAD_NODE_ADDRESS: 10.10.10.4
+NODE_TYPE: --worker
+NETWORK_INTERFACE: enP5p1s0np0
+ADDITIONAL_ARGS: -e VLLM_HOST_IP=10.10.10.2 -e HF_TOKEN= -e NCCL_IB_GID_INDEX=3 -e NCCL_IB_TIMEOUT=25 -e NCCL_IB_RETRY_CNT=10 -e NCCL_IB_HCA=mlx5_0:1 -e NCCL_BUFFSIZE=16777216 -e NCCL_MIN_NCHANNELS=2 -e NCCL_MAX_NCHANNELS=4 -e OMP_NUM_THREADS=4 -e MKL_NUM_THREADS=4 -e RAY_CGRAPH_get_timeout=600 -e RAY_CGRAPH_submit_timeout=600 -e RAY_DEDUP_LOGS=0 -e RAY_DISABLE_IMPORT_WARNING=1 -e VLLM_USE_FLASHINFER_SAMPLER=1 -e VLLM_MARLIN_USE_ATOMIC_ADD=1 -e VLLM_FLOAT32_MATMUL_PRECISION=high -e VLLM_INDEXER_PAGED_Q_BF16=1 --ulimit memlock=-1 --ulimit stack=67108864
+
+==========================================
+DEBUG: Ray Configuration
+==========================================
+RAY_START_CMD: 
+
+==========================================
+DEBUG: Parsed Variables
+==========================================
+VLLM_HOST_IP: 10.10.10.2
+CONTAINER_CMD: vllm serve deepseek-ai/DeepSeek-V4-Flash-0731 --port 8000 --trust-remote-code --enable-prefix-caching --disable-custom-all-reduce --enable-auto-tool-choice --tool-call-parser deepseek_v4 --reasoning-parser deepseek_v4 --gpu-memory-utilization 0.85 --kv-cache-memory-bytes 8.1676g --max-model-len 393216 --max-num-seqs 4 --reasoning-config \{\"reasoning_parser\":\"deepseek_v4\"\,\"reasoning_start_str\":\"\"\,\"reasoning_end_str\":\"\"\} --tokenizer-mode deepseek_v4 --block-size 256 --kv-cache-dtype fp8_ds_mla --enable-expert-parallel --enable-chunked-prefill --hf-overrides \{\"head_dtype\":\ \"float32\"\} --default-chat-template-kwargs.thinking=true --default-chat-template-kwargs.reasoning_effort=high --compilation-config \{\"cudagraph_mode\":\"FULL_AND_PIECEWISE\"\,\"custom_ops\":\[\"all\"\]\} --speculative-config \{\"method\":\"dspark\"\,\"num_speculative_tokens\":5\} --tensor-parallel-size 4 --nnodes 4 --master-addr 10.10.10.4 --headless --node-rank 2 
+
+==========================================
+DEBUG: Ray IP Variables
+==========================================
+RAY_IP_VARS: -e RAY_NODE_IP_ADDRESS=10.10.10.2 -e RAY_OVERRIDE_NODE_IP_ADDRESS=10.10.10.2
+
+==========================================
+DEBUG: Paths
+==========================================
+JETSON_DATA_PATH: /home/mitaka/jetson-containers/data
+
+==========================================
+DEBUG: Full Docker Command
+==========================================
+docker run \
+    -d \
+    --runtime nvidia \
+    --entrypoint /bin/bash \
+    --network host \
+    --name "jetson-cluster-node-20260830125317" \
+    --shm-size 8g \
+    --privileged \
+    --ipc=host \
+    -v /dev/shm:/dev/shm \
+    -v "/home/mitaka/jetson-containers/data":/data \
+    -e NVIDIA_DRIVER_CAPABILITIES=all \
+    -e UCX_NET_DEVICES=enP5p1s0np0 \
+    -e NCCL_SOCKET_IFNAME=enP5p1s0np0 \
+    -e GLOO_SOCKET_IFNAME=enP5p1s0np0 \
+    -e TP_SOCKET_IFNAME=enP5p1s0np0 \
+    -e TIKTOKEN_ENCODINGS_BASE=/data/encodings \
+    -e \
+    RAY_NODE_IP_ADDRESS=10.10.10.2 \
+    -e \
+    RAY_OVERRIDE_NODE_IP_ADDRESS=10.10.10.2 \
+    -e \
+    VLLM_HOST_IP=10.10.10.2 \
+    -e \
+    HF_TOKEN= \
+    -e \
+    NCCL_IB_GID_INDEX=3 \
+    -e \
+    NCCL_IB_TIMEOUT=25 \
+    -e \
+    NCCL_IB_RETRY_CNT=10 \
+    -e \
+    NCCL_IB_HCA=mlx5_0:1 \
+    -e \
+    NCCL_BUFFSIZE=16777216 \
+    -e \
+    NCCL_MIN_NCHANNELS=2 \
+    -e \
+    NCCL_MAX_NCHANNELS=4 \
+    -e \
+    OMP_NUM_THREADS=4 \
+    -e \
+    MKL_NUM_THREADS=4 \
+    -e \
+    RAY_CGRAPH_get_timeout=600 \
+    -e \
+    RAY_CGRAPH_submit_timeout=600 \
+    -e \
+    RAY_DEDUP_LOGS=0 \
+    -e \
+    RAY_DISABLE_IMPORT_WARNING=1 \
+    -e \
+    VLLM_USE_FLASHINFER_SAMPLER=1 \
+    -e \
+    VLLM_MARLIN_USE_ATOMIC_ADD=1 \
+    -e \
+    VLLM_FLOAT32_MATMUL_PRECISION=high \
+    -e \
+    VLLM_INDEXER_PAGED_Q_BF16=1 \
+    --ulimit \
+    memlock=-1 \
+    --ulimit \
+    stack=67108864 \
+    "vllm:0.27.1-r39.2.tegra-aarch64-cp312-cu132-24.04-wtdcode.dsv4.v5" \
+    -c ""
+
+==========================================
+DEBUG: Ray Start Command
+==========================================
+ray start \
+    -e \
+    RAY_NODE_IP_ADDRESS=10.10.10.2 \
+    -e \
+    RAY_OVERRIDE_NODE_IP_ADDRESS=10.10.10.2 \
+    -v \
+    --block \
+    --num-gpus 1 \
+    --address 10.10.10.4:6379 \
+    --node-ip-address 10.10.10.2 \
+6928434d7dfd24cb94c7fae1b28a8f0ed7521780e454931e23f052184d918125
+=== launch-detached.sh exited rc=0 12:53:19 ===
+=== launch-detached.sh 2026-08-30 13:51:05 ===
+profile=ds4-x4-opt-worker image=vllm:0.27.1-r39.2.tegra-aarch64-cp312-cu132-24.04-wtdcode.dsv4.v5 master=10.10.10.4 type=--worker node_ip=10.10.10.2
+ifaces=enP5p1s0np0 nccl_hca=mlx5_0:1 host_ip=10.10.10.2
+vllm_cmd: vllm serve deepseek-ai/DeepSeek-V4-Flash-0731 --port 8000 --trust-remote-code --enable-prefix-caching --disable-custom-all-reduce --enable-auto-tool-choice --tool-call-parser deepseek_v4 --reasoning-parser deepseek_v4 --gpu-memory-utilization 0.85 --kv-cache-memory-bytes 8.1676g --max-model-len 393216 --max-num-seqs 4 --reasoning-config \{\"reasoning_parser\":\"deepseek_v4\"\,\"reasoning_start_str\":\"\"\,\"reasoning_end_str\":\"\"\} --tokenizer-mode deepseek_v4 --block-size 256 --kv-cache-dtype fp8_ds_mla --enable-expert-parallel --enable-chunked-prefill --hf-overrides \{\"head_dtype\":\ \"float32\"\} --default-chat-template-kwargs.thinking=true --default-chat-template-kwargs.reasoning_effort=high --compilation-config \{\"cudagraph_mode\":\"FULL_AND_PIECEWISE\"\,\"custom_ops\":\[\"all\"\]\} --speculative-config \{\"method\":\"dspark\"\,\"num_speculative_tokens\":5\} --tensor-parallel-size 4 --nnodes 4 --master-addr 10.10.10.4 --headless --node-rank 2 
+extra_env: -e VLLM_USE_FLASHINFER_SAMPLER=1 -e VLLM_MARLIN_USE_ATOMIC_ADD=1 -e VLLM_FLOAT32_MATMUL_PRECISION=high -e VLLM_INDEXER_PAGED_Q_BF16=1 
+--- launching distributed-inference.sh --detach ---
+==========================================
+DEBUG: Script Arguments
+==========================================
+DOCKER_IMAGE: vllm:0.27.1-r39.2.tegra-aarch64-cp312-cu132-24.04-wtdcode.dsv4.v5
+HEAD_NODE_ADDRESS: 10.10.10.4
+NODE_TYPE: --worker
+NETWORK_INTERFACE: enP5p1s0np0
+ADDITIONAL_ARGS: -e VLLM_HOST_IP=10.10.10.2 -e HF_TOKEN= -e NCCL_IB_GID_INDEX=3 -e NCCL_IB_TIMEOUT=25 -e NCCL_IB_RETRY_CNT=10 -e NCCL_IB_HCA=mlx5_0:1 -e NCCL_BUFFSIZE=16777216 -e NCCL_MIN_NCHANNELS=2 -e NCCL_MAX_NCHANNELS=4 -e OMP_NUM_THREADS=4 -e MKL_NUM_THREADS=4 -e RAY_CGRAPH_get_timeout=600 -e RAY_CGRAPH_submit_timeout=600 -e RAY_DEDUP_LOGS=0 -e RAY_DISABLE_IMPORT_WARNING=1 -e VLLM_USE_FLASHINFER_SAMPLER=1 -e VLLM_MARLIN_USE_ATOMIC_ADD=1 -e VLLM_FLOAT32_MATMUL_PRECISION=high -e VLLM_INDEXER_PAGED_Q_BF16=1 --ulimit memlock=-1 --ulimit stack=67108864
+
+==========================================
+DEBUG: Ray Configuration
+==========================================
+RAY_START_CMD: 
+
+==========================================
+DEBUG: Parsed Variables
+==========================================
+VLLM_HOST_IP: 10.10.10.2
+CONTAINER_CMD: vllm serve deepseek-ai/DeepSeek-V4-Flash-0731 --port 8000 --trust-remote-code --enable-prefix-caching --disable-custom-all-reduce --enable-auto-tool-choice --tool-call-parser deepseek_v4 --reasoning-parser deepseek_v4 --gpu-memory-utilization 0.85 --kv-cache-memory-bytes 8.1676g --max-model-len 393216 --max-num-seqs 4 --reasoning-config \{\"reasoning_parser\":\"deepseek_v4\"\,\"reasoning_start_str\":\"\"\,\"reasoning_end_str\":\"\"\} --tokenizer-mode deepseek_v4 --block-size 256 --kv-cache-dtype fp8_ds_mla --enable-expert-parallel --enable-chunked-prefill --hf-overrides \{\"head_dtype\":\ \"float32\"\} --default-chat-template-kwargs.thinking=true --default-chat-template-kwargs.reasoning_effort=high --compilation-config \{\"cudagraph_mode\":\"FULL_AND_PIECEWISE\"\,\"custom_ops\":\[\"all\"\]\} --speculative-config \{\"method\":\"dspark\"\,\"num_speculative_tokens\":5\} --tensor-parallel-size 4 --nnodes 4 --master-addr 10.10.10.4 --headless --node-rank 2 
+
+==========================================
+DEBUG: Ray IP Variables
+==========================================
+RAY_IP_VARS: -e RAY_NODE_IP_ADDRESS=10.10.10.2 -e RAY_OVERRIDE_NODE_IP_ADDRESS=10.10.10.2
+
+==========================================
+DEBUG: Paths
+==========================================
+JETSON_DATA_PATH: /home/mitaka/jetson-containers/data
+
+==========================================
+DEBUG: Full Docker Command
+==========================================
+docker run \
+    -d \
+    --runtime nvidia \
+    --entrypoint /bin/bash \
+    --network host \
+    --name "jetson-cluster-node-20260830135105" \
+    --shm-size 8g \
+    --privileged \
+    --ipc=host \
+    -v /dev/shm:/dev/shm \
+    -v "/home/mitaka/jetson-containers/data":/data \
+    -e NVIDIA_DRIVER_CAPABILITIES=all \
+    -e UCX_NET_DEVICES=enP5p1s0np0 \
+    -e NCCL_SOCKET_IFNAME=enP5p1s0np0 \
+    -e GLOO_SOCKET_IFNAME=enP5p1s0np0 \
+    -e TP_SOCKET_IFNAME=enP5p1s0np0 \
+    -e TIKTOKEN_ENCODINGS_BASE=/data/encodings \
+    -e \
+    RAY_NODE_IP_ADDRESS=10.10.10.2 \
+    -e \
+    RAY_OVERRIDE_NODE_IP_ADDRESS=10.10.10.2 \
+    -e \
+    VLLM_HOST_IP=10.10.10.2 \
+    -e \
+    HF_TOKEN= \
+    -e \
+    NCCL_IB_GID_INDEX=3 \
+    -e \
+    NCCL_IB_TIMEOUT=25 \
+    -e \
+    NCCL_IB_RETRY_CNT=10 \
+    -e \
+    NCCL_IB_HCA=mlx5_0:1 \
+    -e \
+    NCCL_BUFFSIZE=16777216 \
+    -e \
+    NCCL_MIN_NCHANNELS=2 \
+    -e \
+    NCCL_MAX_NCHANNELS=4 \
+    -e \
+    OMP_NUM_THREADS=4 \
+    -e \
+    MKL_NUM_THREADS=4 \
+    -e \
+    RAY_CGRAPH_get_timeout=600 \
+    -e \
+    RAY_CGRAPH_submit_timeout=600 \
+    -e \
+    RAY_DEDUP_LOGS=0 \
+    -e \
+    RAY_DISABLE_IMPORT_WARNING=1 \
+    -e \
+    VLLM_USE_FLASHINFER_SAMPLER=1 \
+    -e \
+    VLLM_MARLIN_USE_ATOMIC_ADD=1 \
+    -e \
+    VLLM_FLOAT32_MATMUL_PRECISION=high \
+    -e \
+    VLLM_INDEXER_PAGED_Q_BF16=1 \
+    --ulimit \
+    memlock=-1 \
+    --ulimit \
+    stack=67108864 \
+    "vllm:0.27.1-r39.2.tegra-aarch64-cp312-cu132-24.04-wtdcode.dsv4.v5" \
+    -c ""
+
+==========================================
+DEBUG: Ray Start Command
+==========================================
+ray start \
+    -e \
+    RAY_NODE_IP_ADDRESS=10.10.10.2 \
+    -e \
+    RAY_OVERRIDE_NODE_IP_ADDRESS=10.10.10.2 \
+    -v \
+    --block \
+    --num-gpus 1 \
+    --address 10.10.10.4:6379 \
+    --node-ip-address 10.10.10.2 \
+979392880a5093eadf4b47b405d8a9a866a2e80d0f4749cc973d397bd08b5faa
+=== launch-detached.sh exited rc=0 13:51:06 ===
+=== launch-detached.sh 2026-08-30 15:38:45 ===
+profile=ds4-x4-opt-worker image=vllm:0.27.1-r39.2.tegra-aarch64-cp312-cu132-24.04-wtdcode.dsv4.v5 master=10.10.10.4 type=--worker node_ip=10.10.10.2
+ifaces=enP5p1s0np0 nccl_hca=mlx5_0:1 host_ip=10.10.10.2
+vllm_cmd: vllm serve deepseek-ai/DeepSeek-V4-Flash-0731 --port 8000 --trust-remote-code --enable-prefix-caching --disable-custom-all-reduce --enable-auto-tool-choice --tool-call-parser deepseek_v4 --reasoning-parser deepseek_v4 --gpu-memory-utilization 0.85 --kv-cache-memory-bytes 8.1676g --max-model-len 262144 --max-num-seqs 4 --reasoning-config \{\"reasoning_parser\":\"deepseek_v4\"\,\"reasoning_start_str\":\"\"\,\"reasoning_end_str\":\"\"\} --tokenizer-mode deepseek_v4 --block-size 256 --kv-cache-dtype fp8_ds_mla --enable-expert-parallel --enable-chunked-prefill --hf-overrides \{\"head_dtype\":\ \"float32\"\} --default-chat-template-kwargs.thinking=true --default-chat-template-kwargs.reasoning_effort=high --compilation-config \{\"cudagraph_mode\":\"FULL_AND_PIECEWISE\"\,\"custom_ops\":\[\"all\"\]\} --speculative-config \{\"method\":\"dspark\"\,\"num_speculative_tokens\":5\} --tensor-parallel-size 4 --nnodes 4 --master-addr 10.10.10.4 --headless --node-rank 2 
+extra_env: -e VLLM_USE_FLASHINFER_SAMPLER=1 -e VLLM_MARLIN_USE_ATOMIC_ADD=1 -e VLLM_FLOAT32_MATMUL_PRECISION=high -e VLLM_INDEXER_PAGED_Q_BF16=1 
+--- launching distributed-inference.sh --detach ---
+==========================================
+DEBUG: Script Arguments
+==========================================
+DOCKER_IMAGE: vllm:0.27.1-r39.2.tegra-aarch64-cp312-cu132-24.04-wtdcode.dsv4.v5
+HEAD_NODE_ADDRESS: 10.10.10.4
+NODE_TYPE: --worker
+NETWORK_INTERFACE: enP5p1s0np0
+ADDITIONAL_ARGS: -e VLLM_HOST_IP=10.10.10.2 -e HF_TOKEN= -e NCCL_IB_GID_INDEX=3 -e NCCL_IB_TIMEOUT=25 -e NCCL_IB_RETRY_CNT=10 -e NCCL_IB_HCA=mlx5_0:1 -e NCCL_BUFFSIZE=16777216 -e NCCL_MIN_NCHANNELS=2 -e NCCL_MAX_NCHANNELS=4 -e OMP_NUM_THREADS=4 -e MKL_NUM_THREADS=4 -e RAY_CGRAPH_get_timeout=600 -e RAY_CGRAPH_submit_timeout=600 -e RAY_DEDUP_LOGS=0 -e RAY_DISABLE_IMPORT_WARNING=1 -e VLLM_USE_FLASHINFER_SAMPLER=1 -e VLLM_MARLIN_USE_ATOMIC_ADD=1 -e VLLM_FLOAT32_MATMUL_PRECISION=high -e VLLM_INDEXER_PAGED_Q_BF16=1 --ulimit memlock=-1 --ulimit stack=67108864
+
+==========================================
+DEBUG: Ray Configuration
+==========================================
+RAY_START_CMD: 
+
+==========================================
+DEBUG: Parsed Variables
+==========================================
+VLLM_HOST_IP: 10.10.10.2
+CONTAINER_CMD: vllm serve deepseek-ai/DeepSeek-V4-Flash-0731 --port 8000 --trust-remote-code --enable-prefix-caching --disable-custom-all-reduce --enable-auto-tool-choice --tool-call-parser deepseek_v4 --reasoning-parser deepseek_v4 --gpu-memory-utilization 0.85 --kv-cache-memory-bytes 8.1676g --max-model-len 262144 --max-num-seqs 4 --reasoning-config \{\"reasoning_parser\":\"deepseek_v4\"\,\"reasoning_start_str\":\"\"\,\"reasoning_end_str\":\"\"\} --tokenizer-mode deepseek_v4 --block-size 256 --kv-cache-dtype fp8_ds_mla --enable-expert-parallel --enable-chunked-prefill --hf-overrides \{\"head_dtype\":\ \"float32\"\} --default-chat-template-kwargs.thinking=true --default-chat-template-kwargs.reasoning_effort=high --compilation-config \{\"cudagraph_mode\":\"FULL_AND_PIECEWISE\"\,\"custom_ops\":\[\"all\"\]\} --speculative-config \{\"method\":\"dspark\"\,\"num_speculative_tokens\":5\} --tensor-parallel-size 4 --nnodes 4 --master-addr 10.10.10.4 --headless --node-rank 2 
+
+==========================================
+DEBUG: Ray IP Variables
+==========================================
+RAY_IP_VARS: -e RAY_NODE_IP_ADDRESS=10.10.10.2 -e RAY_OVERRIDE_NODE_IP_ADDRESS=10.10.10.2
+
+==========================================
+DEBUG: Paths
+==========================================
+JETSON_DATA_PATH: /home/mitaka/jetson-containers/data
+
+==========================================
+DEBUG: Full Docker Command
+==========================================
+docker run \
+    -d \
+    --runtime nvidia \
+    --entrypoint /bin/bash \
+    --network host \
+    --name "jetson-cluster-node-20260830153845" \
+    --shm-size 8g \
+    --privileged \
+    --ipc=host \
+    -v /dev/shm:/dev/shm \
+    -v "/home/mitaka/jetson-containers/data":/data \
+    -e NVIDIA_DRIVER_CAPABILITIES=all \
+    -e UCX_NET_DEVICES=enP5p1s0np0 \
+    -e NCCL_SOCKET_IFNAME=enP5p1s0np0 \
+    -e GLOO_SOCKET_IFNAME=enP5p1s0np0 \
+    -e TP_SOCKET_IFNAME=enP5p1s0np0 \
+    -e TIKTOKEN_ENCODINGS_BASE=/data/encodings \
+    -e \
+    RAY_NODE_IP_ADDRESS=10.10.10.2 \
+    -e \
+    RAY_OVERRIDE_NODE_IP_ADDRESS=10.10.10.2 \
+    -e \
+    VLLM_HOST_IP=10.10.10.2 \
+    -e \
+    HF_TOKEN= \
+    -e \
+    NCCL_IB_GID_INDEX=3 \
+    -e \
+    NCCL_IB_TIMEOUT=25 \
+    -e \
+    NCCL_IB_RETRY_CNT=10 \
+    -e \
+    NCCL_IB_HCA=mlx5_0:1 \
+    -e \
+    NCCL_BUFFSIZE=16777216 \
+    -e \
+    NCCL_MIN_NCHANNELS=2 \
+    -e \
+    NCCL_MAX_NCHANNELS=4 \
+    -e \
+    OMP_NUM_THREADS=4 \
+    -e \
+    MKL_NUM_THREADS=4 \
+    -e \
+    RAY_CGRAPH_get_timeout=600 \
+    -e \
+    RAY_CGRAPH_submit_timeout=600 \
+    -e \
+    RAY_DEDUP_LOGS=0 \
+    -e \
+    RAY_DISABLE_IMPORT_WARNING=1 \
+    -e \
+    VLLM_USE_FLASHINFER_SAMPLER=1 \
+    -e \
+    VLLM_MARLIN_USE_ATOMIC_ADD=1 \
+    -e \
+    VLLM_FLOAT32_MATMUL_PRECISION=high \
+    -e \
+    VLLM_INDEXER_PAGED_Q_BF16=1 \
+    --ulimit \
+    memlock=-1 \
+    --ulimit \
+    stack=67108864 \
+    "vllm:0.27.1-r39.2.tegra-aarch64-cp312-cu132-24.04-wtdcode.dsv4.v5" \
+    -c ""
+
+==========================================
+DEBUG: Ray Start Command
+==========================================
+ray start \
+    -e \
+    RAY_NODE_IP_ADDRESS=10.10.10.2 \
+    -e \
+    RAY_OVERRIDE_NODE_IP_ADDRESS=10.10.10.2 \
+    -v \
+    --block \
+    --num-gpus 1 \
+    --address 10.10.10.4:6379 \
+    --node-ip-address 10.10.10.2 \
+6e8624b31b5e306c6890daad047d092f872cfe330aed15466c8cb738236b4b75
+=== launch-detached.sh exited rc=0 15:38:47 ===
+=== launch-detached.sh 2026-08-30 20:50:00 ===
+profile=ds4-x4-opt-worker image=vllm:0.27.1-r39.2.tegra-aarch64-cp312-cu132-24.04-wtdcode.dsv4.v5 master=10.10.10.4 type=--worker node_ip=10.10.10.2
+ifaces=enP5p1s0np0 nccl_hca=mlx5_0:1 host_ip=10.10.10.2
+vllm_cmd: vllm serve deepseek-ai/DeepSeek-V4-Flash-0731 --port 8000 --trust-remote-code --enable-prefix-caching --disable-custom-all-reduce --enable-auto-tool-choice --tool-call-parser deepseek_v4 --reasoning-parser deepseek_v4 --gpu-memory-utilization 0.85 --kv-cache-memory-bytes 8.1676g --max-model-len 262144 --max-num-seqs 4 --reasoning-config \{\"reasoning_parser\":\"deepseek_v4\"\,\"reasoning_start_str\":\"\"\,\"reasoning_end_str\":\"\"\} --tokenizer-mode deepseek_v4 --block-size 256 --kv-cache-dtype fp8_ds_mla --enable-expert-parallel --enable-chunked-prefill --hf-overrides \{\"head_dtype\":\ \"float32\"\} --default-chat-template-kwargs.thinking=true --default-chat-template-kwargs.reasoning_effort=high --compilation-config \{\"cudagraph_mode\":\"FULL_AND_PIECEWISE\"\,\"custom_ops\":\[\"all\"\]\} --speculative-config \{\"method\":\"dspark\"\,\"num_speculative_tokens\":5\} --tensor-parallel-size 4 --nnodes 4 --master-addr 10.10.10.4 --headless --node-rank 2 
+extra_env: -e VLLM_USE_FLASHINFER_SAMPLER=1 -e VLLM_MARLIN_USE_ATOMIC_ADD=1 -e VLLM_FLOAT32_MATMUL_PRECISION=high -e VLLM_INDEXER_PAGED_Q_BF16=1 
+--- launching distributed-inference.sh --detach ---
+==========================================
+DEBUG: Script Arguments
+==========================================
+DOCKER_IMAGE: vllm:0.27.1-r39.2.tegra-aarch64-cp312-cu132-24.04-wtdcode.dsv4.v5
+HEAD_NODE_ADDRESS: 10.10.10.4
+NODE_TYPE: --worker
+NETWORK_INTERFACE: enP5p1s0np0
+ADDITIONAL_ARGS: -e VLLM_HOST_IP=10.10.10.2 -e HF_TOKEN= -e NCCL_IB_GID_INDEX=3 -e NCCL_IB_TIMEOUT=25 -e NCCL_IB_RETRY_CNT=10 -e NCCL_IB_HCA=mlx5_0:1 -e NCCL_BUFFSIZE=16777216 -e NCCL_MIN_NCHANNELS=2 -e NCCL_MAX_NCHANNELS=4 -e OMP_NUM_THREADS=4 -e MKL_NUM_THREADS=4 -e RAY_CGRAPH_get_timeout=600 -e RAY_CGRAPH_submit_timeout=600 -e RAY_DEDUP_LOGS=0 -e RAY_DISABLE_IMPORT_WARNING=1 -e VLLM_USE_FLASHINFER_SAMPLER=1 -e VLLM_MARLIN_USE_ATOMIC_ADD=1 -e VLLM_FLOAT32_MATMUL_PRECISION=high -e VLLM_INDEXER_PAGED_Q_BF16=1 --ulimit memlock=-1 --ulimit stack=67108864
+
+==========================================
+DEBUG: Ray Configuration
+==========================================
+RAY_START_CMD: 
+
+==========================================
+DEBUG: Parsed Variables
+==========================================
+VLLM_HOST_IP: 10.10.10.2
+CONTAINER_CMD: vllm serve deepseek-ai/DeepSeek-V4-Flash-0731 --port 8000 --trust-remote-code --enable-prefix-caching --disable-custom-all-reduce --enable-auto-tool-choice --tool-call-parser deepseek_v4 --reasoning-parser deepseek_v4 --gpu-memory-utilization 0.85 --kv-cache-memory-bytes 8.1676g --max-model-len 262144 --max-num-seqs 4 --reasoning-config \{\"reasoning_parser\":\"deepseek_v4\"\,\"reasoning_start_str\":\"\"\,\"reasoning_end_str\":\"\"\} --tokenizer-mode deepseek_v4 --block-size 256 --kv-cache-dtype fp8_ds_mla --enable-expert-parallel --enable-chunked-prefill --hf-overrides \{\"head_dtype\":\ \"float32\"\} --default-chat-template-kwargs.thinking=true --default-chat-template-kwargs.reasoning_effort=high --compilation-config \{\"cudagraph_mode\":\"FULL_AND_PIECEWISE\"\,\"custom_ops\":\[\"all\"\]\} --speculative-config \{\"method\":\"dspark\"\,\"num_speculative_tokens\":5\} --tensor-parallel-size 4 --nnodes 4 --master-addr 10.10.10.4 --headless --node-rank 2 
+
+==========================================
+DEBUG: Ray IP Variables
+==========================================
+RAY_IP_VARS: -e RAY_NODE_IP_ADDRESS=10.10.10.2 -e RAY_OVERRIDE_NODE_IP_ADDRESS=10.10.10.2
+
+==========================================
+DEBUG: Paths
+==========================================
+JETSON_DATA_PATH: /home/mitaka/jetson-containers/data
+
+==========================================
+DEBUG: Full Docker Command
+==========================================
+docker run \
+    -d \
+    --runtime nvidia \
+    --entrypoint /bin/bash \
+    --network host \
+    --name "jetson-cluster-node-20260830205000" \
+    --shm-size 8g \
+    --privileged \
+    --ipc=host \
+    -v /dev/shm:/dev/shm \
+    -v "/home/mitaka/jetson-containers/data":/data \
+    -e NVIDIA_DRIVER_CAPABILITIES=all \
+    -e UCX_NET_DEVICES=enP5p1s0np0 \
+    -e NCCL_SOCKET_IFNAME=enP5p1s0np0 \
+    -e GLOO_SOCKET_IFNAME=enP5p1s0np0 \
+    -e TP_SOCKET_IFNAME=enP5p1s0np0 \
+    -e TIKTOKEN_ENCODINGS_BASE=/data/encodings \
+    -e \
+    RAY_NODE_IP_ADDRESS=10.10.10.2 \
+    -e \
+    RAY_OVERRIDE_NODE_IP_ADDRESS=10.10.10.2 \
+    -e \
+    VLLM_HOST_IP=10.10.10.2 \
+    -e \
+    HF_TOKEN= \
+    -e \
+    NCCL_IB_GID_INDEX=3 \
+    -e \
+    NCCL_IB_TIMEOUT=25 \
+    -e \
+    NCCL_IB_RETRY_CNT=10 \
+    -e \
+    NCCL_IB_HCA=mlx5_0:1 \
+    -e \
+    NCCL_BUFFSIZE=16777216 \
+    -e \
+    NCCL_MIN_NCHANNELS=2 \
+    -e \
+    NCCL_MAX_NCHANNELS=4 \
+    -e \
+    OMP_NUM_THREADS=4 \
+    -e \
+    MKL_NUM_THREADS=4 \
+    -e \
+    RAY_CGRAPH_get_timeout=600 \
+    -e \
+    RAY_CGRAPH_submit_timeout=600 \
+    -e \
+    RAY_DEDUP_LOGS=0 \
+    -e \
+    RAY_DISABLE_IMPORT_WARNING=1 \
+    -e \
+    VLLM_USE_FLASHINFER_SAMPLER=1 \
+    -e \
+    VLLM_MARLIN_USE_ATOMIC_ADD=1 \
+    -e \
+    VLLM_FLOAT32_MATMUL_PRECISION=high \
+    -e \
+    VLLM_INDEXER_PAGED_Q_BF16=1 \
+    --ulimit \
+    memlock=-1 \
+    --ulimit \
+    stack=67108864 \
+    "vllm:0.27.1-r39.2.tegra-aarch64-cp312-cu132-24.04-wtdcode.dsv4.v5" \
+    -c ""
+
+==========================================
+DEBUG: Ray Start Command
+==========================================
+ray start \
+    -e \
+    RAY_NODE_IP_ADDRESS=10.10.10.2 \
+    -e \
+    RAY_OVERRIDE_NODE_IP_ADDRESS=10.10.10.2 \
+    -v \
+    --block \
+    --num-gpus 1 \
+    --address 10.10.10.4:6379 \
+    --node-ip-address 10.10.10.2 \
+9739f1205c3eba57b8d49f8b94bfefe0f61a114ea2ab3103c7fea75c598b607a
+=== launch-detached.sh exited rc=0 20:50:01 ===
+### container=9739f1205c3e (RUNNING)
+### docker logs inlined below (raw vLLM+ray output, tail 20000)
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+INFO 08-30 17:50:50 [config.py:774] Detected quantization_config.scale_fmt=ue8m0; enabling UE8M0 for DeepGEMM.
+INFO 08-30 17:51:15 [model.py:645] Resolved architecture: DeepseekV4ForCausalLM
+INFO 08-30 17:51:15 [model.py:1883] Using max model len 262144
+INFO 08-30 17:51:17 [cache.py:296] Using fp8_ds_mla data type to store kv cache. It reduces the GPU memory footprint and boosts the performance. Meanwhile, it may cause accuracy drop without a proper scaling factor
+INFO 08-30 17:51:17 [arg_utils.py:2139] Inferred data_parallel_rank 0 from node_rank 2
+INFO 08-30 17:51:39 [model.py:645] Resolved architecture: DeepSeekV4MTPModel
+INFO 08-30 17:51:39 [model.py:1883] Using max model len 1048576
+INFO 08-30 17:52:00 [speculative.py:1157] Overriding draft model max model len from 1048576 to 262144
+INFO 08-30 17:52:00 [vllm.py:1231] Auto-enabling VLLM_USE_BREAKABLE_CUDAGRAPH=1. Set VLLM_USE_BREAKABLE_CUDAGRAPH=0 to opt out.
+WARNING 08-30 17:52:00 [vllm.py:1237] VLLM_USE_BREAKABLE_CUDAGRAPH is set, disabling vLLM's torch.compile pipeline. Equivalent to -cc.mode=none.
+WARNING 08-30 17:52:00 [vllm.py:1247] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+INFO 08-30 17:52:00 [kernel.py:306] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'])
+WARNING 08-30 17:52:00 [vllm.py:1757] max_num_scheduled_tokens is set to 2032 based on the speculative decoding settings. This may lead to suboptimal performance. Consider increasing max_num_batched_tokens to accommodate the additional draft token slots, or decrease num_speculative_tokens or max_num_seqs.
+WARNING 08-30 17:52:00 [vllm.py:2267] Model Runner V2 does not yet support the thinking_token_budget request parameter. Set VLLM_USE_V2_MODEL_RUNNER=0 if this is required.
+INFO 08-30 17:52:03 [compilation.py:329] Enabled custom fusions: norm_quant, act_quant
+INFO 08-30 17:52:03 [serve.py:216] Launching vLLM (v0.27.1+wtdcode.dsv4.v5) headless multiproc executor, with head node address 10.10.10.4:29501 for torch.distributed process group.
+(Worker pid=237) INFO 08-30 17:52:24 [parallel_state.py:1640] world_size=4 rank=2 local_rank=0 distributed_init_method=tcp://10.10.10.4:29501 backend=nccl
+(Worker pid=237) WARNING 08-30 17:52:37 [symm_mem.py:67] SymmMemCommunicator: Device capability 8.7 not supported, communicator is not available.
+(Worker pid=237) INFO 08-30 17:52:38 [parallel_state.py:1977] rank 2 in world size 4 is assigned as DP rank 0, PP rank 0, PCP rank 0, TP rank 2, EP rank 2, EPLB rank N/A
+(Worker pid=237) INFO 08-30 17:52:38 [gpu_worker.py:385] Using V2 Model Runner
+(Worker_TP2_EP2 pid=237) INFO 08-30 17:52:39 [model_runner.py:360] Loading model from scratch...
+(Worker_TP2_EP2 pid=237) INFO 08-30 17:52:39 [quant_config.py:75] DeepSeek V4 expert_dtype resolved to 'fp4'
+(Worker_TP2_EP2 pid=237) INFO 08-30 17:52:40 [expert_map_manager.py:245] [EP Rank 2/4] Expert parallelism is enabled. Expert placement strategy: linear. Local/global number of experts: 64/256. Experts local to global index map: 0->128, 1->129, 2->130, 3->131, 4->132, 5->133, 6->134, 7->135, 8->136, 9->137, 10->138, 11->139, 12->140, 13->141, 14->142, 15->143, 16->144, 17->145, 18->146, 19->147, 20->148, 21->149, 22->150, 23->151, 24->152, 25->153, 26->154, 27->155, 28->156, 29->157, 30->158, 31->159, 32->160, 33->161, 34->162, 35->163, 36->164, 37->165, 38->166, 39->167, 40->168, 41->169, 42->170, 43->171, 44->172, 45->173, 46->174, 47->175, 48->176, 49->177, 50->178, 51->179, 52->180, 53->181, 54->182, 55->183, 56->184, 57->185, 58->186, 59->187, 60->188, 61->189, 62->190, 63->191.
+(Worker_TP2_EP2 pid=237) INFO 08-30 17:52:40 [mxfp4.py:626] Using 'MARLIN' Mxfp4 MoE backend.
+(Worker_TP2_EP2 pid=237) INFO 08-30 17:52:40 [attention.py:946] Using FP8 indexer cache for Lightning Indexer.
+(Worker_TP2_EP2 pid=237) WARNING 08-30 17:52:40 [sparse_attn_indexer.py:961] DeepGEMM not supported on this platform; using Triton fallback for sparse attention indexer.
+(Worker_TP2_EP2 pid=237) Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+(Worker_TP2_EP2 pid=237) INFO 08-30 17:53:00 [weight_utils.py:867] Filesystem type for checkpoints: EXT4. Checkpoint size: 155.43 GiB. Available RAM: 16.55 GiB.
+(Worker_TP2_EP2 pid=237) INFO 08-30 17:53:00 [weight_utils.py:897] Auto-prefetch is disabled because the filesystem (EXT4) is not a recognized network FS (NFS/Lustre) and the checkpoint size (155.43 GiB) exceeds 90% of available RAM (16.55 GiB).
+(Worker_TP2_EP2 pid=237) INFO 08-30 17:54:27 [default_loader.py:430] Loading weights took 87.17 seconds
+(Worker_TP2_EP2 pid=237) WARNING 08-30 17:54:27 [marlin_utils_fp8.py:112] Your GPU does not have native support for FP8 computation but FP8 quantization is being used. Weight-only FP8 compression will be used leveraging the Marlin kernel. This may degrade performance for compute-heavy workloads.
+(Worker_TP2_EP2 pid=237) INFO 08-30 17:54:28 [mxfp4.py:1730] Using MoEPrepareAndFinalizeNoDPEPModular
+(Worker_TP2_EP2 pid=237) INFO 08-30 17:54:28 [mxfp4.py:1731] Using MarlinExperts
+(Worker_TP2_EP2 pid=237) INFO 08-30 17:54:39 [eagle3_utils.py:28] Using Eagle3 auxiliary layers from config: (41, 42, 43)
+(Worker_TP2_EP2 pid=237) WARNING 08-30 17:54:39 [vllm.py:1237] VLLM_USE_BREAKABLE_CUDAGRAPH is set, disabling vLLM's torch.compile pipeline. Equivalent to -cc.mode=none.
+(Worker_TP2_EP2 pid=237) WARNING 08-30 17:54:39 [vllm.py:1247] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+(Worker_TP2_EP2 pid=237) INFO 08-30 17:54:39 [kernel.py:306] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'])
+(Worker_TP2_EP2 pid=237) WARNING 08-30 17:54:39 [vllm.py:1757] max_num_scheduled_tokens is set to 2032 based on the speculative decoding settings. This may lead to suboptimal performance. Consider increasing max_num_batched_tokens to accommodate the additional draft token slots, or decrease num_speculative_tokens or max_num_seqs.
+(Worker_TP2_EP2 pid=237) WARNING 08-30 17:54:39 [vllm.py:2267] Model Runner V2 does not yet support the thinking_token_budget request parameter. Set VLLM_USE_V2_MODEL_RUNNER=0 if this is required.
+(Worker_TP2_EP2 pid=237) INFO 08-30 17:54:41 [weight_utils.py:867] Filesystem type for checkpoints: EXT4. Checkpoint size: 155.43 GiB. Available RAM: 10.80 GiB.
+(Worker_TP2_EP2 pid=237) INFO 08-30 17:54:41 [weight_utils.py:897] Auto-prefetch is disabled because the filesystem (EXT4) is not a recognized network FS (NFS/Lustre) and the checkpoint size (155.43 GiB) exceeds 90% of available RAM (10.80 GiB).
+(Worker_TP2_EP2 pid=237) INFO 08-30 17:55:19 [dspark.py:508] DSpark draft model loaded: 96 params
+(Worker_TP2_EP2 pid=237) INFO 08-30 17:55:19 [default_loader.py:430] Loading weights took 38.50 seconds
+(Worker_TP2_EP2 pid=237) INFO 08-30 17:55:21 [model_runner.py:381] Model loading took 40.65 GiB and 162.881103 seconds
+(Worker_TP2_EP2 pid=237) 2026-08-30 17:55:30  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:129): TileLang begins to compile kernel `mhc_pre_big_fuse_broadcast_with_norm_tilelang` with `out_idx=None`
+(Worker_TP2_EP2 pid=237) 2026-08-30 17:55:53  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:137): TileLang completes to compile kernel `mhc_pre_big_fuse_broadcast_with_norm_tilelang`
+(Worker_TP2_EP2 pid=237) INFO 08-30 17:55:54 [marlin_utils.py:589] You are running Marlin kernel with bf16 on GPUs before SM90. You can consider change to fp16 to achieve better performance if possible.
+(Worker_TP2_EP2 pid=237) 2026-08-30 17:55:55  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:129): TileLang begins to compile kernel `mhc_post_tilelang` with `out_idx=None`
+[17:55:56] : Warning: T.vectorized loop over `i_hci` with extent 4 is lowered as a serial loop because TileLang could not find a valid vectorization plan. Scalar accumulator updates inside the loop are a common cause; move reductions to T.unroll or T.serial if this is intended.
+(Worker_TP2_EP2 pid=237) 2026-08-30 17:55:59  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:137): TileLang completes to compile kernel `mhc_post_tilelang`
+(Worker_TP2_EP2 pid=237) 2026-08-30 17:56:00  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:129): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP2_EP2 pid=237) 2026-08-30 17:56:23  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:137): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP2_EP2 pid=237) 2026-08-30 17:56:29  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:129): TileLang begins to compile kernel `hc_head_fuse_tilelang` with `out_idx=None`
+(Worker_TP2_EP2 pid=237) 2026-08-30 17:56:37  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:137): TileLang completes to compile kernel `hc_head_fuse_tilelang`
+(Worker_TP2_EP2 pid=237) 2026-08-30 17:56:39  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:129): TileLang begins to compile kernel `hc_prenorm_gemm_tilelang` with `out_idx=None`
+(Worker_TP2_EP2 pid=237) 2026-08-30 17:56:42  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:137): TileLang completes to compile kernel `hc_prenorm_gemm_tilelang`
+(Worker_TP2_EP2 pid=237) INFO 08-30 17:56:45 [gpu_worker.py:491] Initial free memory 55.48 GiB, reserved 7.61 GiB memory for KV Cache as specified by kv_cache_memory_bytes config and skipped memory profiling. This does not respect the gpu_memory_utilization config. Only use kv_cache_memory_bytes config when you want manual control of KV cache memory size. If OOM'ed, check the difference of initial free memory between the current run and the previous run where kv_cache_memory_bytes is suggested and update it correspondingly.
+(Worker_TP2_EP2 pid=237) INFO 08-30 17:56:45 [indexer.py:761] DSA indexer decode path: use_flattening=True (next_n=6, use_fp4_indexer_cache=False)
+(Worker_TP2_EP2 pid=237) INFO 08-30 17:56:45 [kernel.py:306] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'])
+(Worker_TP2_EP2 pid=237) INFO 08-30 17:56:57 [flashinfer_sparse_mla_warmup.py:233] Warming up DeepSeek V4 sparse MLA attention for mixed tokens=16.
+(Worker_TP2_EP2 pid=237) 2026-08-30 17:57:00  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:129): TileLang begins to compile kernel `hc_prenorm_gemm_tilelang` with `out_idx=None`
+(Worker_TP2_EP2 pid=237) 2026-08-30 17:57:03  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:137): TileLang completes to compile kernel `hc_prenorm_gemm_tilelang`
+(Worker_TP2_EP2 pid=237) 2026-08-30 17:57:07  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:129): TileLang begins to compile kernel `mhc_fused_tilelang` with `out_idx=None`
+(Worker_TP2_EP2 pid=237) 2026-08-30 17:57:10  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:137): TileLang completes to compile kernel `mhc_fused_tilelang`
+(Worker_TP2_EP2 pid=237) 2026-08-30 17:57:12  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:129): TileLang begins to compile kernel `mhc_pre_big_fuse_with_norm_tilelang` with `out_idx=None`
+(Worker_TP2_EP2 pid=237) 2026-08-30 17:57:35  [TileLang:tilelang.jit.kernel:INFO] (kernel.py:137): TileLang completes to compile kernel `mhc_pre_big_fuse_with_norm_tilelang`
+(Worker_TP2_EP2 pid=237) INFO 08-30 17:58:01 [breakable_cudagraph.py:288] Breakable CUDA graph enabled
+(Worker_TP2_EP2 pid=237) INFO 08-30 17:58:22 [sparse_attn_indexer.py:719] Indexer decode-sharding INACTIVE for this batch shape (below VLLM_INDEXER_DECODE_SHARD_MIN_REQS, or ineligible).
+(Worker_TP2_EP2 pid=237) INFO 08-30 17:58:27 [speculator.py:137] Capturing model for DSpark speculator...
+(Worker_TP2_EP2 pid=237) INFO 08-30 17:58:28 [model_runner.py:843] Graph capturing finished in 27 secs, took 0.05 GiB
+(Worker_TP2_EP2 pid=237) INFO 08-30 18:01:51 [jit_monitor.py:79] Kernel JIT monitor activated; monitored JIT compilations during inference will use mode=warn.
