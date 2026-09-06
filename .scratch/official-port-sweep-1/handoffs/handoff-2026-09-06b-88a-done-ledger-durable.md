@@ -99,3 +99,14 @@ nothing is lost) and re-check `git log 88e00426d..HEAD | wc -l` before adopting 
 `worker-brief.md`, then `git fetch jetson-222:~/dev/vllm mitaka/backport` → `merge --ff-only` →
 `git push -q origin mitaka/backport` → assert `ls-remote` == jetson tip → append the `outcomes.log.md`
 entry → tick the tracker → `ledger-sync.sh`. An unpushed, unbookkept landing is the item-80 gap.
+
+## PAUSED at user instruction (2026-09-06, after item 99) — resume only when told
+
+Stop point, all verified: grind `96/317`, tip **`4529b9645`** == origin == jetson == Mac, no unpushed
+commit, no in-flight sequencer in `~/dev/vllm`, no worker children left running, only the production
+container up (`:8000` = 200), ledger pushed + mirrored.
+**Swap worktree intentionally left mid-pick**: `swap/qwen-88` @ `e16d574bb`, 0 commits ahead, 39 staged,
+**3 unmerged** (`test_ple.py`, `test_config.py`, `test_contiguous_kv_packing.py`). Do NOT `cherry-pick
+--abort` — it cannot restore a `-n` pick cleanly (documented: leaves 40+ staged/unmerged entries).
+On resume, grind item **100 `5bfd76372d`** "[Renderer] Shutdown the renderer properly (#52124)" with base
+tip `4529b9645`, `context: fresh`, brief at `worker-brief.md`; swap resumes at those 3 test files.
