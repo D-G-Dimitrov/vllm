@@ -469,3 +469,51 @@ test files pass both: `LOST_FROM_OURS=none`, `MISSING_THEIRS=none`, `undefined l
 State: `swap/qwen-88` **0 unmerged, 0 conflict markers, 42 files staged, 0 commits ahead**. Two containers
 now running the CPU leg + the mandatory parent-tree compare over `tests/models/qwen4_exp/`,
 `test_contiguous_kv_packing.py`, `test_kv_cache_utils.py` (`swap88leg` vs `base88leg`, GPU hidden, prod 200).
+
+## 88e CPU LEG RESULT + ONE REAL HALT (2026-09-06 session 3)
+
+Leg: `tests/models/qwen4_exp/` + `test_contiguous_kv_packing.py` + `test_kv_cache_utils.py`, GPU hidden,
+swap tree vs parent tree `e16d574bb` in two containers. Had to split `test_qsa_amd.py` into its own process
+(amd + nvidia both register `vllm::qwen4_exp_*` custom ops; one process cannot collect both -- **base fails
+identically**, so it is environmental, not the swap). Counts: **swap 47 failed / 222 passed, base 42 failed
+/ 211 passed**. Fail-set diff by test id (params stripped):
+
+- **base-only, 1**: `test_qwen4_exp_model_state_rejects_pp_with_ple` failed at parent and **passes on the
+  swap** -- official's conditional PP refusal made a previously-failing wtdcode test pass. Improvement.
+- **swap-only, 6**, two causes:
+
+### Cause 1 (mine, fixed): the auto-merge deleted an IMPORT, and my loss scan could not see it
+3 of the 6 were `NameError: group_and_unify_kv_cache_specs`. The code defines it
+(`vllm/v1/core/kv_cache_utils.py:1957`) and I re-applied the 5 test bodies, but parent's
+`from ... import (... group_and_unify_kv_cache_specs ...)` entry at line 40 was inside the merged import
+list and official's blob never mentions the symbol -- so git deleted the line silently. **The silent-loss
+scan only diffed `def`/`class` names, so it reported clean.** Fix for the discipline, not just this file:
+**silent-loss scans must diff imported-symbol sets too**, not just definitions -- a dropped import is
+indistinguishable from a dropped function at runtime and invisible to a def-level scan. Fixed by adding the
+entry back (compile-gated).
+
+### Cause 2 (HALT -- wtdcode-functional, DSV4, do not self-resolve)
+`test_deepseek_v4_annotation_requires_model_type` and `..._requires_model_version` fail with `assert not
+True`: the merged tree flags an eagle KV cache group where the parent refuses to. Root cause, evidence:
+
+| | gate for the positional "flag the last layer" eagle rule |
+|---|---|
+| parent `e16d574bb` | `use_deepseek_v4_fallback` **AND** `any(spec.model_version == "deepseek_v4")` (`:2474-2478`) |
+| official `e126687a9a` | `_is_deepseek_v4_eagle()` = `model_config.hf_config.model_type == "deepseek_v4"`; **0** occurrences of `model_version` |
+| **merged (current)** | official's gate **only** -- `model_version` appears nowhere in the file |
+
+So the pick **dropped wtdcode's spec-level conjunct**, relaxing the predicate. For a real DSV4 load both
+sides flag (equivalent). They diverge when `hf_config.model_type` says `deepseek_v4` but the specs do not
+carry `model_version`: parent refuses, merged applies the positional rule and annotates the last layer as
+the eagle group -- a silent KV-cache-group misannotation in a protected family, which is precisely the
+class of change this campaign must never absorb silently. `model_version` is still live on the interface
+(`vllm/v1/kv_cache_interface.py`, `vllm/models/deepseek_v4/attention.py`), so the conjunct is restorable.
+
+**Proposed resolution (needs owner sign-off, not applied):** keep official's structure and AND the two
+conditions -- `_is_deepseek_v4_eagle(vllm_config) and any(getattr(s, "model_version", None) == "deepseek_v4"
+for s in kv_cache_spec.values())`. That preserves parent's stricter contract (both tests pass again), keeps
+official's refactor intact, and can only ever *reduce* the set of flagged groups, never widen it. Open
+question for the owner: whether any real DSV4 checkpoint reaches annotation without `model_version` on the
+merged MLA spec -- if some do, the strict conjunction would regress them, and the correct answer is then to
+fix propagation instead of loosening the gate. Chose to ask rather than guess: the whole point of Fork #3
+was that this predicate must not be changed silently.
