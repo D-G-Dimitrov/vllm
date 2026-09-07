@@ -902,6 +902,9 @@ class MambaSpec(KVCacheSpec):
     num_prefill_checkpoint_blocks: int = 0
     num_heads: int = 1
     tokens_per_state: int = -1
+    # False: the state is sharded across TP ranks (e.g. GDN). True: every TP
+    # rank holds the full state (e.g. the replicated PLE conv state).
+    tp_replicated: bool = False
 
     @property
     def state_content_size_bytes(self) -> int:
@@ -957,6 +960,8 @@ class MambaSpec(KVCacheSpec):
             isinstance(spec, MambaSpec)
             and spec.num_speculative_blocks == self.num_speculative_blocks
             and spec.num_prefill_checkpoint_blocks == self.num_prefill_checkpoint_blocks
+            and spec.page_size_bytes == self.page_size_bytes
+            and spec.tp_replicated == self.tp_replicated
             for spec in kv_cache_specs.values()
         )
 
@@ -1115,6 +1120,13 @@ class UniformTypeKVCacheSpecs(KVCacheSpec):
         return list(set(spec.page_size_bytes for spec in self.kv_cache_specs.values()))
 
     def get_num_layer_tuples(self) -> int:
+        return Counter(
+            spec.page_size_bytes for spec in self.kv_cache_specs.values()
+        ).most_common(1)[0][1]
+
+    def get_max_layers_per_page_size(self) -> int:
+        """Max number of layers sharing a page size. For a balanced bucket
+        this equals the number of repetitions of the layer pattern."""
         return Counter(
             spec.page_size_bytes for spec in self.kv_cache_specs.values()
         ).most_common(1)[0][1]
@@ -1317,13 +1329,11 @@ class KVCacheConfig:
 
     @property
     def has_mamba_layers(self) -> bool:
-        for group in self.kv_cache_groups:
-            group_spec = group.kv_cache_spec
-            if isinstance(group_spec, UniformTypeKVCacheSpecs):
-                group_spec = group_spec.first_spec
-            if isinstance(group_spec, MambaSpec):
-                return True
-        return False
+        return any(
+            isinstance(spec, MambaSpec)
+            for group in self.kv_cache_groups
+            for spec in iter_layer_specs(group.kv_cache_spec)
+        )
 
     @property
     def has_mixed_precision_kv_cache(self) -> bool:

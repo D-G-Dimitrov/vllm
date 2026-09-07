@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+from functools import partial
 from types import SimpleNamespace
 
 import pytest
@@ -41,7 +42,16 @@ def _make_ngram_embedding_for_load_test() -> Qwen4ExpNGramEmbedding:
             org_vocab_end_index=6,
         ),
     )
+    _set_test_embedding_weight_loader(module.ngram_embedding)
     return module
+
+
+def _set_test_embedding_weight_loader(embedding) -> None:
+    embedding.weight.weight_loader = partial(
+        copy_ple_embedding_shard_,
+        tp_start=embedding.shard_indices.org_vocab_start_index,
+        tp_end=embedding.shard_indices.org_vocab_end_index,
+    )
 
 
 def _make_fp8_ngram_embedding_for_load_test() -> Qwen4ExpNGramEmbedding:
@@ -64,6 +74,7 @@ def _make_fp8_ngram_embedding_for_load_test() -> Qwen4ExpNGramEmbedding:
         "weight_scale",
         nn.Parameter(torch.zeros(1, dtype=torch.bfloat16), requires_grad=False),
     )
+    _set_test_embedding_weight_loader(embedding)
     module.ngram_embedding = embedding
     return module
 
@@ -384,6 +395,47 @@ def test_ngram_fp8_cpu_offload_preserves_quantized_output(
     assert output.data_ptr() == output_buffer.data_ptr()
     assert output.dtype == torch.float8_e4m3fn
     torch.testing.assert_close(output.float(), quantized.float())
+def test_ple_ngram_ids_custom_op_uses_current_request_layout(monkeypatch) -> None:
+    class RuntimeNGramEmbedding(nn.Module):
+        def compute_ngram_ids(
+            self,
+            input_ids: torch.Tensor,
+            query_start_loc: torch.Tensor,
+            ngram_context: torch.Tensor,
+        ) -> torch.Tensor:
+            del input_ids, ngram_context
+            num_reqs = query_start_loc.numel() - 1
+            return torch.full((4, 2), num_reqs, dtype=torch.long)
+
+    layer = Qwen4ExpPLELayer.__new__(Qwen4ExpPLELayer)
+    nn.Module.__init__(layer)
+    layer.ple_embedding = RuntimeNGramEmbedding()
+    monkeypatch.setattr(
+        ple_layer_module,
+        "get_forward_context",
+        lambda: SimpleNamespace(no_compile_layers={"ple": layer}),
+    )
+    input_ids = torch.arange(4)
+    ngram_context = torch.zeros(2, 2, dtype=torch.long)
+    output = torch.empty(4, 2, dtype=torch.long)
+
+    ple_layer_module.qwen4_exp_compute_ple_ngram_ids(
+        input_ids,
+        torch.tensor([0, 4]),
+        ngram_context,
+        output,
+        "ple",
+    )
+    assert torch.equal(output, torch.ones_like(output))
+
+    ple_layer_module.qwen4_exp_compute_ple_ngram_ids(
+        input_ids,
+        torch.tensor([0, 2, 4]),
+        ngram_context,
+        output,
+        "ple",
+    )
+    assert torch.equal(output, torch.full_like(output, 2))
 
 
 def test_dilated_ple_spec_state_rolls_back_before_next_forward() -> None:
