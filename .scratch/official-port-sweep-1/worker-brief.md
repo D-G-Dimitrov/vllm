@@ -115,3 +115,14 @@ is why it will not need to be caught again. The authoritative exclusion set is
 
 If the orchestrator's assignment names `e126687a9a`, that is an orchestrator bug: **stop and say so** instead
 of picking it. The swap has no GPU validation and merging it is an owner-level decision.
+
+## Overlap oracle: 342-file set is STALE -- use fork-surface.sh (learned on item 114, the hard way)
+
+`git diff --name-only c01b50e390 3bec275739` freezes at **Sep 2**, but fork commits keep landing. Item 114
+conflicted in `vllm/model_executor/layers/quantization/inc/inc.py` because of fork commit `d1ba3782f9`
+(**Sep 4**, "inc: resolve MTP draft modules against checkpoint layer namespace") -- and the stale oracle
+reported **zero** overlap for all 10 files. An overlap answer of "empty" from that set is not evidence of
+absence, it is evidence the set is old. Use `.scratch/official-port-sweep-1/fork-surface.sh <repo> <ref>`,
+which derives the surface from fork-local commits (subjects without an upstream `(#N)` marker). **Rule: never
+report "no wtdcode overlap" from the frozen list alone for any file area where the pick conflicted or where a
+clean merge touched model/quant code -- recompute.**
