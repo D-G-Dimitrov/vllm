@@ -112,3 +112,29 @@ On resume, grind item **100 `5bfd76372d`** "[Renderer] Shutdown the renderer pro
 tip `4529b9645`, `context: fresh`, brief at `worker-brief.md`; swap resumes at those 3 test files.
 
 Trap for the next session: on jetson, `origin/mitaka/backport` is **permanently stale** (that box has no GitHub credentials and never fetches), so `git rev-list --count origin/mitaka/backport..HEAD` there reports a large bogus number (63 at pause) that looks like a big unpushed backlog. Judge push state only by comparing `git ls-remote origin mitaka/backport` **from the Mac** against `git rev-parse HEAD` on jetson. Never reconcile or reset to jetson's remote-tracking ref.
+
+## The swap work is no longer single-copy: `swap88-mirror.sh`
+
+The mid-pick resolution now has three copies. **Run it before every pause, and after any batch of test-file
+resolutions** (it is read-only on the box — no `git add`, no checkout, nothing that could disturb `-n` state):
+
+    .scratch/official-port-sweep-1/swap88-mirror.sh "msg"
+
+Captures, into `swap88-mirror/swap88-state.tar.gz` on `mitaka/backport-ledger` (so: origin) **and** inside
+jetson's `scratch-ledger.tgz`: the working-tree bytes of all **40** tracked-dirty paths (26 under `vllm/`,
+14 under `tests/`; note the model tree is `vllm/models/qwen4_exp/`, not `model_executor/models/`), every
+unmerged index stage (`stages/<path%.stageN>` — `test_config`/`test_ple` have only 2+3 because official
+added them, `test_contiguous_kv_packing` has all three), the worktree's own `gitdir/index` (which is what
+carries the conflict stages for an exact restore), `MERGE_MSG`, head, and a `RESTORE.md`. It sha256-asserts
+scp integrity, then re-reads the blob **out of the ledger commit** and asserts that sha equals the snapshot.
+Verified end to end: `md5` of the snapshot's `nvidia/ple_layer.py` and the still-conflicted `test_ple.py`
+(7 conflict markers intact) both equal the box. `.so` files and `__pycache__` are excluded — regenerate from
+`jetson:~/dev/vllm-so-d4d703c.tgz`.
+
+Corrects an earlier number in this handoff: the swap state is **40 unique dirty paths** (39 staged + 3
+unmerged = 42 status *lines*), not 42 files.
+
+Two verification traps hit while building this, both of which would have produced a false "verified":
+`tar tzf` entries are `./worktree/...` so `grep -c '^worktree/'` returns 0, and the ledger branch keeps
+`.scratch/` at its root, so the committed path is `.scratch/official-port-sweep-1/...`. Also: an md5 compare
+where both sides are empty string == empty string passes — always assert non-empty.
