@@ -155,7 +155,7 @@ Work every official PR from the wtdcode fork point through the sweep cutoff, **o
 - [x] c5d840ff6a [KV Connector][Offloading] Certify attention-only hybrids in the canonical portability gate (#51689)
 - [x] 76ff0cdff2 [Bugfix][ROCm] Preserve AITER unified-attention metadata during graph replay (#53821)
 - [ ] dafbef15a1 [Core] Add `max_num_queued_reqs` and `max_num_queued_tokens` for queue size management (#49445)
-- [ ] bd575a0d0b [AutoRound] Support AutoRound Format Block-Wise FP8 in vLLM (#47434)
+- [x] bd575a0d0b [AutoRound] Support AutoRound Format Block-Wise FP8 in vLLM (#47434)
 - [ ] 82936c409d [Tests][XPU] Limit Qwen2-VL generation length to avoid flaky numerical divergence (#54172)
 - [ ] 3593c964de [ROCm] Add TheRock preview docker updates, Keep Python 3.12 and Ubuntu 22.04 (#49925)
 - [ ] e9dd6d4834 [CI] Exclude kv_transfer changes from broad spec-decode/kernels/multimodal triggers (#54365)
