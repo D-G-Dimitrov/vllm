@@ -144,7 +144,7 @@ Work every official PR from the wtdcode fork point through the sweep cutoff, **o
 - [x] 28bf75c9a9 [Bugfix][Frontend] Truncate prompt_is_token_ids with the prompt (#54509)
 - [x] 699e180df4 [Bugfix][SM120] DSv4: pass contiguous C128A decode topk indices on SM120 (#53574)
 - [x] d8de4ae322 [Bugfix][KVOffload] P2P tier declares REQUEST_LEVEL on the producer leg (#52912)
-- [ ] eeb549a74d [Frontend] Move engine/protocol.py out openai folder (#54492)
+- [x] eeb549a74d [Frontend] Move engine/protocol.py out openai folder (#54492)
 - [ ] 9acbc5360a [KV Offload] Preserve KV event metadata until final residency removal (#52068)
 - [ ] 9debcd5990 [Test][Qwen3-VL] Cover compiled DeepStack input contract (#53529)
 - [ ] 810bc3250c [Frontend][Performance] Resolve async media across modalities concurrently (#54537)
