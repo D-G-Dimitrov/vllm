@@ -146,7 +146,7 @@ Work every official PR from the wtdcode fork point through the sweep cutoff, **o
 - [x] d8de4ae322 [Bugfix][KVOffload] P2P tier declares REQUEST_LEVEL on the producer leg (#52912)
 - [x] eeb549a74d [Frontend] Move engine/protocol.py out openai folder (#54492)
 - [x] 9acbc5360a [KV Offload] Preserve KV event metadata until final residency removal (#52068)
-- [ ] 9debcd5990 [Test][Qwen3-VL] Cover compiled DeepStack input contract (#53529)
+- [x] 9debcd5990 [Test][Qwen3-VL] Cover compiled DeepStack input contract (#53529)
 - [ ] 810bc3250c [Frontend][Performance] Resolve async media across modalities concurrently (#54537)
 - [ ] bed3280f50 [KV offload] Order CPU->GPU loads against the compute stream (#50696)
 - [ ] e2c8eeac40 [kernel] Fused embedding kernel  (#53677)
