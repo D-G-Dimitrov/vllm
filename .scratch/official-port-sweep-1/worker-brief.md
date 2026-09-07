@@ -79,3 +79,19 @@ H. Leave `~/dev/vllm` exactly 1 commit ahead of the base, `git status --porcelai
 ```
 Never report a sha you did not read back from git, and never report a test you did not see pass. A
 contradiction with anything the orchestrator told you earlier is welcome — you have the fresher view.
+
+## Time-boxing (added after item 100's worker hit its ceiling)
+
+A worker that times out **after committing** costs nothing; one that times out mid-verification loses its
+reasoning. So, in order of preference:
+
+1. **Commit the pick first, then verify.** Never hold an uncommitted resolution while you run a long probe.
+   The orchestrator can always verify and land a commit; it cannot reconstruct your analysis.
+2. **Report partial results early.** Emit your findings as soon as the *faithfulness* verdict is settled
+   (base assert, commit count, md5, patch-id, silent-loss). The reachability/probe section is additive —
+   send it when it lands. A report with `tests: "not run"` beats silence.
+3. **Budget the container legs.** Each `--rm` leg costs ~1-4 min plus `pip install`. If you have already run
+   3+ legs and the pytest fail-set diff is still pending, that diff is more valuable than another probe —
+   do it first. On a timeout the orchestrator lands the commit and records your unproven risks in
+   `outcomes.log.md`, so an unfinished check is *recorded*, not fatal. Never let "I want to also check X"
+   delay the report past the point where you can still send it.
