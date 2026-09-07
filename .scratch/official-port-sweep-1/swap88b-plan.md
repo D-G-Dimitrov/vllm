@@ -426,3 +426,46 @@ chimera and not introduced by the swap. Conclusion: **`test_nixl_desc_geometry.p
 evidence in this image** — the handoff's "these 4 suites would prove 88b" list must drop it (or gain a
 NIXL-capable runner). The swap tree is strictly better than base here, which is reassuring but proves
 nothing. Add to the GPU/NIXL validation list.
+
+## 88d LAST 3 TEST FILES RESOLVED (2026-09-06 session 3) — pick is now conflict-free
+
+Tooling rebuilt (jetson `/tmp` had been wiped): `/tmp/sw.py` (`dump` / `show` / `apply <i><O|T|U>[,...]` /
+`check`) refuses to write unless block-count matches the spec, zero markers remain, **and `compile()`
+passes**, then diffs def/class NAMES against stage-2 (ours) and stage-3-or-upstream (theirs). `/tmp/postcheck.py`
+adds what `compile()` cannot: an AST pass proving every module-private helper a kept test *calls* still
+exists — the failure mode when a union keeps official's test whose fixture our side reshaped. All 7 swap
+test files pass both: `LOST_FROM_OURS=none`, `MISSING_THEIRS=none`, `undefined local-helper references: none`.
+
+- **`test_ple.py` → T,T,T,O,O,U,O** (21 defs = parent 18 + 3 official-only). #1–#3 are one coherent
+  official addition (`from functools import partial` + helper `_set_test_embedding_weight_loader` + its two
+  call sites); verified safe because the shared `_make_ngram_embedding_for_load_test` body builds
+  `weight=nn.Parameter(...)`, and `weight.weight_loader = ...` on a Parameter is standard vLLM
+  (`VocabParallelEmbedding`). #4/#5/#7 are wtdcode's **PLE CPU-offload** tests (`forward_impl(...,
+  output_buffer=...)`, `is_offload_process`, fp8 `output_buffer.data_ptr()`) — these are the executable
+  specification of the very mechanism Fork #3 preserved, so they are not optional. #6 is a **union**, not a
+  fight: ours tests the offload buffer path, official's tests the new `qwen4_exp_compute_ple_ngram_ids`
+  custom op via `get_forward_context` — different functions, no name collision.
+- **`test_config.py` → all-ours, then official's two extras folded in by hand.** This file is not two
+  versions of one suite: our tree has 19 tests, official's blob has 5. Two real findings: (a) our
+  `test_qwen4_exp_mtp_override_exposes_index_share_flag` **is** official's
+  `test_qwen4_exp_mtp_override_sets_draft_config` with 4 asserts missing — same parametrize, same body,
+  official adds `model_type`/`architectures`/`hc_mult == 2`/`n_predict == 1`. Adopted **official's name**
+  (future official picks to this file will match it) and its asserts. A naive union here would have emitted
+  two consecutive `def(` lines — `compile()` would have caught it, which is why the gate exists. (b) added
+  official's `test_qwen4_exp_rejects_pipeline_parallel_only_with_ple` verbatim: **it is the guard the whole
+  88a decision on `model_state.py`/`model.py` rested on** (we dropped wtdcode's PP conjuncts because
+  official's *conditional* refusal, gated on `ple_layer_ids`, lands first). Verified runnable here — our
+  `_text_config(**kwargs)` already defaults `ple_layer_ids=[1]`, so both params resolve.
+- **`test_contiguous_kv_packing.py` → U,U,O,O,U** (44 defs). #5's 220-vs-222 "showdown" is **not** a
+  showdown: our side adds `TestCSALinearPacking` + `_placements_by_layer`, official's adds
+  `TestCSALinearGrouping` — disjoint names, so union. The actual conflict is the shared fixture
+  `_make_csa_linear_specs` (#3/#4): ours is a **strict superset** of official's — same defaults, plus
+  keyword-only `main_kv_indices`/`mamba_indices`/`include_replicated` normalized to
+  `list(range(num_mamba))`/`list(range(num_tuples))` and `include_replicated=True`, so official's class
+  calling it with defaults gets byte-identical specs. Took ours; postcheck proves official's class calls no
+  helper our version dropped. #1/#2 unions are import-list members both suites need
+  (`_max_memory_usage_bytes_from_groups` + `_get_packed_kv_cache_groups`, `SlidingWindowSpec` + `SlidingWindowMLASpec`).
+
+State: `swap/qwen-88` **0 unmerged, 0 conflict markers, 42 files staged, 0 commits ahead**. Two containers
+now running the CPU leg + the mandatory parent-tree compare over `tests/models/qwen4_exp/`,
+`test_contiguous_kv_packing.py`, `test_kv_cache_utils.py` (`swap88leg` vs `base88leg`, GPU hidden, prod 200).
