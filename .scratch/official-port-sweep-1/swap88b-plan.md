@@ -517,3 +517,35 @@ question for the owner: whether any real DSV4 checkpoint reaches annotation with
 merged MLA spec -- if some do, the strict conjunction would regress them, and the correct answer is then to
 fix propagation instead of loosening the gate. Chose to ask rather than guess: the whole point of Fork #3
 was that this predicate must not be changed silently.
+
+## 88f CORRECTION + root cause of the DSV4 gate (supersedes 88e's Cause-1 claim)
+
+**88e was wrong twice and both matter.** (1) It recorded the missing import as "fixed" -- the fix command
+was the very heredoc Hypa mangled, so nothing was applied; I asserted a fix without re-reading the file.
+(2) It framed `..._requires_model_type` as ours; `git show` counts prove it is **official-only**
+(parent=0/official=1) while `..._requires_model_version` is **ours-only** (parent=1/official=0). A test that
+does not exist at the parent tree cannot "pass at base", so my fail-set diff had silently treated an
+official test's absence as a pass. **Fail-set diffs must be intersected with existence in both trees.**
+
+Actual defect, fully localized: official deleted the packed `group_and_unify` grouping path and moved the
+DSV4 proof to `hf_config.model_type`; this fork keeps that path, and its caller passes
+`use_deepseek_v4_fallback=True` with no config gate. The pick took official's `_annotate_eagle_groups`
+body, which dropped wtdcode's `model_version` conjunct -- so on the uniform path rule 2 fired for **any**
+eagle model. Fix applied (two edits, both verified by test):
+1. `kv_cache_utils.py`: rule 2 now requires DSV4 proof by **either** channel -- `_is_deepseek_v4_eagle()`
+   (official's packed caller) **or** a spec `model_version == "deepseek_v4"` (set only by
+   `models/deepseek_v4/attention.py:946`). My first attempt required the marker unconditionally and broke
+   official's `..._draft_group_annotated_on_packed_path`, whose specs carry no marker -- the OR form is
+   what both callers' contracts actually imply.
+2. `test_kv_cache_utils.py`: restored the deleted `group_and_unify_kv_cache_specs` import (inserted in
+   isort position, existing entries untouched), and adapted official's `..._requires_model_type` negative
+   case to withhold `model_version` too -- same assertion, honest comment naming the fork difference. Not a
+   skip, not a deletion: wtdcode's positive test
+   (`..._draft_group_annotated_on_group_and_unify_path`, expects flagging with NO model_type) proves the
+   uniform path cannot consult model_type without deleting wtdcode behaviour.
+
+Result: targeted **8 passed**; full leg **42 failed / 227 passed** vs parent **42 failed / 211 passed**
+(16 more passing, same failure count). Fail-set diff, existence-checked: **one** swap-only failure left --
+`test_kv_cache_config_mamba_hybrid_sharing_infeasible_no_indexer`, **undiagnosed**, and one parent failure
+the swap fixes (`test_qwen4_exp_model_state_rejects_pp_with_ple`). Tree: 42 staged, 0 unmerged, 0 commits,
+prod :8000 healthy, containers cleaned.
