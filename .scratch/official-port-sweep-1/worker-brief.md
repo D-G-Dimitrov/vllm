@@ -103,3 +103,15 @@ worker's AST probe printed `get_hf_processor defined in: []` for every class -- 
 the method is defined -- because it compared class names against a method name. The empty list would have
 read as "not reachable anywhere" and was only caught because the author noticed and disowned it. Cheap
 control: assert the probe finds something you put there deliberately, then trust its misses.
+
+## Forbidden picks (hard rule, added 2026-09-07 after a live near-miss)
+
+Never `cherry-pick` **`e126687a9a`** (item 88, the Qwen3.8-Flash-Next model swap) or any commit that lives on
+`swap/qwen-88`, onto `mitaka/backport`. It is *correctly* still unchecked in the tracker, so a naive
+"next unchecked item, oldest first" rule selects it — and `swap-dependent.txt` does **not** list it (that file
+holds the 45 items that *depend on* the swap, not the waived item itself). It was caught once by eye; this rule
+is why it will not need to be caught again. The authoritative exclusion set is
+`swap-dependent.txt ∪ {e126687a9a}`, and it retires only when the swap merges and item 88 is ticked.
+
+If the orchestrator's assignment names `e126687a9a`, that is an orchestrator bug: **stop and say so** instead
+of picking it. The swap has no GPU validation and merging it is an owner-level decision.
