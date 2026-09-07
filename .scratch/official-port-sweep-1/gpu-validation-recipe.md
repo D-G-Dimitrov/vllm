@@ -142,3 +142,23 @@ health 200 before/after) still stands. Two consequences for option (b):
    4-way TP endpoint. So option (b) needs the owner to stop Nemotron on 222 (~15 min window). Doing that
    leaves the agent's endpoint up, so the orchestrator survives the test -- which is the whole point.
    `nvidia-smi` is N/A on Tegra; read occupancy with `tegrastats`.
+
+## Option (b) is impossible -- the model cannot fit one Jetson (measured 2026-09-06)
+
+Cluster launch (`jetson-233:/proc/8343/cmdline`): `Qwen/Qwen3.8-Flash-Next-FP8 --tensor-parallel-size 4
+--gpu-memory-utilization 0.85 --kv-cache-memory-bytes 6G`. Each node is a **61 GiB** unified-memory Jetson
+and sits at **60 GiB used / 0 available** for a single TP shard => the FP8 checkpoint needs on the order of
+**200 GiB across 4 boxes**. No single node can host it, so there is no single-GPU smoke test of this model,
+and **Nemotron on 222 does not need to be stopped for it.**
+
+What replaces it, and it needs no GPU at all: **meta-device instantiation + checkpoint key/shape coverage
+diff.** Checkpoints are local on every node under the jetson-containers data mount:
+`~/jetson-containers/data/models/huggingface/models--Qwen--Qwen3.8-Flash-Next-FP8` and
+`models--wtdcode--Qwen3.8-Flash-Next-AWQ-W4A16`. Building the swapped module tree on the `meta` device
+allocates nothing, and the checkpoint's `model.safetensors.index.json` lists every tensor name and shape
+without loading data -- so unmatched or reshaped weights from the swap are caught here. That is a *sharper*
+test than a smoke serve for a model swap, because the classic swap breakage is weight-naming/shape drift,
+which a serve only reveals by crashing after trying to allocate 200 GiB.
+
+Corollary: the only thing that can prove numerics is the 4-node TP4 window, and that window takes down the
+agent's own endpoint -- so it must be run as the scripted, agent-free form (option a).
