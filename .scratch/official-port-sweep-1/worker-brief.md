@@ -95,3 +95,11 @@ reasoning. So, in order of preference:
    do it first. On a timeout the orchestrator lands the commit and records your unproven risks in
    `outcomes.log.md`, so an unfinished check is *recorded*, not fatal. Never let "I want to also check X"
    delay the report past the point where you can still send it.
+
+## Probe self-verification (learned from item 101's worker)
+
+Before you report a probe's *negative* result, run it against one case you already know is positive. A
+worker's AST probe printed `get_hf_processor defined in: []` for every class -- including the class where
+the method is defined -- because it compared class names against a method name. The empty list would have
+read as "not reachable anywhere" and was only caught because the author noticed and disowned it. Cheap
+control: assert the probe finds something you put there deliberately, then trust its misses.
