@@ -151,7 +151,7 @@ Work every official PR from the wtdcode fork point through the sweep cutoff, **o
 - [x] bed3280f50 [KV offload] Order CPU->GPU loads against the compute stream (#50696)
 - [ ] e2c8eeac40 [kernel] Fused embedding kernel  (#53677)
 - [x] e0d27040dd [Bugfix][KV Offload][P2P] Preserve aborted loads until abort completion (#52571)
-- [ ] 4c58a0c398 [Bugfix][KV Offload] Unlink /dev/shm region after all workers map it (barrier variant of #51317) (#52596)
+- [~] 4c58a0c398 [Bugfix][KV Offload] Unlink /dev/shm region after all workers map it (barrier variant of #51317) (#52596) -- SKIPPED, see outcomes.log.md decision record (fork fixes the leak via flock+reaper; naive port leaks .mmap.meta forever)
 - [ ] c5d840ff6a [KV Connector][Offloading] Certify attention-only hybrids in the canonical portability gate (#51689)
 - [ ] 76ff0cdff2 [Bugfix][ROCm] Preserve AITER unified-attention metadata during graph replay (#53821)
 - [ ] dafbef15a1 [Core] Add `max_num_queued_reqs` and `max_num_queued_tokens` for queue size management (#49445)
