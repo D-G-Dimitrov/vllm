@@ -126,3 +126,19 @@ verified it, but it will never run here), and official's new fail-fast for Qwen4
   `deepseek_v32` - but it is **not dcp-gated**, and **every one of its 67 tests skips on CPU** behind a
   CUDA fp8/SM89+ guard, so it has zero CPU coverage. DeepSeek-V3.2 is not a protected family, so this is a
   "notice while you are already running the GPU" item, not a blocker.
+
+## CORRECTION (2026-09-06): 222's sacred container is not Qwen3.8-Flash-Next
+
+`docker ps` shows one container **named** `qwen38-flash-next` (image `vllm/vllm-openai:qwen38-flash-next`),
+but `GET :8000/v1/models` returns `nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4` (max_model_len
+1048576, one `VLLM::EngineCore`). The name is stale. Every earlier note in this campaign calling :8000 "the
+Qwen3.8-Flash-Next production instance" is wrong in substance, though the safety rule (never disturb it,
+health 200 before/after) still stands. Two consequences for option (b):
+
+1. **222 cannot validate against a live reference of the model under swap** -- no box currently serves
+   Qwen3.8-Flash-Next as the *product*; the 4-node cluster serves `Qwen3.8-Flash-Next-FP8` as the *agent's*
+   inference endpoint, which is a different artifact.
+2. **Every GPU in the cluster is occupied**: 222 = Nemotron (1 GPU), and 234/223/232/233 = the agent's own
+   4-way TP endpoint. So option (b) needs the owner to stop Nemotron on 222 (~15 min window). Doing that
+   leaves the agent's endpoint up, so the orchestrator survives the test -- which is the whole point.
+   `nvidia-smi` is N/A on Tegra; read occupancy with `tegrastats`.
