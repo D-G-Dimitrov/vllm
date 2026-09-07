@@ -279,3 +279,36 @@ a clean merge in model/quant areas must be re-checked against the refreshed surf
   catches exactly what the frozen 342-file set missed. Same failure class as item 114's vacuous set-diff: a tool
   that silently produced nothing returns results that look like *findings* ("no overlap", "0 files") rather than
   like errors. Assert the output is non-empty and plausible before believing it.
+
+## Item 114 `bd575a0d0b` LANDS as `b2a06c9e4` (pushed; local=origin=jetson) -- first orchestrator-resolved conflict
+
+Test gate: HEAD 8f/84p/10s vs parent 7f/79p/10s; **the whole fail-set delta is one id the pick itself adds**
+(`test_auto_round_model[auto_round:block_wise_fp8_on_cuda]`), dead with the same
+`DP adjusted local rank 0 is out of bounds for 0 devices` assert as the 7 pre-existing model tests -> environmental,
+meets the accept rule. 5 new upstream config/scheme tests pass; skip sets byte-identical; nothing removed/renamed.
+**Decisive leg: the fork's own 4 `d1ba3782f9` MTP tests pass on both trees** -- the `_mtp_checkpoint_prefix` fix the
+OURS resolution preserves is green. Strongest protected-family evidence of the campaign: a GLM-5.3-W4A16-shaped
+AutoRound config produced a **byte-identical** parse/resolve/`get_quant_method`/scheme transcript parent vs HEAD
+(md5 `cfcf11e4`); the only differing line is `resolve_scheme(fp8-block)` `NotImplementedError -> INCFp8Scheme`.
+`is_fp8_block` needs `data_type=="fp"` + `packing_format=="auto_round:fp8"` + tuple `group_size`, disjoint from
+int/mx_fp, so prepending the scheme cannot re-route a W4A16 layer. **Still untested by anyone:** an existing MXFP4
+checkpoint violating `group_size==32`/`sym`/`packing_format==auto_round:llm_compressor`/`backend==auto` now asserts
+at config construction where it previously loaded (HF gated, so reasoned-from-code only).
+`tip 8fc9c187e -> b2a06c9e4 | conflicts=1 | resolution=OURS (sole delta vs upstream = 1 retained comment line) |
+files=10 | tests=fail-set delta is new-test-only/CUDA | :8000=200 | overlap=d1ba3782f9 (Sep 4), INVISIBLE to the
+stale 342-file oracle; refreshed surface=354 files`
+
+### Two new defects, both in MY OWN verification, found during this land
+1. **UNEXPLAINED local mutation in the Mac clone.** `git merge --ff-only` aborted because
+   `vllm/model_executor/layers/quantization/inc/inc.py` was modified in `vllm-mitaka` -- by one inserted character:
+   `def _mtp_checkpoint_pr/efix(...)` (a syntax error). Not mine, not a worker's (workers run on jetson), not
+   present in HEAD, in `b2a06c9e4`, on jetson, or on origin (all asserted 0). Verified the local delta was exactly
+   that 1 insertion/1 deletion, then discarded it. **I cannot explain its origin and am not pretending otherwise.**
+   *Rule adopted: the land chain always asserted `dirty=0` on the JETSON worktree and never once on the Mac clone,
+   which is where merges and pushes actually happen. Assert tracked-dirty=0 on BOTH sides before every merge; if a
+   mystery edit reappears, treat it as a possible second writer on the Mac worktree and stop to investigate.*
+2. **My three-way tip assert was broken (new form).** `git ls-remote <remote> mitaka/backport` matches by ref TAIL,
+   so it returned **two** refs and `$J` was two SHAs -- the equality test failed while an echo of the first 9 chars
+   of each *looked* like it matched. Fixed with `--heads` + exact refname match. Third false-check today (vacuous
+   `git diff` on an unmerged path, an oracle script that printed 0 files after failing to run, now this): the
+   pattern is the same every time -- **a check whose output is compared visually instead of structurally.**

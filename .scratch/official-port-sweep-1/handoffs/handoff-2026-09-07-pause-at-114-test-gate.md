@@ -57,3 +57,8 @@ All git/docker over `ssh jetson-222` only; grind worktree `~/dev/vllm`, swap wor
 wtdcode-functional conflicts on DSV4 / qwen4_exp / glm5next, anything GPU-touching, or the swap merge.
 **Owner granted standing autonomy: don't ask "go?" between items.** Verify → push → assert tip → collision-check
 → tick by re-reading the file from disk → ledger-sync → dispatch next, all in one turn.
+
+## UPDATE: 114 RESOLVED AND PUSHED -- pause point is clean
+`mitaka/backport` tip = **`b2a06c9e4`** everywhere (110 landed / 1 skipped / 206 pending).
+Test gate passed (fail-set delta = a test the pick itself adds, CUDA-environmental). Next actionable = **item 115 `82936c409d`**.
+Note the two land-chain defects above before resuming.
