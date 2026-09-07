@@ -155,3 +155,21 @@ bug in its script -- class names compared against a method name -- and marked it
 letting it look like evidence. That self-disclosure is the behaviour to keep rewarding.
 OPERATIONAL: the "bank before you die" steer worked. The run reached 339k tokens and shipped a complete
 verdict plus the probe instead of dying mid-analysis the way item 99's worker did.
+102. 28bf75c9a9 -> e8407683f PICKED+PUSHED ([Bugfix][Frontend] Truncate prompt_is_token_ids with the prompt
+#54509; 2 files: vllm/renderers/params.py, tests/renderers/test_chat_utils_prompt_embeds.py). Orchestrator
+verified: parent f7d71c72a, exactly 1 ahead, dirty 0, per-file changed-line md5 MATCH on both files, and
+**patch-id equal (a94072c334ce)** -- so silent-loss is impossible here regardless of scan, because the applied
+patch is byte-normalized identical to upstream's. Swap-collision watch: NONE (renderer/params files are not
+in the swap's 42-file surface).
+INCIDENT (self-inflicted, no damage): my item-102 dispatch produced **two concurrent workers for the same
+item in the same worktree** (1ef97c0e... and b8e4dd58...), violating one-writer-per-cwd. Caught it from the
+"needs attention" ping on a run id I did not dispatch. Because both were assigned the *same* sha the risk was
+a double-pick / stack-on-top-of-each-other, not divergent content: the second had already committed
+e8407683f cleanly on the correct parent, so I interrupted the uncommitted twin and landed the committed one.
+Leftovers cleared: stale .git/CHERRY_PICK_HEAD and MERGE_MSG removed after confirming tip had moved and the
+tree was clean; stray untracked scratch i55_result.txt moved to ~/dev/scratch-artifacts/ rather than deleted
+(it is another session's evidence, not mine to destroy). .cargo-home/ left in place (build cache, untracked,
+ignored by the clean-tree convention).
+RULE FOR NEXT DISPATCH: after every subagent dispatch, confirm the fleet has exactly one worker and that its
+run id matches the one returned -- the duplicate was only visible because the attention ping carried an
+unknown id. Check `subagent({action:"status",view:"fleet"})` before dispatching the next item.
