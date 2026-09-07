@@ -273,3 +273,9 @@ Sep 2; the fork commit that caused this conflict, `d1ba3782f9`, is dated **Sep 4
 overlap for all 10 files -- so "no wtdcode overlap" from it meant nothing here. Added `fork-surface.sh`, which
 derives the surface from fork-local commits (subjects lacking an upstream `(#N)` marker), plus a brief rule that
 a clean merge in model/quant areas must be re-checked against the refreshed surface.
+  CORRECTION to the entry above: my first fork-surface.sh run produced **0 files** (`/dev/stdin: Permission denied`
+  when piping the script over ssh) and I nearly recorded the refreshed oracle as working on that number. Re-run
+  properly via scp: the refreshed surface is **larger than 342 files** and it DOES list `.../quantization/inc/inc.py`, i.e. it
+  catches exactly what the frozen 342-file set missed. Same failure class as item 114's vacuous set-diff: a tool
+  that silently produced nothing returns results that look like *findings* ("no overlap", "0 files") rather than
+  like errors. Assert the output is non-empty and plausible before believing it.
