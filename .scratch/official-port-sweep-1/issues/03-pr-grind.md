@@ -142,7 +142,7 @@ Work every official PR from the wtdcode fork point through the sweep cutoff, **o
 - [x] 5bfd76372d [Renderer] Shutdown the renderer properly.  (#52124)
 - [x] 399247cc88 [Bugfix][MM] Fix MiniCPM-o image processor reuse on Transformers v5 (#54501)
 - [x] 28bf75c9a9 [Bugfix][Frontend] Truncate prompt_is_token_ids with the prompt (#54509)
-- [ ] 699e180df4 [Bugfix][SM120] DSv4: pass contiguous C128A decode topk indices on SM120 (#53574)
+- [x] 699e180df4 [Bugfix][SM120] DSv4: pass contiguous C128A decode topk indices on SM120 (#53574)
 - [ ] d8de4ae322 [Bugfix][KVOffload] P2P tier declares REQUEST_LEVEL on the producer leg (#52912)
 - [ ] eeb549a74d [Frontend] Move engine/protocol.py out openai folder (#54492)
 - [ ] 9acbc5360a [KV Offload] Preserve KV event metadata until final residency removal (#52068)
