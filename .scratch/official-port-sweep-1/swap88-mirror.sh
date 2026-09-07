@@ -26,6 +26,7 @@ ssh -o ConnectTimeout=25 "$HOST" "bash -s" "$REMOTE_DIR" <<'REMOTE' > /tmp/swap8
 set -eu
 cd ~/"$1" || { echo "MISSING worktree ~/$1"; exit 1; }
 WT=$(pwd); ST=/tmp/swap88-stage; rm -rf "$ST" /tmp/swap88-state.tar.gz; mkdir -p "$ST/meta" "$ST/worktree" "$ST/stages" "$ST/gitdir"
+: > "$ST/meta/deleted_paths.txt"; : > "$ST/meta/stage_failures.txt"
 
 HEAD_SHA=$(git rev-parse HEAD)
 BASE=$(git rev-parse HEAD)
@@ -104,7 +105,8 @@ echo "dirty_paths=$(wc -l < "$ST/meta/dirty_paths.txt")"
 echo "worktree_files=$(cat "$ST/meta/worktree_file_count.txt")"
 echo "unmerged_paths=$(git ls-files -u | awk '{print $4}' | sort -u | wc -l)"
 echo "stage_blobs=$(ls "$ST/stages" | wc -l)"
-echo "deleted_in_worktree=$(wc -l < "${ST}/meta/deleted_paths.txt" 2>/dev/null || echo 0)"
+echo "deleted_in_worktree=$(wc -l < "$ST/meta/deleted_paths.txt")"
+echo "stage_failures=$(wc -l < "$ST/meta/stage_failures.txt")"
 echo "size_bytes=$(wc -c < /tmp/swap88-state.tar.gz)"
 echo "sha256=$(shasum -a 256 /tmp/swap88-state.tar.gz | cut -d' ' -f1)"
 REMOTE
@@ -123,9 +125,11 @@ REMOTE_SHA=$(grep '^sha256=' /tmp/swap88-mirror.report | cut -d= -f2)
 echo "swap88-mirror: sha verified $LOCAL_SHA -> committing to ledger"
 "$MAC_REPO/.scratch/official-port-sweep-1/ledger-sync.sh" "$MSG"
 
+# The ledger branch keeps .scratch/ at its root, so the committed path carries the prefix.
 LTX=/Users/mitaka/Projects/PyCharm/vllm-ledger
-LT=$(git -C "$LTX" rev-parse "HEAD:official-port-sweep-1/swap88-mirror/$TAR" 2>/dev/null | cut -c1-9 || true)
-IN_TAR_SHA=$(git -C "$LTX" show "HEAD:official-port-sweep-1/swap88-mirror/$TAR" 2>/dev/null | shasum -a 256 | awk '{print $1}')
+CP="scratch/official-port-sweep-1/swap88-mirror/$TAR"
+LT=$(git -C "$LTX" rev-parse "HEAD:.${CP}" 2>/dev/null | cut -c1-9 || echo ABSENT)
+IN_TAR_SHA=$(git -C "$LTX" show "HEAD:.${CP}" 2>/dev/null | shasum -a 256 | awk '{print $1}' || true)
 echo "swap88-mirror: blob_in_ledger_commit=$LT tar_sha_in_commit=${IN_TAR_SHA:0:12}"
 [ "$IN_TAR_SHA" = "$REMOTE_SHA" ] && echo "swap88-mirror: OK (origin + jetson scratch tarball both carry it)" \
   || { echo "swap88-mirror: ASSERT FAIL (tarball in ledger != snapshot just taken; a concurrent change happened?)"; exit 1; }

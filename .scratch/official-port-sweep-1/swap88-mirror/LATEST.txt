@@ -1,10 +1,10 @@
-captured_utc=2026-09-07T04:58:23Z
+captured_utc=2026-09-07T05:02:51Z
 head=e16d574bb6cca30af2a6021ecc7a3369feac7aed
 dirty_paths=40
 worktree_files=40
 unmerged_paths=3
 stage_blobs=7
-size_bytes=632253
-sha256=e9eaf5f185041078df6b1a7f0c62cffca0ab369153f71737c7c030d199b0c2d0
+size_bytes=632314
+sha256=af8074f3835a9e268077520b0f7d20c798cdbda392d5ae3353d5c6742409830d
 sha256_verified=local==remote
 note=re-run of swap88-mirror.sh; the swap worktree is mid-cherry-pick (-n) and uncommittable until the last conflict resolves
