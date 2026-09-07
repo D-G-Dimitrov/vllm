@@ -139,7 +139,7 @@ Work every official PR from the wtdcode fork point through the sweep cutoff, **o
 - [x] 2a61f060d3 [XPU] Ensure unquantized linear weight is N-contiguous (#53536)
 - [x] c6c33f2b1f [CPU] Support FP16/BF16 persisted GDN state on AMX (#52191)
 - [x] 1b9539d37c [Quantization][Autoround][XPU] Support AutoRound MXFP8 MoE models (#51248)
-- [ ] 5bfd76372d [Renderer] Shutdown the renderer properly.  (#52124)
+- [x] 5bfd76372d [Renderer] Shutdown the renderer properly.  (#52124)
 - [ ] 399247cc88 [Bugfix][MM] Fix MiniCPM-o image processor reuse on Transformers v5 (#54501)
 - [ ] 28bf75c9a9 [Bugfix][Frontend] Truncate prompt_is_token_ids with the prompt (#54509)
 - [ ] 699e180df4 [Bugfix][SM120] DSv4: pass contiguous C128A decode topk indices on SM120 (#53574)
