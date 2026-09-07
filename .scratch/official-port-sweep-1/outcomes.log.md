@@ -140,3 +140,18 @@ letting debt accumulate.
   your own script can mean a bug, not absence, so sanity-check a probe against a case you know is positive
   before trusting a negative**; (2) the pytest leg was never reported, so item 101 has **no test evidence**
   -- accepted because patch-id equality removes resolution risk, and recorded as a limit, not as a pass.)
+
+Addendum to 101 (worker's banked report, after the pick was already landed): the no-escalation case is now
+carried by a **pure-ast MRO walk over every `vllm/**.py`** (no GPU import needed), not by prose. Result: the
+complete set of classes repo-wide inheriting `MiniCPMVProcessingInfo` is `MiniCPMOProcessingInfo` and
+`MiniCPMV4_6ProcessingInfo`; the protected families report `minicpm_roots_in_mro=NONE` (chain_size 2-3) --
+`Qwen4ExpProcessingInfo` (nvidia and amd), `Glm5NextProcessingInfo`, and `deepseek_v4/**` has no
+`register_processor`/`MultiModal` hit at all, so it has no processor path to reach. Gate is architecture
+dispatch (`registry.py:502-503`), not an env var. MiniCPM-V 4.6 escapes twice over: it fully overrides
+`get_hf_processor` (its own comment: incompatible with the vendored `MiniCPMVProcessor` used by 2.x/4.0/4.5)
+and never calls `super().get_hf_processor` or `_get_checkpoint_image_processor`.
+The worker also disclosed that one column of its own probe output (`get_hf_processor defined in: []`) was a
+bug in its script -- class names compared against a method name -- and marked it informationless rather than
+letting it look like evidence. That self-disclosure is the behaviour to keep rewarding.
+OPERATIONAL: the "bank before you die" steer worked. The run reached 339k tokens and shipped a complete
+verdict plus the probe instead of dying mid-analysis the way item 99's worker did.
