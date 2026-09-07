@@ -148,7 +148,7 @@ Work every official PR from the wtdcode fork point through the sweep cutoff, **o
 - [x] 9acbc5360a [KV Offload] Preserve KV event metadata until final residency removal (#52068)
 - [x] 9debcd5990 [Test][Qwen3-VL] Cover compiled DeepStack input contract (#53529)
 - [x] 810bc3250c [Frontend][Performance] Resolve async media across modalities concurrently (#54537)
-- [ ] bed3280f50 [KV offload] Order CPU->GPU loads against the compute stream (#50696)
+- [x] bed3280f50 [KV offload] Order CPU->GPU loads against the compute stream (#50696)
 - [ ] e2c8eeac40 [kernel] Fused embedding kernel  (#53677)
 - [ ] e0d27040dd [Bugfix][KV Offload][P2P] Preserve aborted loads until abort completion (#52571)
 - [ ] 4c58a0c398 [Bugfix][KV Offload] Unlink /dev/shm region after all workers map it (barrier variant of #51317) (#52596)
