@@ -184,7 +184,7 @@ Work every official PR from the wtdcode fork point through the sweep cutoff, **o
 - [x] 58dace61fa [Kernel] Make prefix-prefill tiling independent of the KV page size (#54194)
 - [x] 22df3a34e0 [Perf][Rust Frontend] Count the tokenizer vocabulary once at construction (#54449)
 - [x] 45aed9b0cd [CI] Broaden tool-calling issue auto-labeling (#54650)
-- [ ] 225aec4809 [Rust Frontend] Migrate to new tekken crate (#53056)
+- [x] 225aec4809 [Rust Frontend] Migrate to new tekken crate (#53056)
 - [ ] c28feab989 [Core][MRV2] Freeze gc during V2 CG capture; skip per-descriptor cleanup (#54646)
 - [ ] 907b1a7f22 [CI][ROCm] Avoid redundant image pulls during smoke validation (#54408)
 - [ ] 882ca8d696 [Kernel] add Flashinfer cutedsl w4a16 linear (#53014)

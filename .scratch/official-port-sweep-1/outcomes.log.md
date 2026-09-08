@@ -914,3 +914,9 @@ fallback — that is the single condition under which this item becomes live for
 **Two harness lessons.** (1) `renamecheck.sh` as first written emitted a **false "RELOCATION FAITHFUL"**: the trailer sha is awk field **5** of `cherry picked from commit <sha>`, I used `$3`, so `$UP` became the word `from`, the path loop iterated **zero** times, and it printed a reassuring verdict having asserted nothing — a guard script written minutes earlier, failing in exactly the way this log keeps warning about. It now refuses on non-hex / short / non-commit trailer values and refuses any verdict when `checked == 0`. (2) **Never pass markdown containing backticks as a shell argument**: the note was handed to `tick.sh` in double quotes, bash command-substituted the code spans (trying to execute `.github/workflows/issue_autolabel.yml` and `cherry-pick`) and silently deleted them from the record. Notes must go through a file, not argv — same family as the inline `python3 -c` mangling already recorded here.
 
 `tip d671c7b66 -> 01ecb20ac`.
+
+### 137. `225aec4809` -> `36a70b455` — [Rust Frontend] Migrate to new tekken crate (#53056)
+
+*Minimum gate (hybrid).* minimum-gate landing
+
+`tip 01ecb20ac -> 36a70b455`.
