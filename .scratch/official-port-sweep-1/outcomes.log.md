@@ -694,3 +694,47 @@ it. And an inline `python3 -c "…\n…"` mangled exactly as the brief warns —
 **A check that errors is not a check that passed**, and two of these three would have read as results if I had been skimming.
 
 `tip 2cc1a12bc -> dfa41c2b4 | :8000=200,200 | swap-collision = 0 | 5 files parse; only change to device labels is +8 device:l4`.
+
+### 123 (resolved). `f5c3cc240b` -> `84c58b1eb` — cooperative-topk 32→64, landed with the fork's key retained: `and num_padded_tokens <= 64`
+
+Owner approved the recommendation from the blocked entry above, so the conflict was resolved rather than deferred. Chosen
+resolution: **keep the fork's key, take upstream's threshold** (`num_padded_tokens <= 64`). The rejected alternative — take the
+`csrc`/test hunks and drop the dispatch bump — would have manufactured a *permanent* local deviation in the file that already
+conflicts on every rebase, to dodge a one-line change that is itself a one-commit revert. Faithfulness is the cheaper long-run
+position here.
+
+**The resolver refuses rather than guesses** (`/tmp/resolve123.py`, run in-container): it locates the conflict structurally
+(one `<<<<<<<`, one `=======`, one `>>>>>>>`, correctly ordered), asserts the two sides are *exactly*
+`and num_padded_tokens <= 32` and `and num_rows <= 64`, and exits non-zero without writing if anything differs — at which point
+the driver `cherry-pick --abort`s. On success it reported `remaining markers: 0` and `stale 'num_rows <=' occurrences: 0`.
+The driver also *inverts* the usual expectation: if the pick ever applies **cleanly** it aborts (rc=3), so a future re-run can
+never silently bypass the recorded decision.
+
+**Verification, and its honest ceiling.** `file sets identical (4)`; both `csrc/libtorch_stable/cooperative_topk.*` are
+`blob EQ` + `delta IDENTICAL`; the test file is `blob NE` (fork-diverged base) but `delta IDENTICAL`, with the fork's
+`test_topk_between_k_and_2k` **and** upstream's `test_cooperative_topk_cs2` both present and no stale `32 rows` references.
+The python delta is exactly two lines, and normalising the identifier gives **`identifier-only difference? YES`** — our
+`-num_padded_tokens <= 32 / +…<= 64` versus upstream's `-num_rows <= 32 / +…<= 64`. Kernel-side, our tree now carries the
+`num_rows <= 64` bound. Both files `ast.parse` and the module imports. The variable-binding question is not newly opened by
+this pick: the fork *already* dereferenced `num_padded_tokens` at that same line (assigned at 703, used at 786), so the pick
+inherits a property it cannot change.
+
+**No runtime leg is possible for this item on this box, for three independent reasons — stated as a gap, not glossed.**
+1. **The standing never-touch-GPU rule.** I run every container with `CUDA_VISIBLE_DEVICES=""`, so `tests/kernels/test_top_k_per_row.py`
+   cannot execute: my first run reported **138 failed in 26 s**, and the actual one-line reason is
+   `RuntimeError: No CUDA GPUs are available` (`torch/cuda/__init__.py:529`). Those 138 are *my own guard*, not the change.
+2. SM 8.7 (this host and the production container) has no thread-cluster support, and `use_cooperative_topk` is additionally
+   gated on `has_device_capability(90)` — the changed predicate is dead code here regardless of its value.
+3. The in-tree `.so` **predates** the `.cu` edit, so the new 64-row CS=2 path is not even present in the binary that would be
+   exercised; the source/binary skew resolves only at the next image build, which is separately owner-gated.
+So the evidence for this item is static + structural, and behavioural confirmation is deferred to a Hopper build. Serving on
+the Jetson cluster is provably unaffected.
+
+**Another vacuous check caught before it reached the report.** My base fail-set comparison printed `new failures on head: 0`
+and `only-on-base: 0`, which reads as "no regression" — but both files were **empty** because the collection pipeline died on
+`sed: -e expression #1, char 10: unknown option to 's'`, so the diff was 0-vs-0. Third time this window an "0 findings" result
+was really a broken probe (after the `#[test]` grep and the wrong-cwd audit). The guard worth keeping: **when a comparison
+reports zero of everything, check that both sides are non-empty before believing it.** Worktree used for the attempt was
+cleaned (`worktrees=2`, `dirty=0`).
+
+`tip dfa41c2b4 -> 84c58b1eb | :8000=200,200 | swap-collision = 0 | blocked.md cleared | runtime leg: NOT POSSIBLE here (CUDA intentionally disabled; SM87; stale .so)`.
