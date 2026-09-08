@@ -753,3 +753,22 @@ every item in the sweep, behaviour only moves at the next image build, which sta
 a draft model plus GPU, and the GPU is intentionally not exposed to my containers (see item 123's note).
 
 `tip 84c58b1eb -> 0edb36733 | :8000=200,200 | swap-collision = 0`.
+
+### 126. `07ea9350ba` -> `9559cad0e` — `[Kernel][Gemma4] Prune Triton sliding-window tiles for multimodal prefixes (#53147)`
+
+Clean, top tier: all three files probed **CLEAN** and landed **`blob EQ`** with `delta IDENTICAL` and matching numstat
+(`+308/−10`, of which 253 lines are new tests in `tests/kernels/attention/test_triton_unified_attention.py`). No swap
+collision; sequencer clean; `:8000` 200 before and after.
+
+**The heat-map's "mega-conflict at ~126" forecast did not apply to this sha** — row numbers are queue positions, not shas (skill
+Verification 6), and the item that actually landed at that position touched only fork-clean Gemma4/Triton files. Recorded so
+the forecast is not treated as a property of the position: **probe per item, and let the blob comparison — not the forecast —
+decide whether to escalate.** The two genuine mega-conflict candidates (~126 and ~353 as forecast) are identified by their
+model-file content, so they still have to be met when they arrive on their own shas.
+
+Static leg only: both touched modules import cleanly on CPU and the new pruning helper `compute_tile_loop_bounds` is present in
+`triton_attention_helpers`. **No behavioural leg is possible here** — the 253 new lines are GPU Triton kernel tests, and the
+GPU is intentionally not exposed to my containers (see item 123's note for the `No CUDA GPUs are available` evidence), so
+correctness of the tile-pruning itself is inherited from upstream CI plus byte-identity, not demonstrated on this box.
+
+`tip 0edb36733 -> 9559cad0e | :8000=200,200 | swap-collision = 0 | import-only leg (GPU intentionally unavailable)`.
