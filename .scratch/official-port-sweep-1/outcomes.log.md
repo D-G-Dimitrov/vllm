@@ -922,3 +922,9 @@ fallback — that is the single condition under which this item becomes live for
 **But a dependency swap has one failure mode worth seconds to rule out, and it is not behavior:** a commit that bumps a requirement without its lockfile leaves a tree that no longer resolves. Checked rather than assumed: the upstream commit **does** carry its `Cargo.lock` update (both files are in the same pick), and `cargo metadata --locked` in the runtime image returned **rc=0** against the resulting tree, i.e. the lockfile resolves exactly and `--locked` would not need to rewrite it. Build-consistency confirmed without a five-minute workspace compile.
 
 `tip 01ecb20ac -> 36a70b455 | swap-collision = 0 | cargo metadata --locked: rc=0`.
+
+### 138. `907b1a7f22509b0095f2711cd47637c6ca345325` -> `9ccd9694b` — [CI][ROCm] Avoid redundant image pulls during smoke validation (#54408)
+
+*Minimum gate (hybrid).* ROCm CI build plumbing only: `.buildkite/scripts/ci-bake-rocm.sh`, `.buildkite/scripts/rocm/smoke-test-image.sh`, `docker/Dockerfile.rocm`, `docker/ci-rocm.hcl`, plus structural tests added to `tests/tools/test_docker_build_metadata_args.py`. All 5 files were CLEAN at base (fork blob == upstream parent) and landed `blob EQ` with identical deltas; no swap collision. No leg: the fork builds and serves CUDA on Jetson SM 8.7 and never runs the ROCm bake, so nothing here is reachable from the Python engine — and the new tests drive ROCm-only bash through a `docker` stub on PATH, so a pass would certify upstream's CI rather than anything we ship. Read the diff anyway per the minimum-gate rule: the only addition not gated behind ROCm is the test file itself, and no path under `vllm/` or `csrc/` is touched.
+
+`tip 36a70b455 -> 9ccd9694b`.

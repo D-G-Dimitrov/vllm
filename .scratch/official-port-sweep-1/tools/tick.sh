@@ -2,17 +2,20 @@
 # Terse ledger bookkeeping for a minimum-gate landing.
 # usage: tick.sh <up-sha10> <landing9> <title> <note>
 set -uo pipefail
-SCR=/Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/official-port-sweep-1
+SCR=${SCR:-/Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/official-port-sweep-1}
 TDIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)   # sibling tools live beside this script
 UP="$1"; NEW="$2"; TITLE="$3"; NOTE="${4:-}"
 # Notes must never travel through argv: backticks in markdown get command-substituted by bash.
-# Pass a file (prefixed with @) for any note containing code spans.
+# Pass a file (prefixed with @) for any note containing code spans. The guard applies to the
+# argv path ONLY -- a file-sourced note is the sanctioned channel and legitimately contains
+# code spans; refusing it there would abort AFTER land.sh has already pushed (landed, unticked).
 if [ "${NOTE:0:1}" = "@" ]; then
   NOTEFILE="${NOTE:1}"
   [ -s "$NOTEFILE" ] || { echo "!! note file $NOTEFILE missing/empty; refusing to write a blank note"; exit 1; }
   NOTE=$(cat "$NOTEFILE")
+else
+  case "$NOTE" in *'`'*) echo "!! note contains raw backticks and was passed as argv - use @$NOTE"; exit 1;; esac
 fi
-case "$NOTE" in *'`'*) echo "!! note contains raw backticks and was passed as argv - use @file"; exit 1;; esac
 cd "$SCR" || exit 1
 
 grep -q "^### " outcomes.log.md || { echo "!! no ### entries found; refusing to number"; exit 1; }

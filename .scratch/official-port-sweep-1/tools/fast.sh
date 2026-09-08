@@ -5,6 +5,12 @@
 set -uo pipefail
 TDIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)   # sibling tools live beside this script
 UP="$1"; TITLE="${2:-}"; NOTE="${3:-}"
+# The README documents a [@notefile] form, so honour it: without this expansion a bare @path
+# lands the literal "@/tmp/note.md" as the ledger entry (silent content loss, post-push).
+if [ "${NOTE:0:1}" = "@" ]; then
+  [ -s "${NOTE:1}" ] || { echo ">> STOP: note file ${NOTE:1} missing or empty - refusing to write a blank note."; exit 11; }
+  NOTE=$(cat "${NOTE:1}")
+fi
 cd /Users/mitaka/Projects/PyCharm/vllm-mitaka || exit 1
 BASE=$(git rev-parse --short=9 HEAD)
 
