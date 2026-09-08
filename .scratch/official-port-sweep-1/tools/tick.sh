@@ -3,6 +3,7 @@
 # usage: tick.sh <up-sha10> <landing9> <title> <note>
 set -uo pipefail
 SCR=/Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/official-port-sweep-1
+TDIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)   # sibling tools live beside this script
 UP="$1"; NEW="$2"; TITLE="$3"; NOTE="${4:-}"
 # Notes must never travel through argv: backticks in markdown get command-substituted by bash.
 # Pass a file (prefixed with @) for any note containing code spans.
@@ -29,5 +30,5 @@ before=$(grep -c "^- \[ \] $UP " issues/03-pr-grind.md)
 sed -i '' "s/^- \[ \] $UP /- [x] $UP /" issues/03-pr-grind.md
 after=$(grep -c "^- \[x\] $UP " issues/03-pr-grind.md)
 echo "entry=$N  ticked ${before}->${after}"
-bash /tmp/audit.sh 2>/dev/null | head -1
+bash "$TDIR/audit.sh" 2>/dev/null | head -1
 bash ledger-sync.sh 2>&1 | tail -1

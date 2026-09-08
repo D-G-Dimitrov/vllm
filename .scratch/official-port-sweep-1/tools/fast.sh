@@ -3,11 +3,12 @@
 # pick on jetson -> require clean + blob-identity (or verified rename) -> land -> terse ledger entry.
 # Stops without touching the branch on ANY of: conflict, file-set diff, or a non-EQ blob.
 set -uo pipefail
+TDIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)   # sibling tools live beside this script
 UP="$1"; TITLE="${2:-}"; NOTE="${3:-}"
 cd /Users/mitaka/Projects/PyCharm/vllm-mitaka || exit 1
 BASE=$(git rev-parse --short=9 HEAD)
 
-OUT=$(ssh jetson-222 "bash -s $UP $BASE" < /tmp/pick.sh 2>&1 | grep -viE "pi-lens|tree-sitter|read_symbol|^\s*(→|·)|^✗|^✓")
+OUT=$(ssh jetson-222 "bash -s $UP $BASE" < "$TDIR/pick.sh" 2>&1 | grep -viE "pi-lens|tree-sitter|read_symbol|^\s*(→|·)|^✗|^✓")
 echo "$OUT" | sed -n '3,20p'
 
 echo "$OUT" | grep -q "rc=0" || { echo ">> STOP: pick did not complete cleanly (conflict or error). No landing."; exit 2; }
@@ -26,7 +27,7 @@ if [ -n "$HOT" ] && [ "${FORCE:-0}" != "1" ]; then
   echo ">> STOP (needs-read): this pick touches hot-path code and must be diff-read before landing:"
   echo "$HOT" | sed 's/^/     /'
   echo "   pick is committed on jetson at $NEW (unpushed, tree clean)."
-  echo "   after reading: bash /tmp/land.sh $NEW $BASE && bash /tmp/tick.sh $UP $NEW \"<title>\" \"<note>\""
+  echo "   after reading: $TDIR/land.sh $NEW $BASE && $TDIR/tick.sh $UP $NEW \"<title>\" \"@<notefile>\""
   echo "   to discard:    ssh jetson-222 'cd ~/dev/vllm && git reset --hard $BASE'"
   echo "   or FORCE=1 to land unread (not the default)."
   exit 9
@@ -38,10 +39,10 @@ fi
 [ -n "$NOTE" ] || NOTE='Minimum-gate landing under the hybrid rule: no leg attempted (not executable on this box and/or not fork-relevant).'
 echo "   title: $TITLE"
 echo ">> landing $NEW on $BASE"
-bash /tmp/land.sh "$NEW" "$BASE" 2>&1 | tail -3 || { echo ">> STOP: land failed"; exit 8; }
+bash "$TDIR/land.sh" "$NEW" "$BASE" 2>&1 | tail -3 || { echo ">> STOP: land failed"; exit 8; }
 # Notes travel by FILE, never argv: backticks in markdown are command-substituted by bash.
 NOTEF=/tmp/note.$(date +%s).md
 printf '%s\n' "$NOTE" > "$NOTEF"
-bash /tmp/tick.sh "$UP" "$NEW" "${TITLE:-$UP}" "@$NOTEF"; trc=$?
+bash "$TDIR/tick.sh" "$UP" "$NEW" "${TITLE:-$UP}" "@$NOTEF"; trc=$?
 rm -f "$NOTEF"
 [ "$trc" = "0" ] || echo "!! tick.sh rc=$trc - item is LANDED but the ledger entry may be incomplete; repair before continuing"
