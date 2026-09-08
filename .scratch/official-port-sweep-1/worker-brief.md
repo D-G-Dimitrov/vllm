@@ -43,6 +43,16 @@ E. **The decision is reachability, not file-touch.** Quote the gate (env-var def
    `vllm/models/deepseek_v4/**` (DSV4). Remember they **subclass** shared layers — grep for inheritance
    of the changed method, not just direct calls. Zero default-path delta must be **proven**, ideally with
    a small in-container experiment including a *forced* negative control. If you cannot prove it, say so.
+
+**Anchor your identifier greps -- a substring match is not a reachability result (hit on item 117).** DSV4 imports
+`vllm.v1.attention.`**`ops.`**`rocm_aiter_mla_sparse`, while what item 117 rewrote was
+`vllm.v1.attention.`**`backends.mla.`**`rocm_aiter_mla`. A loose `grep rocm_aiter_mla` across the protected families
+returns a hit that means nothing, and would have escalated a safe item (or, inverted, masked a real one). Use a
+boundary-anchored pattern (`backends\.mla\.rocm_aiter_mla([^_]|$)`) and **run the loose pattern as the control**, so you
+can show the boundary -- not luck -- produced the zero. Same class of error as forgetting `--no-merges` on overlap
+checks. Also check *how* a backend is referenced: `backends/registry.py` maps the enum to a dotted-path **string**
+(resolved lazily), so a registry entry does not import the module on other platforms. If you need to know whether a
+changed module is import-safe off-platform, import it in the container -- with a positive control.
 F. **CPU-only validation** in `mitakad/vllm:0.29.0.dev0-r39.2.tegra-aarch64-cp312-cu132-24.04-commit.d4d703c`:
    bind-mount the repo, `PYTHONPATH` at the tree, copy the 8 `.so` **recursively**
    (`find vllm -name '*.so'` — 2 are nested in `vllm/vllm_flash_attn/`; top-level-only mimics a fake

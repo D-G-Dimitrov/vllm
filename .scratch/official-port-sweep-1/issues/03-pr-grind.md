@@ -160,7 +160,7 @@ Work every official PR from the wtdcode fork point through the sweep cutoff, **o
 - [x] 3593c964de [ROCm] Add TheRock preview docker updates, Keep Python 3.12 and Ubuntu 22.04 (#49925) -- landed dea406f89; 0 .py changed, all 7 blobs byte-identical to upstream; carries upstream's unsatisfiable `triton==3.7.1+git0263a6a6` ROCm pin (see outcomes 116)
 - [ ] e9dd6d4834 [CI] Exclude kv_transfer changes from broad spec-decode/kernels/multimodal triggers (#54365)
 - [ ] 39e276eaeb [Structured Output] Let terminal grammars stop under min_tokens (II) (#54218)
-- [ ] dbb7fffddb [ROCm][MLA][DCP] Support causal multi-token verification (#51705)
+- [x] dbb7fffddb [ROCm][MLA][DCP] Support causal multi-token verification (#51705) -- landed 413e14565; all 7 blobs byte-identical to upstream incl. parent parity; ROCm-gated, CUDA import safety proven
 - [ ] 2ba984a5d0 [ROCm][DSpark][DCP] Serve prefix cache hits under DCP for Kimi-K3 (#53598)
 - [ ] 65ce85fcdc Add Laguna-XS-2.1-INT4 to nightly CI (#52961)
 - [ ] f5e441de10 [Bugfix][Test] Fix off-by-one error in sampled token rank causing flaky logprobs test (#53976)

@@ -394,3 +394,38 @@ absence. Before concluding "not recorded anywhere", grep the same corpus for a s
  untracked stray left by item 114's `/tmp/resolve114.py` (`open(P + ".resolved", "w")`). Untracked, so it never affected
  dirty counts, but it is exactly the kind of residue that makes a later `git status` read ambiguous. Its existence
  *only* on jetson independently corroborates the `pr/efix` resolution. `.cargo-home/` left untouched (pre-existing).
+
+117. dbb7fffddb -> 413e14565 PICKED+PUSHED ([ROCm][MLA][DCP] Support causal multi-token verification #51705). First
+  MLA/spec-decode item of the sweep -- and it was the **near-name collision**, not the diff, that could have bitten.
+  7 files +1105/-111, conflicts=0. All 7 files have **parent blob == upstream's parent blob AND result blob ==
+  upstream's result blob** (changed-line md5 7/7, patch-id equal `6d15f995...`). *Insight worth reusing: when both
+  equalities hold, the silent-loss scan is structurally incapable of finding a merge artifact -- there was no merge. It
+  still earns its keep as a control, but stop treating a clean scan as evidence of safety here.* The one name-level
+  exception (`test_fp8_never_routes_to_gluon` gone from `test_rocm_aiter_mla_fp8_decode_routing.py`) is **upstream's own
+  rename**; and the check that flagged it was itself faulty -- `grep -c "def $name"` matched the longer
+  `..._gluon_under_...` because it had no word boundary.
+  **The real trap, and why a loose grep would have produced a wrong all-clear:** DSV4 imports
+  `vllm.v1.attention.**ops**.rocm_aiter_mla_sparse` (NOT touched by this commit) while the rewritten module is
+  `vllm.v1.attention.**backends.mla**.rocm_aiter_mla`. A substring grep for `rocm_aiter_mla` over the protected families
+  returns 1 hit; boundary-anchored `backends\.mla\.rocm_aiter_mla([^_]|$)` returns **0** -- and I ran the loose pattern
+  as the control precisely to prove the difference is real, not luck. Same class as item 116's `--no-merges` false
+  positive: *an unanchored identifier match is not a reachability result.*
+  **Gate (verbatim, with a fired control):** `if rocm_aiter_ops.is_mla_enabled(): return [ROCM_AITER_MLA, ...] else:
+  return [TRITON_MLA]`, where `is_mla_enabled() = _AITER_ENABLED and _MLA_ENABLED` and `VLLM_ROCM_USE_AITER` defaults to
+  **False** (`vllm/envs.py`) -> observed CUDA list `['TRITON_MLA']`; forcing it True yields
+  `['ROCM_AITER_MLA','TRITON_MLA','ROCM_AITER_TRITON_MLA']`, so the negatives mean something. `ROCM_AITER_MLA` appears in
+  no CUDA/nvidia priority list (0 hits). `vllm/platforms/rocm.py`'s 26-line delta is entirely inside
+  `RocmPlatform.check_and_update_config`; the live dispatch on our box is `CudaPlatformBase.check_and_update_config`
+  (virtual call at `vllm/config/vllm.py:1650`), platform observed as `NvmlCudaPlatform`.
+  **Import safety proven, not assumed:** `registry.py:53` resolves `ROCM_AITER_MLA` from a **lazy string**, so nothing
+  imports the rewritten backend at CUDA startup; and an in-container import of all four modules
+  (`...mla.rocm_aiter_mla`, `ops.rocm_aiter_mla_merge`, `backends.registry`, `ops.rocm_aiter_mla_sparse`) returned
+  `RESULT=ALL_IMPORT_OK` with the `vllm.envs` control firing. The new merge op is imported only by the rewritten backend
+  and one test. `tip dea406f89 -> 413e14565 | :8000=200,200 | swap-collision vs 337d3f5dd = 0`.
+  **Coverage -- worker correction accepted (it contradicted my own brief, correctly):** I asserted no container leg here
+  could execute these tests. Wrong for one file -- `test_rocm_aiter_mla_head_padding.py` **runs 34 tests that pass on
+  this aarch64 host**, with a base-compare fail-set identical to the parent tree. *That result is worker-run and I did
+  not re-execute it; recorded as reported.* The other three genuinely cannot run here
+  (`test_rocm_aiter_mla_fp8_decode_routing.py:23`, `test_rocm_aiter_mla_mtp_split.py:15` hard-skip at module level on
+  `not current_platform.is_rocm()`; `causal_verify_mask` skips at :210) -- so the **+385 new DCP-verify test lines are
+  unexecutable on this host** and remain unverified by us.
