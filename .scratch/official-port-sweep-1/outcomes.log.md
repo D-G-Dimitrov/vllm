@@ -363,3 +363,34 @@ orchestrator's own 8 local writes in 09:00-09:45 (all `/tmp/*.py` or `.scratch/`
 **even for `jetson-222`** (broken corpus walk; `find -print0 | xargs -0 grep` found 1,607 files and 12 real hits).
 *This is the same defect as the day's three false checks, mirrored: a check that silently returns nothing reads as an
 absence. Before concluding "not recorded anywhere", grep the same corpus for a string you KNOW is there.*
+
+116. 3593c964de -> dea406f89 PICKED+PUSHED ([ROCm] Add TheRock preview docker updates, Keep Python 3.12 and Ubuntu
+ 22.04 #49925). 7 files +1384/-7, conflicts=0, **zero `.py` files changed**. Fork-local overlap **0 of 7**, recomputed
+ against the live 354-file fork-surface (which *does* contain `docker/Dockerfile`, `docker/versions.json`,
+ `requirements/cuda.txt`, so the surface is live in this exact area -- the zero is not vacuous). Faithfulness at the
+ strongest tier for **all 7**: result blob SHA equals upstream's for every file; the 4 modified files also have parent
+ blobs equal to upstream's parent blobs (no resolution performed at all); the 3 new files verified `git cat-file -e`
+ **ABSENT in both parents** (so they are pure additions, not silently-overwritten existing paths); per-file
+ changed-line md5 7/7; patch-id equal (`bc47fff55e9d...`). `tip 3c2a91cc1 -> dea406f89 | :8000=200,200 | swap-collision
+ vs 337d3f5dd = 0 (42 swap files vs 7)`.
+ **`pyproject.toml` was the only platform-neutral risk and is proven inert:** the single added line is
+ `a63ede7 = "a63ede7"` under `[tool.typos.default.extend-identifiers]` (line 141) -- consumed only by the `typos`
+ pre-commit hook, not by `[build-system]`/`[project]`/`[tool.setuptools]`/`[tool.setuptools_scm]`, which the
+ in-container `tomllib` diff showed each IDENTICAL (leaf keys 80->81, LOST `[]`, GAINED just that one key, CHANGED `[]`,,
+ positive controls fired). `git grep -l a63ede7 HEAD` = 1 file, so the token exists nowhere else and an
+ extend-identifiers entry can only *suppress* a lint finding. `pip install -e .` and the CUDA/aarch64 build are
+ unaffected.
+ **KNOWN UPSTREAM DEFECT CARRIED FAITHFULLY (do not "fix" it in a port):** `requirements/build/rocm.txt` pins
+ `triton==3.7.1+git0263a6a6`, which is **unsatisfiable against the AMD index this very commit introduces** -- the index
+ only serves `3.7.1+git0263a6a6.rocm7.14.0`, and upstream's own new `rock.txt` uses the correct full suffix. Verified by
+ cross-platform `pip download` plus an independent `SpecifierSet` check with fired controls. This breaks **upstream ROCm
+ CI only**; it can never bite our CUDA/aarch64 path (that index carries no aarch64 wheels at all: `linux_x86_64` +
+ `win_amd64` only). Recorded as an observation, out of scope for a faithful pick -- raising it is an owner decision.
+ **No coverage claimed:** no container leg on this host can build or validate a ROCm dockerfile (aarch64/Tegra, no AMD
+ GPU, base images unavailable), and no pytest leg was run because 0 python files changed and no test imports a
+ Dockerfile/requirements file -- a suite here would be theatre. The dockerfiles are verified byte-identical to upstream
+ and have **zero in-tree consumers** (`git grep -ln Dockerfile.rock HEAD` is empty; they are invoked manually).
+ **Hygiene:** removed `vllm/model_executor/layers/quantization/inc/inc.py.resolved` from the jetson grind worktree -- an
+ untracked stray left by item 114's `/tmp/resolve114.py` (`open(P + ".resolved", "w")`). Untracked, so it never affected
+ dirty counts, but it is exactly the kind of residue that makes a later `git status` read ambiguous. Its existence
+ *only* on jetson independently corroborates the `pr/efix` resolution. `.cargo-home/` left untouched (pre-existing).
