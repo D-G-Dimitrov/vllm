@@ -864,4 +864,14 @@ believed.**
 
 *Minimum gate (hybrid).* XPU/SYCL activation op routing: reachable only through the Intel XPU custom-op backend, which this fork neither builds nor serves. `blob EQ`, delta identical, no swap collision, sequencer clean, :8000 200 before/after.
 
+**Why this one still got a semantics read despite being minimum-gate:** the file is `vllm/model_executor/layers/activation.py`, a
+shared hot-path module, not an XPU-only directory — so "XPU change" was a claim about the *diff*, not the *path*, and it needed
+checking. Every functional hunk is XPU-scoped: `is_cuda_alike() or is_xpu()` (a no-op on CUDA, which already satisfies
+`is_cuda_alike()`), new `forward_xpu` methods, and `elif current_platform.is_xpu(): self.op = torch.ops._C.relu2_no_mul`. The
+one line that looks alarming out of context — `return self.forward_native(x)` → `return self.forward_cuda(x)` — sits **inside
+`SituAndMul.forward_xpu`**, so CUDA dispatch is untouched; the only CUDA-visible change in the whole diff is a comment
+reworded from "Fused CUDA kernel" to "Fused CUDA/XPU kernel". Rule worth keeping: minimum-gate means *no test leg*, never
+*no reading of the diff* — a `blob EQ` pick in a hot-path file can still change serving behaviour, and the byte-identity check
+proves faithfulness to upstream, not safety for us.
+
 `tip fe19d7e79 -> eae974f76`.
