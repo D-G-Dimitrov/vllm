@@ -1,3 +1,6 @@
-# Commits deliberately NOT ported to mitaka/backport. Excluded from "next actionable" alongside
-# swap-dependent.txt and e126687a9a. Each entry has a decision record in outcomes.log.md.
-4c58a0c398  #111 [KV Offload] Unlink /dev/shm region after all workers map it (#52596)
+# Commits excluded from "next actionable" alongside swap-dependent.txt. Each entry has a decision record in
+# outcomes.log.md. THESE SHAS MUST BE ENTRY LINES, NOT PROSE: the exclusion set is parsed from entry lines, and an
+# exclusion named only in a comment is invisible to it (this actually happened -- e126687a9a lived solely in this
+# header's prose until 2026-09-08, and a membership grep that matched the comment reported a FALSE "already excluded").
+4c58a0c398  #111 [KV Offload] Unlink /dev/shm region after all workers map it (#52596) -- permanently NOT ported (fork fixes the leak via flock+reaper; a naive port leaks .mmap.meta forever)
+e126687a9a  #88 [Model] Support Qwen3.8-Flash-Next (#53896) -- DEFERRED, not "never": no GPU validation yet and merging it is an owner-level decision. Excluded until swap/qwen-88 merges and item 88 is ticked; its tracker bullet deliberately stays `[ ]`, so a naive oldest-first rule WILL select it. Never cherry-pick it or anything on swap/qwen-88.

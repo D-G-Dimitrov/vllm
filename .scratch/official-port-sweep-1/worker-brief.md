@@ -80,6 +80,14 @@ H. Leave `~/dev/vllm` exactly 1 commit ahead of the base, `git status --porcelai
 Never report a sha you did not read back from git, and never report a test you did not see pass. A
 contradiction with anything the orchestrator told you earlier is welcome — you have the fresher view.
 
+## Base assertions: never use a remote-tracking ref on the work box (learned on item 115)
+
+On `jetson-222:~/dev/vllm`, `origin/mitaka/backport` is **permanently stale** (currently ~77 commits behind) because
+jetson has no HTTPS credentials and can never push, so that ref never advances. Therefore: always assert `HEAD` against
+the **explicit sha** the orchestrator gave you. Never write a base check as `HEAD == origin/mitaka/backport` -- it fails
+spuriously -- and **never "fix" that mismatch by merging or resetting onto the stale ref**, which would silently regress
+the branch by 77 commits. If `HEAD` does not equal the sha in your task, STOP and report; do not reconcile it yourself.
+
 ## Time-boxing (added after item 100's worker hit its ceiling)
 
 A worker that times out **after committing** costs nothing; one that times out mid-verification loses its

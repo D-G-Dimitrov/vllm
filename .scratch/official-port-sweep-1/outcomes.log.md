@@ -303,12 +303,63 @@ stale 342-file oracle; refreshed surface=354 files`
    `vllm/model_executor/layers/quantization/inc/inc.py` was modified in `vllm-mitaka` -- by one inserted character:
    `def _mtp_checkpoint_pr/efix(...)` (a syntax error). Not mine, not a worker's (workers run on jetson), not
    present in HEAD, in `b2a06c9e4`, on jetson, or on origin (all asserted 0). Verified the local delta was exactly
-   that 1 insertion/1 deletion, then discarded it. **I cannot explain its origin and am not pretending otherwise.**
+   that 1 insertion/1 deletion, then discarded it. ~~I cannot explain its origin.~~ **RESOLVED in the next session
+   (2026-09-08) -- see "The `pr/efix` mutation: resolved" at the end of this file. It was the owner's own PyCharm, and
+   it happened at 09:23:51, not "at the moment of the merge".**
    *Rule adopted: the land chain always asserted `dirty=0` on the JETSON worktree and never once on the Mac clone,
    which is where merges and pushes actually happen. Assert tracked-dirty=0 on BOTH sides before every merge; if a
    mystery edit reappears, treat it as a possible second writer on the Mac worktree and stop to investigate.*
+   *Rule strengthened (post-resolution): the invariant is not "clean at merge time" but **clean continuously** -- this
+   corruption sat unnoticed for 12.5 h only because nothing needed to update that one file. A human IDE/editor with
+   `vllm-mitaka` open IS a second writer; do not keep the push clone open in an editor during a grind.*
 2. **My three-way tip assert was broken (new form).** `git ls-remote <remote> mitaka/backport` matches by ref TAIL,
    so it returned **two** refs and `$J` was two SHAs -- the equality test failed while an echo of the first 9 chars
    of each *looked* like it matched. Fixed with `--heads` + exact refname match. Third false-check today (vacuous
    `git diff` on an unmerged path, an oracle script that printed 0 files after failing to run, now this): the
    pattern is the same every time -- **a check whose output is compared visually instead of structurally.**
+
+115. 82936c409d -> 3c2a91cc1 PICKED+PUSHED ([Tests][XPU] Limit Qwen2-VL generation length to avoid flaky numerical
+ divergence #54172). **Cleanest item of the sweep**: conflicts=0, 1 file, 16+/8-, and the result blob is
+ **byte-identical to upstream's** (`c364bab38`) while our pre-pick blob was **byte-identical to upstream's PARENT**
+ (`45ad479d8`) -- i.e. zero fork divergence in this file, which is the strongest faithfulness tier available (strictly
+ better than per-file changed-line md5 `ca1c3df0b70f00a33245d10c416952d5` match, which also held, and commit-level
+ patch-id EQUAL). Fork-local overlap ZERO, recomputed per the fork-surface rule (every commit ever touching this file
+ carries an upstream `(#N)` marker) -- not from the frozen 342-file set. Silent-loss: 14 symbols parent vs 14 at HEAD,
+ `comm -23` empty, **with a positive control** (same pipeline returns 12 names when fed a synthetic removal), so the
+ empty result is not vacuous. The commit edits a VALUE inside `VLM_TEST_SETTINGS["qwen2_vl"]`, not a key set (key set
+ 53 == 53 parent vs HEAD). Of 24 changed lines exactly **one is functional**: `max_tokens=64 if
+ current_platform.is_cpu() else 128` -> `... or current_platform.is_xpu() ...`; the other 22 are comment lines. Verified
+ independently by the orchestrator after the worker stopped (all of the above re-derived from git, not adopted from the
+ report) + `compile()` OK and `cmp` byte-identical vs the upstream blob. `tip b2a06c9e4 -> 3c2a91cc1 | :8000=200 |
+ swap-collision vs 337d3f5dd = 0 (42 swap files vs 1)`.
+ **Unproven, recorded not fatal:** the worker hit its 1 h ceiling *after* committing (the cheap failure mode -- the
+ commit survives, the analysis does not). It never ran the reachability probe or either container leg, so there is no
+ in-container evidence and no proof that the protected families cannot reach this param. Accepted anyway because the
+ change is test-only, in a file with byte-level fork parity to upstream, inside a `qwen2_vl` test-settings dict; the
+ only way it alters a non-XPU/CPU path is if upstream itself is wrong.
+ **Numbering caveat for future agents:** `heat-map.md` row numbers are QUEUE POSITIONS, not the `N.` landing numbers
+ used in this file -- `82936c409d` is row 117 but landing item 115, because two queue rows (`dafbef15a1` swap-dependent,
+ `4c58a0c398` skipped) never landed. Always key on the sha; never reconcile the two numbering systems.
+
+### The `pr/efix` mutation: resolved (2026-09-08), and the method warning that came with it
+
+**Not an agent. The owner's own PyCharm.** Evidence chain: the file's `mtime` at discovery was **09:23:51**, so it was
+written ~11 h *before* the 20:43 merge that noticed it (the handoff's "at the moment of the merge" is wrong by 12.5 h);
+the delta is a single **substitution** (`_mtp_checkpoint_pr`**`e`**`fix` -> `pr/efix`), i.e. one keystroke over a
+selected char, not an insertion; `idea.log` shows PyCharm 2026.2 `IDE STARTED 2026-09-06 18:43:30` with project
+`vllm-mitaka`, one continuous session (the uptime counter at 09:24:59 back-computes to that start), disposing the
+project at **09:42:11** with `fileClosed inc.py` -- so that exact file was open in the editor across 09:23:51, and
+PyCharm autosaves.
+Excluded with positive evidence: the item-114 worker (only *read* the brief; its `python -c` calls were escaped *remote*
+scripts); `/tmp/resolve114.py` (ends in `open(P,"w")` with a **relative** `P` -- genuinely dangerous, but it was scp'd
+and run in `jetson:~/dev/vllm`, artifact present there, and no `inc.py.resolved` exists in either Mac clone); the
+orchestrator's own 8 local writes in 09:00-09:45 (all `/tmp/*.py` or `.scratch/`); `swap88-mirror.sh` (writes only under
+`.scratch/`); no crontab; no pi session rooted in the push clone ran that day.
+
+**Method warning -- three of my "no evidence" results were vacuous, caught only by positive controls.** Grepping for
+`_mtp_checkpoint_pr/efix` found nothing because the literal in the logs is the shorter `pr/efix`; grepping JetBrains
+`LocalHistory` found nothing **even for `vllm`** (it is compressed storage, unreadable by grep -- and it last flushed
+09:42, so it could not have covered the merge window anyway); and `grep -rl ... ~/.pi/agent/sessions` found nothing
+**even for `jetson-222`** (broken corpus walk; `find -print0 | xargs -0 grep` found 1,607 files and 12 real hits).
+*This is the same defect as the day's three false checks, mirrored: a check that silently returns nothing reads as an
+absence. Before concluding "not recorded anywhere", grep the same corpus for a string you KNOW is there.*
