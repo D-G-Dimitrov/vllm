@@ -900,3 +900,9 @@ from upstream CI plus byte-identity. Worth re-examining if this branch ever serv
 fallback — that is the single condition under which this item becomes live for us.
 
 `tip eae974f76 -> 79e28c1c8 | swap-collision = 0`.
+
+### 135. `22df3a34e0` -> `d671c7b66` — [Perf][Rust Frontend] Count the tokenizer vocabulary once at construction (#54449)
+
+*Minimum gate (hybrid).* minimum-gate landing
+
+`tip 79e28c1c8 -> d671c7b66`.
