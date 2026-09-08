@@ -928,3 +928,22 @@ fallback — that is the single condition under which this item becomes live for
 *Minimum gate (hybrid).* ROCm CI build plumbing only: `.buildkite/scripts/ci-bake-rocm.sh`, `.buildkite/scripts/rocm/smoke-test-image.sh`, `docker/Dockerfile.rocm`, `docker/ci-rocm.hcl`, plus structural tests added to `tests/tools/test_docker_build_metadata_args.py`. All 5 files were CLEAN at base (fork blob == upstream parent) and landed `blob EQ` with identical deltas; no swap collision. No leg: the fork builds and serves CUDA on Jetson SM 8.7 and never runs the ROCm bake, so nothing here is reachable from the Python engine — and the new tests drive ROCm-only bash through a `docker` stub on PATH, so a pass would certify upstream's CI rather than anything we ship. Read the diff anyway per the minimum-gate rule: the only addition not gated behind ROCm is the test file itself, and no path under `vllm/` or `csrc/` is touched.
 
 `tip 36a70b455 -> 9ccd9694b`.
+
+### 139. `882ca8d696` -> `7c4ad3d08` — [Kernel] add Flashinfer cutedsl w4a16 linear (#53014)
+
+*Full depth (hybrid): fork-relevant and probe-executable.* Fork-relevant (NVFP4 linear dispatch) **and** executable as a static/dispatch probe, so full depth rather than the minimum gate. 8/8 files applied cleanly; 7 land `blob EQ` with identical deltas. `vllm/utils/flashinfer.py` is `blob NE` because of *pre-existing* fork divergence (+26 lines around the fork's own `has_flashinfer_sm90_nope_mla`), not this pick: its `delta_vs_upstream` is IDENTICAL, the silent-deletion symbol scan is empty, all 26 fork lines are still present, and the fork-vs-upstream gap is the same 26 lines before and after — the gap's only difference is the hunk header line numbers (`292a293,318` → `295a296,321`) because upstream inserted 3 lines above it. `patch-id EQUAL` is not the evidence here; the gap-invariance is.
+
+**The claim worth testing was not numerics, it was dispatch**: this commit inserts a kernel into `_POSSIBLE_NVFP4_KERNELS[CUDA]` and rewrites the `use_a16` branch of `init_nvfp4_linear_kernel`. Proven by execution in the runtime image (CPU-only, `CUDA_VISIBLE_DEVICES=""`), base-vs-pick as a true differential across two trees (`logs/i139-nvfp4-dispatch-diff.txt`; each side asserts which tree it loaded — an earlier draft of the leg silently ran the new tree twice because `sys.path[0]` is the script's directory and beat `PYTHONPATH`):
+
+| `linear_backend=auto` | parent tree | with this pick |
+|---|---|---|
+| cc 87 (Jetson Orin), `use_a16=True` | Marlin | **Marlin** |
+| cc 87, `use_a16=False` | Marlin | **Marlin** |
+| cc 100, `use_a16=True` | Marlin | FlashInfer CuTe-DSL W4A16 |
+| cc 100, `use_a16=False` | Marlin | FlashInfer CuTe-DSL W4A16 |
+
+`is_supported(87)` returns `(False, "FlashInfer CuTe-DSL W4A16 requires sm_100 or sm_12x")` and the dispatch additionally requires `cc in (100, 103)`, so the fork's serving hardware is unreachable for the new kernel: **behaviour delta on Jetson SM 8.7 = zero, measured, not assumed.** Import safety also proven — `import vllm.model_executor.kernels.linear` succeeds with the new symbol present, because the new flashinfer entry points are `_lazy_import_wrapper` handles and a function-local import, so nothing binds at import time.
+
+**LIVE CAVEAT, off-Jetson.** The runtime image's FlashInfer really does export `mm_bf16_fp4` / `prepare_bf16_fp4_weights` (`has_flashinfer_bf16_fp4() → True`), so on SM 100/103/12x this pick *does* change which GEMM runs — as upstream intends for `W4A16_NVFP4`, and in the empty-config probe also for plain NVFP4 (`use_a16=False`). A real run populates `NvFp4LinearLayerConfig` per layer and puts `FlashInferCuteDslNvFp4LinearKernel` first in the list, so the probe over-states that second case, but with no GPU and no device capability this box cannot resolve which kernel actually wins on SM 100. The fork has SM 100 hardware: **re-open before serving any NVFP4/W4A16 checkpoint on SM 100+** (numerics change; `--linear-backend` overrides). Skipped legs: any real kernel execution and the new `tests/kernels/quantization/test_flashinfer_nvfp4_scaled_mm.py` — both need a GPU. Revert: `git revert 7c4ad3d08`.
+
+`tip 9ccd9694b -> 7c4ad3d08`.

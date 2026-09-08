@@ -187,7 +187,7 @@ Work every official PR from the wtdcode fork point through the sweep cutoff, **o
 - [x] 225aec4809 [Rust Frontend] Migrate to new tekken crate (#53056)
 - [ ] c28feab989 [Core][MRV2] Freeze gc during V2 CG capture; skip per-descriptor cleanup (#54646)
 - [x] 907b1a7f22 [CI][ROCm] Avoid redundant image pulls during smoke validation (#54408)
-- [ ] 882ca8d696 [Kernel] add Flashinfer cutedsl w4a16 linear (#53014)
+- [x] 882ca8d696 [Kernel] add Flashinfer cutedsl w4a16 linear (#53014)
 - [ ] 923949e6e3 [Feat] Add request-level preemption count histogram metric (#49984)
 - [ ] 188716ace7 [Bugfix][EC Connector] Fall back when MADV_POPULATE_WRITE is unsupported (#53190)
 - [ ] e16b5e518d [1/N][warmup][DSv4] Migrate generic MLA metadata and indexing kernels (#50175)

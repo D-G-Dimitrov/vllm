@@ -1,0 +1,18 @@
+===== NEW (pick applied) =====
+vllm file: /w/vllm/__init__.py
+new symbol: True | has_flashinfer_cutedsl: True | has_flashinfer_bf16_fp4: True
+INFO 09-08 17:58:47 [__init__.py:1082] Using MarlinNvFp4LinearKernel for NVFP4 GEMM
+  cc=87 use_a16=True SELECTS MarlinNvFp4LinearKernel
+  cc=87 use_a16=False SELECTS MarlinNvFp4LinearKernel
+INFO 09-08 17:58:47 [__init__.py:1082] Using FlashInferCuteDslNvFp4W4A16LinearKernel for NVFP4 GEMM
+  cc=100 use_a16=True SELECTS FlashInferCuteDslNvFp4W4A16LinearKernel
+  cc=100 use_a16=False SELECTS FlashInferCuteDslNvFp4W4A16LinearKernel
+===== BASE (parent of pick) =====
+vllm file: /b/vllm/__init__.py
+new symbol: False | has_flashinfer_cutedsl: True | has_flashinfer_bf16_fp4: ABSENT-at-base
+INFO 09-08 17:59:20 [__init__.py:1066] Using MarlinNvFp4LinearKernel for NVFP4 GEMM
+  cc=87 use_a16=True SELECTS MarlinNvFp4LinearKernel
+  cc=87 use_a16=False SELECTS MarlinNvFp4LinearKernel
+  cc=100 use_a16=True SELECTS MarlinNvFp4LinearKernel
+  cc=100 use_a16=False SELECTS MarlinNvFp4LinearKernel
+===== DONE =====

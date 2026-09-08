@@ -37,7 +37,7 @@ before=$(grep -c "^- \[ \] $UP " issues/03-pr-grind.md)
 {
   printf '\n'
   printf '### %s. `%s` -> `%s` — %s\n\n' "$N" "$UP" "$NEW" "$TITLE"
-  printf '*Minimum gate (hybrid).* %s\n\n' "$NOTE"
+  printf '*%s.* %s\n\n' "${TIER:-Minimum gate (hybrid)}" "$NOTE"
   printf '`tip %s -> %s`.\n' "$(cd /Users/mitaka/Projects/PyCharm/vllm-mitaka && git rev-parse --short=9 "$NEW^")" "$NEW"
 } >> outcomes.log.md
 
