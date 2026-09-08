@@ -819,3 +819,31 @@ checker can equally produce a false *pass* — a check that silently diffs a non
 path pair must be asserted to exist, not assumed.
 
 `tip c129912a3 -> c3d0109e4 | :8000=200,200 | swap-collision = 0 | rename-aware: result blob == upstream's`.
+
+### 130. `d4329ba53d` -> `2828d128d` — `[Bugfix][Rust Frontend] Fix adjacent DeepSeek V4 user content rendering (#53281)` — the strongest leg of the sweep: the new tests were seen to pass by name
+
+Clean `blob EQ` pick of `rust/src/chat/src/renderer/deepseek_v4/{encoding.rs,tests.rs}` (`+67/−63` and `+86/−0`), no swap
+collision, sequencer clean, `:8000` 200 before and after. Unlike the CUDA items, this one is **executable on this box**, and it
+is DSV4 code — the fork's own area of interest — so it got a real leg rather than a proxy.
+
+**Leg:** `cargo test --locked -p vllm-chat` (target dir mounted outside the repo, repo stayed `dirty=0`) → **316 passed, 0
+failed** across all four test binaries (281 + 17 + 18 + 0 doc), and crucially the three tests this commit adds were observed
+running and passing **by name**:
+`renderer::deepseek_v4::tests::{consecutive_users_share_one_turn, tool_response_and_following_user_share_one_turn, mixed_user_content_keeps_text_position_when_sorting_tool_results}`;
+19 `renderer::deepseek_v4` tests executed in total, 0 failures.
+
+**Two environment facts worth keeping** (both cost an attempt): the `vllm-chat` crate needs **OpenSSL dev headers**, absent
+from the runtime image — `openssl-sys` fails with "Could not find directory of OpenSSL installation" — fixed in-container with
+`apt-get install -y libssl-dev pkg-config` (the image's *apt* sources work normally, unlike its pip index, which is pinned to
+`localhost:3141`; see item 121). Build artifacts are root-owned via the bind mount, so cleanup is the container-side
+`rm -rf /t/* /t/.[!.]*` then host `rmdir`.
+
+**Two self-inflicted near-errors, both caught:** (1) the first run piped `cargo test | tail -14` **inside** the container, so
+the saved log held only the last binary's 14 lines — reporting "18 passed" from it would have been a claim about the wrong
+test binary, and gave no evidence at all about the new tests; the rerun captured full output. (2) A `grep -c "^test deepseek"`
+count returned **0** because the real names are `test renderer::deepseek_v4::tests::…` — the fourth vacuous-zero of this
+window (after `#[test]` vs `#[tokio::test]`, the wrong-cwd audit, and the 0-vs-0 fail-set). The pattern is consistent enough to
+treat as a rule: **an anchored prefix grep on test names must be validated against one known-present name before its zero is
+believed.**
+
+`tip c3d0109e4 -> 2828d128d | :8000=200,200 | swap-collision = 0 | cargo: 316 passed, 0 failed, 3 new DSV4 tests confirmed by name`.
