@@ -467,3 +467,37 @@ account.** The filters that *can* under-report overlap, and are the ones worth d
 vs `backends.mla.rocm_aiter_mla`, item 117), and any filter that drops `Merge` subjects wholesale. Corollary for reading
 future worker reports: **check which direction a suspected tool error fails in before spending an audit on it** -- the
 same reasoning that makes a vacuous zero dangerous also tells you a conservative false alarm is not.
+
+119. f5e441de10 -> 114c41e88 PICKED+PUSHED ([Bugfix][Test] Fix off-by-one error in sampled token rank causing flaky
+ logprobs test #53976). 1 file `tests/v1/engine/utils.py` +6/-4; parent blob **and** result blob equal upstream
+ (`b1e8c612a` / `324c9c9ad`), patch-id equal (`6418c30108...`), file sets identical, `-x` trailer present.
+ Semantically live: `sampled_token_rank` and `prompt_token_ranks[rdx]` move **0-based -> 1-based**.
+ **The worker produced an EMPTY final report after doing the entire job correctly** (72 tool calls, base-vs-head
+ container comparison, own container removed, tree left clean). Everything below was **salvaged from its transcript**,
+ not received -- see the harness-defect note underneath. Verified independently by the orchestrator from git.
+ **Consumer path proven, not assumed:** the sole consumer is `tests/v1/engine/test_output_processor.py` (`assert
+ ref_sampled_token_rank == smp_lp_rank` at :323; `ref_prompt_token_ranks` at :443/:459), and **all 8
+ `test_logprobs_processor` params PASSED by name** -- so the changed branch was actually exercised, not just collected.
+ Fail-set vs a `git archive` parent tree is **identical** (`comm -23` and `comm -13` on the PASSED/FAILED/ERROR name sets
+ both empty); the 7 failures on *both* trees are `test_stop_token[...]` tripping the repo's own guard
+ `test_output_processor.py:745-748` ("Test requires meta-llama/Llama-3.2-1B but facebook/opt-125m is in use"), and the 33
+ ERRORs are the gated `AutoTokenizer.from_pretrained('meta-llama/Llama-3.2-1B')` fixture (401 anon). Both are known-base.
+ **It also caught an inaccuracy in upstream's own comment and then confirmed the substance anyway:** the comment names
+ `logprobs.py`, which resolves to `vllm/logprobs.py` (`range(1, num_logprobs+1)` at :194), **not**
+ `vllm/v1/engine/logprobs.py` -- and 1-basis is independently corroborated by `(x >= values).sum(-1)` at
+ `vllm/logprobs.py:27`. **Its own stated limit, worth keeping:** "identical fail-set proves no regression; it does NOT
+ prove the shipped test would have failed pre-fix, because at real vocab the duplicate-into-top-k path is rarely hit
+ (that is exactly why the bug was flaky)." `tip d6f60ba4b -> 114c41e88 | :8000=200,200 | swap-collision = 0`.
+
+### Harness defect: a worker can finish correctly and report NOTHING (2nd report-loss in one window)
+
+Item 115 hit its 1 h ceiling after committing; item 119 completed 72 tool calls of correct work and emitted an empty
+final message (its `acceptance_report` call carried `{}`). Two report-losses in one window is the skill's stated trigger
+to **switch to orchestrator-direct**, which is what item 120 onward uses until the mode proves itself again. Two
+operational rules fall out of this and are worth more than the mode switch: **(1) a worker's silence is not evidence of
+nothing-happened -- always `git rev-list --count <base>..HEAD` on jetson before concluding anything about a dead or quiet
+child** (here it returned `114c41e88`, 1 ahead, clean, no sequencer, i.e. a complete landing with no report attached);
+**(2) transcripts are recoverable** -- `~/.pi/agent/sessions/<project>/<session>/<run>/run-0/session.jsonl` holds every
+tool call and thinking block, so salvage the analysis instead of re-running expensive container legs. The 24 h
+exclusion-for-empty-output penalty in the skill is about worker incompetence; this was a transport failure, and burning
+a good worker over it would be wrong.
