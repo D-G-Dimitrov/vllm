@@ -859,3 +859,9 @@ believed.**
 *Minimum gate (hybrid).* CPU-image CI build configuration; the fork publishes a CUDA/Jetson image and builds no CPU wheel, so nothing here is consumed by our pipeline — these are Buildkite scripts the fork does not execute. **Checked the one arm64-adjacent hunk anyway**, because the fork *is* an aarch64 shop: in `image_build_arm64.sh` the new tagging/`--build-arg PYTORCH_NIGHTLY=1` path is gated entirely behind `TORCH_NIGHTLY=1`, and the `else` branch reproduces the previous `…-$BUILDKITE_COMMIT-arm64` tag byte-for-byte, so the fork's image naming is unchanged even if the script were ever adopted. `blob EQ`, delta identical, no swap collision, sequencer clean, :8000 200 before/after.
 
 `tip 8e008bd09 -> fe19d7e79`.
+
+### 133. `4c21d41733` -> `eae974f76` — [XPU] Route activation CustomOps to SYCL kernels (#53734)
+
+*Minimum gate (hybrid).* XPU/SYCL activation op routing: reachable only through the Intel XPU custom-op backend, which this fork neither builds nor serves. `blob EQ`, delta identical, no swap collision, sequencer clean, :8000 200 before/after.
+
+`tip fe19d7e79 -> eae974f76`.
