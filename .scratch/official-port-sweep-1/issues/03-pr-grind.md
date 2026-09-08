@@ -178,7 +178,7 @@ Work every official PR from the wtdcode fork point through the sweep cutoff, **o
 - [ ] 6bafc049aa [Bugfix][PP] Never drop a decoding request from the sampled-token broadcast (#54436)
 - [x] 89df6fcb80 [CI] Broaden structured-output issue auto-labeling (#54645)
 - [x] d4329ba53d [Bugfix][Rust Frontend] Fix adjacent DeepSeek V4 user content rendering (#53281)
-- [ ] e29af0a2af [XPU] bump up auto-round-lib to 0.15.0 (#54515)
+- [x] e29af0a2af [XPU] bump up auto-round-lib to 0.15.0 (#54515)
 - [ ] 8600db5dff [CI] Build CPU image against torch nightly for TORCH_NIGHTLY runs (#48750)
 - [ ] 4c21d41733 [XPU] Route activation CustomOps to SYCL kernels (#53734)
 - [ ] 58dace61fa [Kernel] Make prefix-prefill tiling independent of the KV page size (#54194)

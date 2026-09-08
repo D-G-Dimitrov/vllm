@@ -847,3 +847,9 @@ treat as a rule: **an anchored prefix grep on test names must be validated again
 believed.**
 
 `tip c3d0109e4 -> 2828d128d | :8000=200,200 | swap-collision = 0 | cargo: 316 passed, 0 failed, 3 new DSV4 tests confirmed by name`.
+
+### 131. `e29af0a2af` -> `8e008bd09` — [XPU] bump auto-round-lib to 0.15.0 (#54515)
+
+*Minimum gate (hybrid).* XPU-only Python dependency bump; the fork serves no Intel GPU target, so no executable consumer exists on this box. `blob EQ`, delta identical, no swap collision, sequencer clean, :8000 200 before/after.
+
+`tip 2828d128d -> 8e008bd09`.
