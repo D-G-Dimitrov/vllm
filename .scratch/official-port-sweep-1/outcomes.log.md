@@ -429,3 +429,41 @@ absence. Before concluding "not recorded anywhere", grep the same corpus for a s
   (`test_rocm_aiter_mla_fp8_decode_routing.py:23`, `test_rocm_aiter_mla_mtp_split.py:15` hard-skip at module level on
   `not current_platform.is_rocm()`; `causal_verify_mask` skips at :210) -- so the **+385 new DCP-verify test lines are
   unexecutable on this host** and remain unverified by us.
+
+118. 65ce85fcdc -> d6f60ba4b PICKED+PUSHED (Add Laguna-XS-2.1-INT4 to nightly CI #52961). 4 files +16/-2, all
+  `tests/evals/gsm8k/configs/`, conflicts=0. Pre-image blobs **and** result blobs equal upstream for all 4; per-file
+  changed-line md5 4/4; patch-id equal (`2602fe4029...`) -- no merge existed, so the silent-loss scan was formality and
+  the worker said so itself (the item-117 lesson propagating). Membership sets, the actual point of the item:
+  `models-blackwell.txt` **6->7, lost 0, gained exactly `Laguna-XS-2.1-INT4.yaml`**; `models-small.txt` **8->8, lost 0,
+  gained 0**; yaml `Laguna-XS.2-NVFP4` key set 6->8 (gained `max_tokens`, `use_chat_completions`), exactly one value
+  changed (`accuracy_threshold` 0.86->0.90), `server_args` byte-identical. Confirmed through the *real consumer path*
+  (worker-run in-container `--collect-only`, HEAD tree vs `git archive` parent tree): collected IDs **6->7, lost 0,
+  gained exactly `[Laguna-XS-2.1-INT4]`**.
+  **My own framing was corrected twice by the worker, both times correctly.** (a) I called the `models-small.txt` `+1/-1`
+  a reorder; it is **EOF-newline normalisation** -- verified independently from raw bytes, parent last byte `0x6c` (`l`,
+  no newline) -> `0x0a`. A trailing-newline change and a reorder are indistinguishable in the raw diff and only a sorted
+  **set** diff tells them apart; that is the whole argument for set diffs over diff reading. (b) It flagged that a BRE
+  `([0-9]*)$` overlap filter miscounts upstream subjects like `…(#49241)` as fork-local -- but see the direction note
+  below before acting on it.
+  **Impact ~nil, verified not assumed:** the fork has **no consumer** for `tests/evals/gsm8k/configs/` at all --
+  `.github/workflows/` is only `docker-publish.yml` + `pr-title.yml` with **0** hits for `gsm8k|evals|models-blackwell`
+  (checked locally on the Mac), while `.buildkite/test_areas/lm_eval.yaml:68` (B200) and `.buildkite/test-amd.yaml:1218`
+  are upstream infra we do not run; and the B200 job's `source_file_dependencies` are `csrc/` +
+  `vllm/model_executor/layers/quantization`, which this pick does not touch, so it would not even trigger. HF asset
+  `poolside/Laguna-XS-2.1-INT4` -> **200** public (independently re-checked; worker's negative control returned 401, not
+  404, so gated-vs-missing was correctly discriminated). **Unproven by us:** neither accuracy threshold can be measured
+  here -- both need a B200 plus a live server; upstream merged them with its own runs behind them. `tip 413e14565 ->
+  d6f60ba4b | :8000=200,200 | swap-collision = 0`.
+
+### Filter-direction note: the BRE overlap bug is CONSERVATIVE -- do not re-audit for it
+
+Item 118's worker recommended re-auditing earlier items whose "zero fork-local overlap" came from a BRE filter. Tested
+against a real subject (`[ROCm][MLA][DCP] Support causal multi-token verification (#51705)`):
+`grep -vE '\(#[0-9]+\)$'` correctly excludes it; BRE `([0-9]*)$` **counts it as fork-local**. So the BRE bug's error
+direction is a **false-positive overlap -- it manufactures extra overlap, never a false zero.** That is the safe
+direction: it buys needless scrutiny, it cannot cause a blind landing. **No re-audit of items 1-117 is warranted on that
+account.** The filters that *can* under-report overlap, and are the ones worth distrust, are: the frozen 342-file oracle
+(documented, use `fork-surface.sh`), near-name substring matches without a word/module boundary (`ops.rocm_aiter_mla_sparse`
+vs `backends.mla.rocm_aiter_mla`, item 117), and any filter that drops `Merge` subjects wholesale. Corollary for reading
+future worker reports: **check which direction a suspected tool error fails in before spending an audit on it** -- the
+same reasoning that makes a vacuous zero dangerous also tells you a conservative false alarm is not.
