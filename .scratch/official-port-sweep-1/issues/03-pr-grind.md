@@ -174,7 +174,7 @@ Work every official PR from the wtdcode fork point through the sweep cutoff, **o
 - [ ] d6d6658543 [Kimi-K3][Perf] Make native CUDA AttnRes the SM100 default (#54261)
 - [x] 3a2ed6cbae [Kimi Bug] Fix gdn build_attn_metadata `'KimiK3KDAMetadataBuilder' object has no attribute 'layer_names'` (#54636)
 - [ ] 91752b7a3e [K3 Bug] Fix Kimi-K3 RecoverSSM startup failure `'MambaAttentionBackendEnum.GDN_ATTN declares 4 states, but provides 2 state copy funcs'` (#54634)
-- [ ] b05acd2ae0 [XPU] [CI] Add retry for v1/sample in Intel GPU CI (#53669)
+- [x] b05acd2ae0 [XPU] [CI] Add retry for v1/sample in Intel GPU CI (#53669)
 - [ ] 6bafc049aa [Bugfix][PP] Never drop a decoding request from the sampled-token broadcast (#54436)
 - [ ] 89df6fcb80 [CI] Broaden structured-output issue auto-labeling (#54645)
 - [ ] d4329ba53d [Bugfix][Rust Frontend] Fix adjacent DeepSeek V4 user content rendering (#53281)

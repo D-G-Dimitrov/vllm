@@ -785,3 +785,13 @@ GPU metadata-build path for a model the fork does not serve, and the GPU stays u
 collection-level import check would not reach the defect, so it was skipped rather than performed for show.
 
 `tip 9559cad0e -> 8c21563d3 | :8000=200,200 | swap-collision = 0`.
+
+### 128. `b05acd2ae0` -> `c129912a3` — `[XPU][CI] Add retry for v1/sample in Intel GPU CI (#53669)`
+
+Single `.buildkite/intel_jobs/misc_intel.yaml`, `+4/−0`, **`blob EQ`** / `delta IDENTICAL`, no swap collision, `:8000` 200
+before and after. Intel XPU CI retry policy in a Buildkite tree the fork does not run (its CI is docker-publish + pr-title), so
+impact is nil; it matters only if this branch is ever pointed at upstream's pipeline. No leg attempted — there is nothing to
+execute here beyond YAML shape, and item 124 already established the parse-check recipe for `.buildkite` files if one is ever
+wanted.
+
+`tip 8c21563d3 -> c129912a3 | :8000=200,200 | swap-collision = 0`.
