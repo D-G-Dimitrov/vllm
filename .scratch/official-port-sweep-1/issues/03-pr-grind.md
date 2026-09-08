@@ -169,7 +169,7 @@ Work every official PR from the wtdcode fork point through the sweep cutoff, **o
 - [x] 85c1365bd9 [Bugfix] NemotronHMTP: add hf_to_vllm_mapper so quant exclusions reach the MTP draft (#53790)
 - [x] f5c3cc240b [Perf][Kernel] Tune cooperative topk for medium batch-sizes (#53382)
 - [x] 24d42f3553 [CI] Mark 1-GPU L4 test steps with device: l4 for EKS migration (#54549)
-- [ ] d61b6e1878 [Bugfix][Spec Decode] Take the DFlash draft's RoPE layout from its own config (#54373)
+- [x] d61b6e1878 [Bugfix][Spec Decode] Take the DFlash draft's RoPE layout from its own config (#54373)
 - [ ] 07ea9350ba [Kernel][Gemma4] Prune Triton sliding-window tiles for multimodal prefixes (#53147)
 - [ ] d6d6658543 [Kimi-K3][Perf] Make native CUDA AttnRes the SM100 default (#54261)
 - [ ] 3a2ed6cbae [Kimi Bug] Fix gdn build_attn_metadata `'KimiK3KDAMetadataBuilder' object has no attribute 'layer_names'` (#54636)

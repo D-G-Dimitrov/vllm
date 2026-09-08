@@ -738,3 +738,18 @@ reports zero of everything, check that both sides are non-empty before believing
 cleaned (`worktrees=2`, `dirty=0`).
 
 `tip dfa41c2b4 -> 84c58b1eb | :8000=200,200 | swap-collision = 0 | blocked.md cleared | runtime leg: NOT POSSIBLE here (CUDA intentionally disabled; SM87; stale .so)`.
+
+### 125. `d61b6e1878` -> `0edb36733` — `[Bugfix][Spec Decode] Take the DFlash draft's RoPE layout from its own config (#54373)`
+
+Top tier: all three files (`qwen3_dflash.py`, `vllm/v1/spec_decode/dflash.py`, `v1/worker/gpu/spec_decode/dflash/utils.py`)
+probed **CLEAN** and landed **`blob EQ`** with `delta IDENTICAL` and matching numstat (`+5/−46`), so the fork's result is
+byte-identical to upstream's — the resolution policy settled in item 123 was never engaged because there was no conflict. No
+swap collision; sequencer clean; `:8000` 200 before and after.
+
+Impact is real but gated: this makes a DFlash draft take its RoPE layout from its *own* config instead of the target's
+(−46/−15/−6 lines of inherited-layout plumbing). It only affects runs that actually attach a DFlash draft to a Qwen3-family
+target, and it is inert on the running production container, which executes the prebuilt image rather than this tree — like
+every item in the sweep, behaviour only moves at the next image build, which stays owner-gated. No runtime leg: the path needs
+a draft model plus GPU, and the GPU is intentionally not exposed to my containers (see item 123's note).
+
+`tip 84c58b1eb -> 0edb36733 | :8000=200,200 | swap-collision = 0`.
