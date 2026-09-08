@@ -1,0 +1,53 @@
+---- installing pytest into /pl (first time) ----
+mamba-ssm 2.3.2.post1 requires apache-tvm-ffi<=0.1.9, but you have apache-tvm-ffi 0.1.11 which is incompatible.
+mamba-ssm 2.3.2.post1 requires tilelang==0.1.8, but you have tilelang 0.1.12 which is incompatible.
+Successfully installed iniconfig-2.3.0 packaging-26.3 pluggy-1.6.0 pygments-2.21.0 pytest-9.1.1 pytest-asyncio-1.4.0 tblib-3.2.2 typing-extensions-4.16.0
+===== host kernel / madvise probe =====
+kernel: 6.8.12-1021-tegra
+mmap has MADV_POPULATE_WRITE: False None
+host kernel madvise(MADV_POPULATE_WRITE) -> SUPPORTED
+===== NEW tree: new CPU tests =====
+vllm file: /w/vllm/__init__.py
+.............                                                            [100%]
+=============================== warnings summary ===============================
+vllm/__init__.py:7
+  /w/vllm/__init__.py:7: RuntimeWarning: Failed to read commit hash:
+  No module named 'vllm._version'
+    from .version import __version__, __version_tuple__  # isort:skip
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+13 passed, 1 warning in 6.81s
+===== BASE tree: parent module + NEW tests (should fail) =====
+vllm file: /b/vllm/__init__.py
+.............                                                            [100%]
+=============================== warnings summary ===============================
+../w/vllm/__init__.py:7
+  /w/vllm/__init__.py:7: RuntimeWarning: Failed to read commit hash:
+  No module named 'vllm._version'
+    from .version import __version__, __version_tuple__  # isort:skip
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+13 passed, 1 warning in 6.84s
+===== DONE =====
+test file copied into BASE tree: identical
+===== BASE module + NEW tests (must FAIL if tests discriminate) =====
+E       AttributeError: <module 'vllm.distributed.ec_transfer.ec_connector.cpu.ec_shared_region' from '/b/vllm/distributed/ec_transfer/ec_connector/cpu/ec_shared_region.py'> has no attribute '_madvise_populate_write'
+tests/v1/ec_connector/unit/cpu/test_ec_shared_region.py:170: AttributeError
+E       AttributeError: module 'vllm.distributed.ec_transfer.ec_connector.cpu.ec_shared_region' has no attribute '_fallback_populate_write'
+tests/v1/ec_connector/unit/cpu/test_ec_shared_region.py:196: AttributeError
+E           AttributeError: <module 'vllm.distributed.ec_transfer.ec_connector.cpu.ec_shared_region' from '/b/vllm/distributed/ec_transfer/ec_connector/cpu/ec_shared_region.py'> has no attribute '_madvise_populate_write'
+tests/v1/ec_connector/unit/cpu/test_ec_shared_region.py:227: AttributeError
+            assert _page_residency(mmap_obj, size) == [True, False, False]
+E           AttributeError: module 'vllm.distributed.ec_transfer.ec_connector.cpu.ec_shared_region' has no attribute '_fallback_populate_write'
+tests/v1/ec_connector/unit/cpu/test_ec_shared_region.py:275: AttributeError
+__________________ test_madvise_unexpected_oserror_propagates __________________
+    def test_madvise_unexpected_oserror_propagates(monkeypatch):
+        """Only EINVAL triggers the fallback.  Other OSErrors (e.g. EIO) must
+===== NEW module + NEW tests (control, run from /b copy) =====
+vllm/__init__.py:7
+  /w/vllm/__init__.py:7: RuntimeWarning: Failed to read commit hash:
+13 passed, 1 warning in 6.86s
+===== DONE =====
+FAILED tests/v1/ec_connector/unit/cpu/test_ec_shared_region.py::test_fallback_populate_write_preserves_bytes_and_faults_pages
+FAILED tests/v1/ec_connector/unit/cpu/test_ec_shared_region.py::test_madvise_unexpected_oserror_propagates
+5 failed, 8 passed, 1 warning in 6.86s

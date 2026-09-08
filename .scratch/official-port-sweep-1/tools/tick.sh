@@ -47,3 +47,6 @@ after=$(grep -c "^- \[x\] $UP " issues/03-pr-grind.md)
 echo "entry=$N  ticked ${before}->${after}"
 bash "$TDIR/audit.sh" 2>/dev/null | head -1
 bash ledger-sync.sh 2>&1 | tail -1
+# Never trust the two lines above: an entry that vanishes after a "successful" sync is invisible
+# to the next audit, so prove the entry exists in SRC, on origin, and on the jetson mirror.
+bash "$TDIR/ledger-verify.sh" "$UP" "$N"

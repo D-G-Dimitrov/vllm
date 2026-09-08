@@ -189,7 +189,7 @@ Work every official PR from the wtdcode fork point through the sweep cutoff, **o
 - [x] 907b1a7f22 [CI][ROCm] Avoid redundant image pulls during smoke validation (#54408)
 - [x] 882ca8d696 [Kernel] add Flashinfer cutedsl w4a16 linear (#53014)
 - [x] 923949e6e3 [Feat] Add request-level preemption count histogram metric (#49984)
-- [ ] 188716ace7 [Bugfix][EC Connector] Fall back when MADV_POPULATE_WRITE is unsupported (#53190)
+- [x] 188716ace7 [Bugfix][EC Connector] Fall back when MADV_POPULATE_WRITE is unsupported (#53190)
 - [ ] e16b5e518d [1/N][warmup][DSv4] Migrate generic MLA metadata and indexing kernels (#50175)
 - [ ] 446c769482 [Distributed] Add opt-in FlashInfer PCIe IPC all-reduce backend (#53576)
 - [ ] dc9114b201 [ROCm][MoE] Split AITER CK and Triton MXFP4 W4A16 into separate backends (#50622)
