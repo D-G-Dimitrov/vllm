@@ -609,3 +609,54 @@ did run for item 121 (its tail printed `exclusion set=47 actionable=153`), but t
 vacuous greps above: **empty output from a checker is not a pass.**
 
 `tip b566d8c61 -> 2cc1a12bc | :8000=200,200 | swap-collision = 0 | import+mapper present, no test leg (no consumer for NemotronH here)`.
+
+### 123. `f5c3cc240b` — `[Perf][Kernel] Tune cooperative topk for medium batch-sizes (#53382)` — **HALTED: wtdcode-functional conflict, owner decision required** (not landed, not skipped, tree left clean)
+
+Picked, conflicted on `vllm/model_executor/layers/sparse_attn_indexer.py`, and **`git cherry-pick --abort`ed** — verified after
+abort `HEAD=2cc1a12bc dirty=0 unmerged=0`, sequencer absent. This is the halt condition the brief reserves, so it is recorded
+rather than resolved. Nothing else in the commit conflicted: the two `csrc/libtorch_stable/cooperative_topk.*` files are
+fork-identical (clean), `tests/kernels/test_top_k_per_row.py` merged (it *is* fork-diverged, +33, but in a different region —
+the fork's own `test_topk_between_k_and_2k` and upstream's new `test_cooperative_topk_cs2` coexist), and swap-collision is
+empty.
+
+**The conflict is semantic, not textual.** One line, two axes:
+
+| | predicate |
+|---|---|
+| upstream parent | `and num_rows <= 32` (where `num_rows = logits.shape[0]`) |
+| upstream `f5c3cc240b` | `and num_rows <= 64` |
+| fork tip (wtdcode, +231/−19 in this file) | `and num_padded_tokens <= 32` (where `num_padded_tokens = batch_size * next_n`) |
+
+The fork did not merely rename it — it **re-keyed** the predicate from the per-rank logit row count to the unsharded padded
+token count, with a comment stating why: *"Keyed on the batch's row count, not this rank's: a shard must not pick a different
+top-k kernel than the replicated path would, and a batch that fits the cooperative kernel fits it on any shard of itself."*
+So upstream's threshold bump and the fork's TP-sharding fix land on the same physical line, and `<= 32` vs `<= 64` is a
+question about *which quantity bounds the kernel*.
+
+**Recommended resolution: `and num_padded_tokens <= 64`** — keep the fork's key, take upstream's threshold. Three independent
+reasons, the first two verified from source rather than assumed:
+1. **`num_rows ≤ num_padded_tokens` is provable.** `indexer_decode_shard_rows` (`vllm/v1/attention/backends/mla/indexer.py`)
+   returns `(lo*next_n, hi*next_n)` with the caller's `assert 0 <= group_lo < group_hi <= batch_size`, so
+   `num_rows = logits.shape[0] = (hi−lo)*next_n ≤ batch_size*next_n = num_padded_tokens`. Keying on the padded count is
+   therefore *conservative*: `num_padded_tokens <= 64` ⇒ `num_rows <= 64`.
+2. **The bound is enforced kernel-side anyway.** Upstream's `.cu` carries `TORCH_CHECK`-style `num_rows <= 64` ("...use
+   persistent_topk for larger batches"), and the new dispatch adds a `CS == 2` two-CTA path for `num_rows <= 33` (the old
+   comment `32 = max clusters for CS=4` is removed). A too-large row count raises loudly rather than silently corrupting.
+3. It preserves the fork's shard-consistency intent exactly, changing only the numeric threshold, which is all the upstream
+   commit is about.
+
+**Why I did not land it despite (1)-(3).** It sits inside the fork's DSV4/TP-sharding rewrite, in a function whose author
+left an explicit rationale for this very predicate; the auto-land gate covers mechanical conflicts, not judgement calls about
+wtdcode kernel-selection. **Serving risk today is zero either way** — `use_cooperative_topk` additionally requires
+`has_device_capability(90)`, and both this host and the production container report **SM 8.7** (`torch.cuda.get_device_capability(0) == (8, 7)`),
+so the cooperative path is unreachable on the Jetson cluster; and any `.cu`/`.cuh` change is inert until an image rebuild,
+which is separately owner-gated. Deferring is self-consistent: the fork keeps `<= 32` in both the dispatch and the matching
+test skip-guard.
+
+**To apply once approved** (single-token resolution, then re-verify):
+`git cherry-pick -x f5c3cc240b` → edit the conflicted line to `and num_padded_tokens <= 64` → `git add` →
+`git -c core.editor=true cherry-pick --continue`; then confirm `git diff <base> HEAD -- <testfile>` equals upstream's hunks
+for the non-conflicting files, that the fork's `test_topk_between_k_and_2k` and upstream's `test_cooperative_topk_cs2` are
+both present, and that the only delta in the python file is that one line. If preferred, an alternative is to take the
+`csrc`/test hunks and *drop* the dispatch bump (fork stays at 32) — behaviourally identical on SM87, and defers the
+judgement rather than making it.
