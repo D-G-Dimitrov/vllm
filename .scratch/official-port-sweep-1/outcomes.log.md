@@ -501,3 +501,39 @@ child** (here it returned `114c41e88`, 1 ahead, clean, no sequencer, i.e. a comp
 tool call and thinking block, so salvage the analysis instead of re-running expensive container legs. The 24 h
 exclusion-for-empty-output penalty in the skill is about worker incompetence; this was a transport failure, and burning
 a good worker over it would be wrong.
+
+### 120. `f9c7c6e090` -> `b819c11c7` — `[Rust Frontend][CI] Remove TCP port races from mock-engine tests (#54481)` — first orchestrator-direct pick, and the first item where a real test suite actually ran
+
+**First orchestrator-direct item**, and the strongest verification tier the sweep has produced: `rust/src/mock-engine/src/tests.rs`
+is **byte-identical to upstream** (parent blob EQ, result blob EQ, hunk md5 EQ, patch-id `d142931f300d44300b422e546c135834b5326941`
+EQUAL), `fork_local=0`, outside the fork surface — **and** the crate was compiled *and executed*: `cargo test --locked -p
+vllm-mock-engine` → **6 passed; 0 failed**. Every prior item either had no executable consumer on this host or was covered
+by an import/collection proxy; this one has a green suite behind it.
+
+**"Uncovered" has to be earned, not asserted.** `cargo` is absent on the Jetson host but present in the production image
+(`/root/.cargo/bin/cargo`), and the Rust frontend is a real build artifact here — `cargo`/`rustup` appear in
+`docker/Dockerfile.{cpu,rock,xpu,s390x,...}`, 5 references in `pyproject.toml`, 2 in build tooling — so "it's just a Rust
+test file, no fork consumer" would have been an excuse, not a finding. Bounded attempt: `--locked` so the tracked
+`Cargo.lock` cannot churn, `CARGO_TARGET_DIR=/t` mounted **outside** the repo so no build artifact can dirty the tree
+(`tracked_dirty=0` throughout), `timeout 500`. Result: `Finished test profile in 47.56s`, `CARGO_EXIT=0`. Once it is built,
+*running* the tests is nearly free, so stopping at "--no-run" would have left the cheap half of the evidence on the table.
+
+**The commit deletes a test, and the count says so.** Upstream removed `mock_engine_connects_over_tcp` plus its
+`free_tcp_address` helper (the bind-then-close-"free port" pattern that races), and added nothing: `#[tokio::test]` count
+**7 → 6**, no gained functions. Because the result blob *is* upstream's, this is faithful by construction — the deletion is
+upstream's own coverage decision, made because the TCP path is now covered differently rather than because it broke. Worth
+carrying forward as a fact about the fork, not a defect: there is now no dedicated mock-engine-over-TCP test here.
+
+**Third vacuous probe of the window, and the same root cause each time.** My first count grepped `#[test]`, which cannot
+match `#[tokio::test]`, and returned `0 → 0` — a "no tests here" answer for a file holding six. The differently-written
+second probe (`grep -cE '#\[tokio::test'`) returned the truth. This is the pattern from item 118's BRE bug and item 119's
+`logprobs.py` path: a probe that returns a suspiciously clean zero is usually probing the wrong string, not finding an
+absence. `awk '/fn /'` on a Rust file has the same trap — annotations live on the line above.
+
+**Operational, for the next Rust item:** cargo writes its target dir as root through the bind mount, so the orchestrator's
+own user cannot `rm -rf` it afterwards; and `rm -rf /t` from inside a container fails with `Device or resource busy` on the
+mountpoint itself. Cleanup is `docker run --rm -v dir:/t <image> bash -lc 'rm -rf /t/* /t/.[!.]*'` and *then* `rmdir` on the
+host. Root-owned build artifacts would otherwise accumulate per Rust item, invisible to `git status` and undeletable by the
+account that owns the repo. (I did not capture the size before deleting it; the cleanup is the point, not the figure.)
+
+`tip 114c41e88 -> b819c11c7 | :8000=200,200 | swap-collision = 0 | cargo: build ok, 6/6 passed`.

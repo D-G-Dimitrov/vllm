@@ -164,7 +164,7 @@ Work every official PR from the wtdcode fork point through the sweep cutoff, **o
 - [ ] 2ba984a5d0 [ROCm][DSpark][DCP] Serve prefix cache hits under DCP for Kimi-K3 (#53598)
 - [x] 65ce85fcdc Add Laguna-XS-2.1-INT4 to nightly CI (#52961) -- landed d6f60ba4b; blobs byte-identical; fork has no gsm8k CI consumer so impact ~nil
 - [x] f5e441de10 [Bugfix][Test] Fix off-by-one error in sampled token rank causing flaky logprobs test (#53976) -- landed 114c41e88; 8/8 logprobs params green; worker report lost, analysis salvaged from transcript
-- [ ] f9c7c6e090 [Rust Frontend][CI] Remove TCP port races from mock-engine tests (#54481)
+- [x] f9c7c6e090 [Rust Frontend][CI] Remove TCP port races from mock-engine tests (#54481)
 - [ ] a9dc631429 [Bugfix] Reject empty bad-word tokenizations (#53433)
 - [ ] 85c1365bd9 [Bugfix] NemotronHMTP: add hf_to_vllm_mapper so quant exclusions reach the MTP draft (#53790)
 - [ ] f5c3cc240b [Perf][Kernel] Tune cooperative topk for medium batch-sizes (#53382)
