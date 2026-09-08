@@ -134,3 +134,9 @@ absence, it is evidence the set is old. Use `.scratch/official-port-sweep-1/fork
 which derives the surface from fork-local commits (subjects without an upstream `(#N)` marker). **Rule: never
 report "no wtdcode overlap" from the frozen list alone for any file area where the pick conflicted or where a
 clean merge touched model/quant code -- recompute.**
+
+**When you recompute with path-limited `git log`, pass `--no-merges`.** A merge commit that pulls upstream history into
+the fork carries no `(#N)` subject marker, so a `grep -v '(#N)'` filter counts it as a fork-local authored change and
+manufactures an overlap that does not exist. Hit in the wild on item 117: `rocm_aiter_mla.py` looked fork-local=1 and the
+culprit was `7d464af1d "Merge branch 'main' into glm-release"`. Read the commits (`git log --format='%h %an %s'`) before
+calling anything wtdcode-functional -- same discipline as verify-before-escalating.
