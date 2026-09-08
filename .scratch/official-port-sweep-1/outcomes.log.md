@@ -537,3 +537,45 @@ host. Root-owned build artifacts would otherwise accumulate per Rust item, invis
 account that owns the repo. (I did not capture the size before deleting it; the cleanup is the point, not the figure.)
 
 `tip 114c41e88 -> b819c11c7 | :8000=200,200 | swap-collision = 0 | cargo: build ok, 6/6 passed`.
+
+### 121. `a9dc631429` -> `b566d8c61` — `[Bugfix] Reject empty bad-word tokenizations (#53433)` — a HOT flag that turned out to be stale, and the counterfactual that proves a pick is not a no-op
+
+**The HOT flag was wrong about *this* commit, and blob equality caught it.** The queue marked this item HOT, but both touched
+files are **byte-identical to upstream's parent** at our tip (`vllm/sampling_params.py` and
+`tests/test_request_input_bounds.py` both `parent EQ`), so the fork has not diverged on them *here*: `fork_local=0`,
+patch-id `81b93db42cd59e0702375dad08562785ae10baf5` EQUAL, additive-only `+45/-0`. The surface list is a file-level,
+history-level property; whether *this* pick can collide is a tip-state question, and the blob comparison — not the flag — is
+what answers it. Had I treated HOT as "will conflict" I would have held a clean pick for no reason; had I treated it as
+"ignore" I would have skipped the check that showed why it is safe. Upstream's parent for this commit is `f9c7c6e09`, the
+item landed immediately before it, so the chain is contiguous.
+
+**Production reachability confirmed, not assumed:** the new guard sits in `SamplingParams.update_from_tokenizer`, reached
+from `vllm/v1/engine/input_processor.py:369` on every request that carries `bad_words` — so this changes runtime validation
+behaviour, unlike the evals-only and CI-only items nearby.
+
+**Executable leg, end to end, on a pure-Python item:** the tree is **built in place** (6 in-tree `.so`, incl.
+`_C_stable_libtorch.abi3.so`), so mounting it at `/w` with `PYTHONPATH=/w` makes `import vllm` resolve to the *fork tree*
+(`import vllm` → `/w/vllm/__init__.py`), not the image's own non-editable install at
+`/opt/venv/lib/python3.12/site-packages/vllm`. Result: `tests/test_request_input_bounds.py` → **24 passed, 0 failed**, both
+new tests passing by name. Three environment traps had to be cleared first, and all three are now known-good for future
+Python legs:
+1. The production image has **no pytest** — install it into the *ephemeral* container only.
+2. That image pins pip to a local devpi index `http://localhost:3141/jp7/cu132/+simple/`, which is **refused inside the
+   container** and fails with a misleading "No matching distribution found"; fix is
+   `--index-url https://pypi.org/simple`. Cargo never hit this because crates.io is direct.
+3. `tests/conftest.py` needs `tblib`, absent from the runtime image — `--noconftest` is correct for a self-contained file
+   like this one (it builds its own fake tokenizers) and avoids dragging in the whole test stack. `PYTHONDONTWRITEBYTECODE=1`
+   keeps `__pycache__` out of the mounted tree so `tracked_dirty=0`/untracked-count invariants hold.
+
+**The counterfactual, and the two false starts it took to get it right.** "Do these tests fail without the fix?" cannot be
+answered by checking out the parent and running them: the parent tree collects **22 items, `-k empty` selects 0** — the tests
+don't exist there, so 22-vs-24 is a *collection-count* check, not a behaviour check (the first attempt also failed outright
+with `No module named 'vllm._C_stable_libtorch'`, because a fresh worktree does not contain the **untracked** in-tree `.so`
+files; `cp vllm/*.so <worktree>/vllm/` fixes that). The correct construction is a *mismatched* pair — parent module + new
+test file — giving **2 failed** on the parent `sampling_params.py` versus 24 passed on the picked tree. That is what proves
+the guard is load-bearing rather than decorative. Worktree was created detached at the parent, then `worktree remove
+--force` + `prune`; verified `worktrees=2` (main + `vllm-swap88`) and `dirty=0` afterwards. One near-miss worth recording: my
+first cleanup draft did `rm -rf /w/.git` inside the worktree, which would have deleted the gitdir *pointer file* and wedged
+`git worktree remove` on the shared repo — a worktree's `.git` is not a directory.
+
+`tip b819c11c7 -> b566d8c61 | :8000=200,200 | swap-collision = 0 | pytest: 24 passed; pre-fix counterfactual 2 failed`.

@@ -165,7 +165,7 @@ Work every official PR from the wtdcode fork point through the sweep cutoff, **o
 - [x] 65ce85fcdc Add Laguna-XS-2.1-INT4 to nightly CI (#52961) -- landed d6f60ba4b; blobs byte-identical; fork has no gsm8k CI consumer so impact ~nil
 - [x] f5e441de10 [Bugfix][Test] Fix off-by-one error in sampled token rank causing flaky logprobs test (#53976) -- landed 114c41e88; 8/8 logprobs params green; worker report lost, analysis salvaged from transcript
 - [x] f9c7c6e090 [Rust Frontend][CI] Remove TCP port races from mock-engine tests (#54481)
-- [ ] a9dc631429 [Bugfix] Reject empty bad-word tokenizations (#53433)
+- [x] a9dc631429 [Bugfix] Reject empty bad-word tokenizations (#53433)
 - [ ] 85c1365bd9 [Bugfix] NemotronHMTP: add hf_to_vllm_mapper so quant exclusions reach the MTP draft (#53790)
 - [ ] f5c3cc240b [Perf][Kernel] Tune cooperative topk for medium batch-sizes (#53382)
 - [ ] 24d42f3553 [CI] Mark 1-GPU L4 test steps with device: l4 for EKS migration (#54549)
