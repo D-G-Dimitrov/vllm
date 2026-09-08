@@ -579,3 +579,33 @@ first cleanup draft did `rm -rf /w/.git` inside the worktree, which would have d
 `git worktree remove` on the shared repo — a worktree's `.git` is not a directory.
 
 `tip b819c11c7 -> b566d8c61 | :8000=200,200 | swap-collision = 0 | pytest: 24 passed; pre-fix counterfactual 2 failed`.
+
+### 122. `85c1365bd9` -> `2cc1a12bc` — `[Bugfix] NemotronHMTP: add hf_to_vllm_mapper so quant exclusions reach the MTP draft (#53790)` — plus a self-inflicted "verification" that verified nothing
+
+Small clean item: one file `vllm/model_executor/models/nemotron_h_mtp.py`, **`parent EQ` / `result EQ`** (fork base identical
+to upstream's parent), additive-only `+11/-0`, patch-id `3f8a84fd90f8093b8df2bc8e08cec223566b80b7` EQUAL, upstream parent is
+the item landed immediately before it. NemotronH is not a fork-served model (production is Qwen3.8-Flash-Next), so serving
+impact is nil; it is still a model-executor file, so it got a semantic check rather than a shrug.
+
+**Consumer path proven rather than inferred:** the class now carries `hf_to_vllm_mapper = WeightsMapper(...)`
+(`nemotron_h_mtp.py:321`), and the single reader is `vllm/model_executor/model_loader/utils.py:280-285`, which does
+`getattr(model_class, "hf_to_vllm_mapper", None)` then `quant_config.apply_vllm_mapper(hf_to_vllm_mapper.get_rename_ma…)` —
+i.e. the commit does exactly what its subject line claims (quant exclusion patterns written in checkpoint space now reach a
+draft built under `mtp`). Confirmed live: importing `NemotronHMTP` from the mounted fork tree yields the mapper object
+(`orig_to_new_substr={'embeddings': 'embed_tokens'}`) rather than `None`.
+
+**My own reusable script lied to me, by reuse.** `pick122.sh` was `pick121.sh` with the sha/base seds applied — so its
+"step 3: the new guard is present and reachable" grepped item 121's `bad_words` string and reported it present, which is
+true of the *tree* (121 is an ancestor now) and completely irrelevant to 122. Parameterising shas across copies is fine;
+carrying over an item-specific assertion is not, and it produces a green line that proves nothing. The separate `sem122`
+check above is what actually verified this commit. Rule: when cloning a probe script, the item-specific assertions must be
+replaced or deleted — a copied assertion is worse than no assertion, because it reads as coverage.
+
+**Harness gotcha, second silent no-op of the window:** two consecutive `bash audit.sh` invocations failed with
+`No such file or directory` while their exit status was swallowed by a pipeline — the script lives at `/tmp/audit.sh`, not in
+the `.scratch` dir I had `cd`'d into. Two "counts looked fine" conclusions were therefore drawn from empty output. The audit
+did run for item 121 (its tail printed `exclusion set=47 actionable=153`), but the explicit `checked=…` line was cut by a
+`tail`, and I read the absence as agreement. Re-running with the absolute path gives the counts below. Same lesson as the
+vacuous greps above: **empty output from a checker is not a pass.**
+
+`tip b566d8c61 -> 2cc1a12bc | :8000=200,200 | swap-collision = 0 | import+mapper present, no test leg (no consumer for NemotronH here)`.
