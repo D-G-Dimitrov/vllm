@@ -853,3 +853,9 @@ believed.**
 *Minimum gate (hybrid).* XPU-only Python dependency bump; the fork serves no Intel GPU target, so no executable consumer exists on this box. `blob EQ`, delta identical, no swap collision, sequencer clean, :8000 200 before/after.
 
 `tip 2828d128d -> 8e008bd09`.
+
+### 132. `8600db5dff` -> `fe19d7e79` — [CI] Build CPU image against torch nightly for TORCH_NIGHTLY runs (#48750)
+
+*Minimum gate (hybrid).* CPU-image CI build configuration; the fork publishes a CUDA/Jetson image and builds no CPU wheel, so nothing here is consumed by our pipeline. `blob EQ`, delta identical, no swap collision, sequencer clean, :8000 200 before/after.
+
+`tip 8e008bd09 -> fe19d7e79`.
