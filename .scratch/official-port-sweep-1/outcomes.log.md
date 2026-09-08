@@ -917,6 +917,8 @@ fallback — that is the single condition under which this item becomes live for
 
 ### 137. `225aec4809` -> `36a70b455` — [Rust Frontend] Migrate to new tekken crate (#53056)
 
-*Minimum gate (hybrid).* minimum-gate landing
+*Minimum gate (hybrid).* Dependency migration in the Rust frontend (`rust/Cargo.toml` + `rust/Cargo.lock`), landed **`blob EQ`** on both files with identical deltas, no swap collision, sequencer clean, `:8000` 200 before and after. Not fork-relevant for serving — production runs the Python engine, not the Rust frontend — so no test leg.
 
-`tip 01ecb20ac -> 36a70b455`.
+**But a dependency swap has one failure mode worth seconds to rule out, and it is not behavior:** a commit that bumps a requirement without its lockfile leaves a tree that no longer resolves. Checked rather than assumed: the upstream commit **does** carry its `Cargo.lock` update (both files are in the same pick), and `cargo metadata --locked` in the runtime image returned **rc=0** against the resulting tree, i.e. the lockfile resolves exactly and `--locked` would not need to rewrite it. Build-consistency confirmed without a five-minute workspace compile.
+
+`tip 01ecb20ac -> 36a70b455 | swap-collision = 0 | cargo metadata --locked: rc=0`.
