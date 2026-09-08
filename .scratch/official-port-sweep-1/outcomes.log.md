@@ -875,3 +875,9 @@ reworded from "Fused CUDA kernel" to "Fused CUDA/XPU kernel". Rule worth keeping
 proves faithfulness to upstream, not safety for us.
 
 `tip fe19d7e79 -> eae974f76`.
+
+### 134. `58dace61fa` -> `79e28c1c8` — 58dace61fa
+
+*Minimum gate (hybrid).* minimum-gate landing
+
+`tip eae974f76 -> 79e28c1c8`.

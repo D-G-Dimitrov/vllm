@@ -181,7 +181,7 @@ Work every official PR from the wtdcode fork point through the sweep cutoff, **o
 - [x] e29af0a2af [XPU] bump up auto-round-lib to 0.15.0 (#54515)
 - [x] 8600db5dff [CI] Build CPU image against torch nightly for TORCH_NIGHTLY runs (#48750)
 - [x] 4c21d41733 [XPU] Route activation CustomOps to SYCL kernels (#53734)
-- [ ] 58dace61fa [Kernel] Make prefix-prefill tiling independent of the KV page size (#54194)
+- [x] 58dace61fa [Kernel] Make prefix-prefill tiling independent of the KV page size (#54194)
 - [ ] 22df3a34e0 [Perf][Rust Frontend] Count the tokenizer vocabulary once at construction (#54449)
 - [ ] 45aed9b0cd [CI] Broaden tool-calling issue auto-labeling (#54650)
 - [ ] 225aec4809 [Rust Frontend] Migrate to new tekken crate (#53056)
