@@ -660,3 +660,37 @@ for the non-conflicting files, that the fork's `test_topk_between_k_and_2k` and 
 both present, and that the only delta in the python file is that one line. If preferred, an alternative is to take the
 `csrc`/test hunks and *drop* the dispatch bump (fork stays at 32) — behaviourally identical on SM87, and defers the
 judgement rather than making it.
+
+### 124. `24d42f3553` -> `dfa41c2b4` — `[CI] Mark 1-GPU L4 test steps with device: l4 for EKS migration (#54549)` — landed, plus a correction that lowers the claimed strength of every earlier "patch-id EQUAL"
+
+Clean pick of 5 `.buildkite/test_areas/*.yaml` files (+15/−0). Four files were fork-clean (`blob EQ`);
+`.buildkite/test_areas/kernels.yaml` is fork-diverged (+6/−2 — the fork renamed a FlashMLA step to an "MLA Kernel Test" step
+and added flashinfer paths to its path filter), so byte-identity was impossible there and the correct test was *delta*
+equality: **`delta_vs_upstream IDENTICAL` for all five files**, and the fork's own five added lines all still present in the
+result (verified line-by-line with `grep -Fc --`). All 5 files still `yaml.safe_load`. Fork runs no Buildkite pipeline (its CI
+is docker-publish + pr-title), so serving/CI impact is nil; the change matters only if this branch is ever pointed at
+upstream's EKS pipeline. Note this commit's upstream parent is `f5c3cc240b`, the **blocked** item 123 — cherry-pick order does
+not require contiguity, and nothing here touches the indexer.
+
+**Correction, applies backwards over the whole sweep: `patch-id EQUAL` does NOT imply byte-identity.** Item 124 is the first
+case where the two signals visibly disagree — `kernels.yaml: blob NE` alongside `patch-id EQUAL (af885b70…)`. `git patch-id`
+hashes only the added/removed lines and ignores line numbers and surrounding context, so a hunk applied into a *modified*
+file still yields an equal patch-id. Several earlier entries in this log cited patch-id equality with a gloss like "implies no
+fork-divergence on touched files" — that gloss is wrong, and the `/tmp/pick.sh` wording has been fixed. **Nothing computed on
+it is invalidated**: in every prior item the load-bearing evidence was the independent `parent EQ` / `result EQ` blob
+comparison (the strongest tier, which *does* prove byte-identity), and patch-id was corroborating, not load-bearing. The
+durable rule: **blob identity proves sameness of state; patch-id proves sameness of change. Never let the second stand in for
+the first.**
+
+**Two self-inflicted checks on this item, both mine, both caught before they could mislead.** (1) I ran a probe against
+`24d42f3553` by `sed`-ing a *previous* probe script that had itself been edited in place, so the substitution silently no-op'd
+and I "probed" already-landed item 122 — which reported `DIVERGED` for a file whose fork-side difference is simply *the pick I
+had already landed*. Reproduced twice now (also on item 122's copied assertion), so the sed-copy pattern is retired in favour
+of two parameterised scripts, `/tmp/probe.sh <sha>` and `/tmp/pick.sh <sha> <base>`, with the probe now self-guarding: it
+prints `!! <sha> IS ALREADY AN ANCESTOR OF HEAD` via `git merge-base --is-ancestor` rather than reporting a misleading
+divergence. (2) A `grep -Fc "$line"` where the line begins with a YAML list dash (`- label: …`) was parsed as option flags
+(`grep: invalid option -- ' '`) and returned an empty count that looked like "the fork's line is gone"; `grep -Fc --` fixes
+it. And an inline `python3 -c "…\n…"` mangled exactly as the brief warns — the YAML check had to become a real scp'd file.
+**A check that errors is not a check that passed**, and two of these three would have read as results if I had been skimming.
+
+`tip 2cc1a12bc -> dfa41c2b4 | :8000=200,200 | swap-collision = 0 | 5 files parse; only change to device labels is +8 device:l4`.
