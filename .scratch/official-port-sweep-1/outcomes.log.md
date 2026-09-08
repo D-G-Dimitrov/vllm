@@ -906,3 +906,9 @@ fallback — that is the single condition under which this item becomes live for
 *Minimum gate (hybrid).* minimum-gate landing
 
 `tip 79e28c1c8 -> d671c7b66`.
+
+### 136. `45aed9b0cd` -> `01ecb20ac` — [CI] Broaden tool-calling issue auto-labeling (#54650)
+
+*Minimum gate (hybrid).* Minimum gate (hybrid), **rename-aware pick #2** — same class as item 129: upstream edits , our tree keeps it at , and  follows the rename. This is what tripped 's file-set gate (exit 3), which is the correct outcome — it stopped for the relocation check rather than auto-landing. Verified with the now-parameterised `/tmp/renamecheck.sh`: upstream path absent in the result, **base blob MATCH** (511819600), **delta identical (0 diff lines)**, **result blob MATCH** (06e1c7b86), assertions executed on 1 path, tree clean, no sequencer, :8000 200. Actions config for a labeling bot the fork does not run, so impact nil.
+
+`tip d671c7b66 -> 01ecb20ac`.
