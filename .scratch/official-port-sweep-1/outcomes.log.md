@@ -876,8 +876,27 @@ proves faithfulness to upstream, not safety for us.
 
 `tip fe19d7e79 -> eae974f76`.
 
-### 134. `58dace61fa` -> `79e28c1c8` — 58dace61fa
+### 134. `58dace61fa` -> `79e28c1c8` — `[Kernel] Make prefix-prefill tiling independent of the KV page size (#54194)`
 
-*Minimum gate (hybrid).* minimum-gate landing
+*Minimum gate (hybrid) — but flagged on read, because the deleted code names our model family.*
+`vllm/v1/attention/ops/prefix_prefill.py` (+4/−14) and its test (+19/−9) both landed **`blob EQ`** with identical deltas, no swap
+collision, sequencer clean, `:8000` 200 before and after. My first record for this item was a placeholder written by the
+automated pipeline (empty title/note args) — corrected here rather than left, because the diff is not obviously inert.
 
-`tip eae974f76 -> 79e28c1c8`.
+**What it actually removes:** the non-power-of-2 special case that picked `BLOCK_M/BLOCK_N = 32/32`, whose comment read *"For
+non-standard models (Qwen3-next block_size 544), set to 32"*, in favour of always using 128/64 on the argument that
+`_paged_kv_cache_offsets` resolves context tokens against `PHYSICAL_BLOCK_SIZE` individually so tiles need not divide the page.
+That is device-generic (not platform-gated) **and** mentions Qwen3-next — and the fork serves a Qwen3-next-family model — so on
+the face of it this is the most production-exposed item landed in the sweep.
+
+**Why the exposure is nil, checked rather than assumed:** `prefix_prefill` / `chunked_prefill_paged_decode` is imported by
+exactly one consumer in the tree, `vllm/v1/attention/backends/rocm_attn.py` — the **ROCm** attention backend — while the running
+production container logs `Using FLASH_ATTN attention backend`. The changed kernel is therefore absent from the CUDA serving
+path entirely, for this model or any other. So the 544 special case it deletes mattered to the ROCm path only, which this fork
+serves nowhere.
+
+**No leg:** it is a Triton kernel and the GPU is intentionally unexposed (see item 123), so kernel-level correctness is inherited
+from upstream CI plus byte-identity. Worth re-examining if this branch ever serves on ROCm or the CUDA path ever gains a Triton
+fallback — that is the single condition under which this item becomes live for us.
+
+`tip eae974f76 -> 79e28c1c8 | swap-collision = 0`.
