@@ -795,3 +795,27 @@ execute here beyond YAML shape, and item 124 already established the parse-check
 wanted.
 
 `tip 8c21563d3 -> c129912a3 | :8000=200,200 | swap-collision = 0`.
+
+### 129. `89df6fcb80` -> `c3d0109e4` — `[CI] Broaden structured-output issue auto-labeling (#54645)` — first **rename-aware** pick, and a false alarm my own checker produced
+
+Upstream edits `.github/workflows/issue_autolabel.yml`; our commit touches `.github.**disabled**/workflows/issue_autolabel.yml`
+(`.github/workflows.disabled/…`). The fork keeps GitHub Actions switched off by relocating most workflow files, so
+`cherry-pick`'s 3-way merge **followed the rename** and applied the change to the moved copy. My generic `pick.sh` screamed:
+`!! FILE SET DIFF`, `blob NE`, `delta_vs_upstream DIFF(42 lines)`. All three were artifacts — the loop iterates **upstream's**
+file list, so it diffed a path this tree has not contained since the fork's move (empty delta) against upstream's real patch,
+which trivially "differs" by all 42 changed lines.
+
+**Verified properly, it is a top-tier pick.** No stray file was created at upstream's path; exactly 1 file changed in each;
+`git show -M` reports `M .github/workflows.disabled/issue_autolabel.yml`; the fork's base copy at the relocated path was
+**byte-identical to upstream's pre-change blob**; the delta at *our* path versus upstream's delta at *its* path differs by
+**0 lines**; the **result blob equals upstream's result blob**; numstat `+39/−3` both sides. The fork's disable convention is
+intact (4 files still in `.github/workflows`, 10 in `.github/workflows.disabled`). `:8000` 200 before and after, tree clean,
+no sequencer. Impact nil for this fork — it is Actions configuration for a labeling bot the fork does not run.
+
+**Durable rule, now in the skill:** when `pick.sh` prints `FILE SET DIFF`, the first hypothesis must be *path relocation*, not
+corruption. Verify by mapping upstream path → our path, then asserting (a) upstream's path is absent in the result,
+(b) our base blob == upstream's `$SHA^` blob, (c) changed-line delta equal, (d) result blob equal. A rename-aware gap in the
+checker can equally produce a false *pass* — a check that silently diffs a non-existent path returns "empty == empty" — so the
+path pair must be asserted to exist, not assumed.
+
+`tip c129912a3 -> c3d0109e4 | :8000=200,200 | swap-collision = 0 | rename-aware: result blob == upstream's`.
