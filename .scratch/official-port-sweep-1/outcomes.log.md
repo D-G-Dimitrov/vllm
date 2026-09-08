@@ -772,3 +772,16 @@ GPU is intentionally not exposed to my containers (see item 123's note for the `
 correctness of the tile-pruning itself is inherited from upstream CI plus byte-identity, not demonstrated on this box.
 
 `tip 0edb36733 -> 9559cad0e | :8000=200,200 | swap-collision = 0 | import-only leg (GPU intentionally unavailable)`.
+
+### 127. `3a2ed6cbae` -> `8c21563d3` — `[Kimi Bug] Fix gdn build_attn_metadata: 'KimiK3KDAMetadataBuilder' object has no attribute 'layer_names' (#54636)`
+
+One file `vllm/v1/attention/backends/gdn_attn.py`, `+1/−2`, probed clean and landed **`blob EQ`** / `delta IDENTICAL`. No swap
+collision; sequencer clean; `:8000` 200 before and after. Attribute-access bug in the Kimi K3 KDA metadata builder — reachable
+only when serving that model family, so nil impact for the fork's Qwen serving path, and inert in the running container until
+an image rebuild either way.
+
+Verification tier here is byte-identity alone: no leg was attempted, because the trigger is an `AttributeError` raised inside a
+GPU metadata-build path for a model the fork does not serve, and the GPU stays unexposed by policy (item 123's note). A
+collection-level import check would not reach the defect, so it was skipped rather than performed for show.
+
+`tip 9559cad0e -> 8c21563d3 | :8000=200,200 | swap-collision = 0`.
