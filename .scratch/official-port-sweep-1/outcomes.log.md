@@ -1357,3 +1357,50 @@ on the path the moment weight-transfer-with-UID is used.
 *Rollback:* `git revert d1dc60334`.
 
 `tip cd934d93e -> d1dc60334`.
+
+### 151. `b65af5e339` -> `da87294a4` — [CI][ROCm] Expand weight loading test coverage on AMD and cap its KV cache (#54037)
+
+*Minimum gate: CI/test-only, fork CI is GitHub Actions, no vllm/ file touched, unverifiable without MI355 or 2 GPUs + HF downloads.* **Minimum gate (CI/test-only, untestable here, no fork runtime impact). 3 files, +21/−3, all `blob EQ`, patch-id EQUAL.**
+
+*Subject correction, and a warning about this ledger's own inputs.* The real commit subject is
+**"[CI][ROCm] Expand weight loading test coverage on AMD and cap its KV cache (#54037)"** — `git log -1 b65af5e339` and
+the sweep list (`issues/03-pr-grind.md:206`) agree. My delegated brief called it "[CI][ROCm] Add AMD coverage for
+weight loading in a dedicated job" and claimed it bumped torch 2.11→2.13 in a lockfile; **neither exists in this
+repo** (`git log --all --grep='dedicated job'` → nothing; there is no `uv.lock` at all, and `torch==2.13.0` is
+already pinned in `requirements/cuda.txt:7` and `pyproject.toml:10`, byte-identical to upstream here). That premise
+came from my own compacted session summary, not from git — so: re-derive subjects and premises from git, never from
+a compressed recap. The tracker's sha↔subject pairing is intact; the ledger's earlier rows were ticked from `git`
+output and are unaffected.
+
+*What it actually is:* `.buildkite/test_areas/weight_loading.yaml` +3/−3 (an existing job's `mirror.amd`: device
+`mi300_2`→`mi355_2`, label MI300→MI355, timeout 35→40 min), `tests/weight_loading/models-amd.txt` +14 (3 gptq,
+9 compressed-tensors, 1 awq, 1 fp8), and `tests/weight_loading/test_weight_loading.py` +4.
+
+*Why minimum-gate (judgment, not laziness).* No `vllm/` file is touched and nothing imports `tests/*`; every path
+the yaml references exists; and **the fork's CI is GitHub Actions only** (`.github/workflows/{docker-publish,pr-title}`),
+which never reads `.buildkite/` — moreover `.buildkite/ci_config_rocm.yaml` globs only `hardware_tests/`, not
+`test_areas/`, so even upstream's ROCm pipeline path differs. `requirements/`, `pyproject.toml`, `setup.py`, `cmake/`
+are untouched ⇒ no image/wheel rebuild implied.
+
+*The one non-CI hunk, verified rather than assumed.* The test now passes
+`kv_cache_memory_bytes=2 * GiB_bytes` (upstream's comment: 20 generated tokens need a tiny KV cache, while sizing a
+full one dominates the test on large devices). Both symbols resolve at the fork's tip — `vllm/config/cache.py:232`
+`kv_cache_memory_bytes: int | None = None` and `vllm/utils/mem_constants.py:18 GiB_bytes = 1 << 30` — so no
+missing-symbol risk.
+
+*Caveat worth carrying.* That cap is **not AMD-gated**: it also applies to the NVIDIA (L4, `tensor_parallel_size=2`)
+job driven by `models.txt` and to any local/manual run of this file, including the heavier configs
+(`awq_marlin` mixtral, `Meta-Llama-3-8B-Instruct-FP8-KV`). It *lowers* memory use, so it cannot OOM anything, but a
+future model config needing >2 GiB of KV would now fail there. The added AMD rows also omit the optional 4th
+`MIN_CAPABILITY` column, so they inherit the default `"80"` gate via
+`current_platform.has_device_capability(80)`.
+
+*Not verified here, stated plainly:* the 14 new AMD configs cannot be exercised on this box (needs MI355, or 2 GPUs
+plus HF model downloads), and no fork job runs either pipeline — so this entry rests on inspection, not on a test
+run. `device: mi355_2` cannot be validated in-repo (agent pools live in the Buildkite org; `mi355_1` is used by 6
+other `test_areas/*.yaml`, and `mi355_2` previously appeared only as an `agent_pool` in the unreferenced
+`.buildkite/test-amd.yaml`).
+
+*Rollback:* `git revert da87294a4`.
+
+`tip d1dc60334 -> da87294a4`.
