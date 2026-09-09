@@ -41,7 +41,14 @@ if [ -n "$o" ] && [ "$o" = "$m" ] && [ "$o" = "$j" ]; then ok "tips agree local=
 last=$(git -C "$MAC" reflog -1 --format='%gs')
 case "$last" in
   merge*|*"Fast-forward"*) ok "Mac reflog head is ours: ${last:0:60}" ;;
-  *) no "Mac reflog head is NOT a merge: '$last' -- a second writer moved the branch; halt and reconcile" ;;
+  *) # A foreign reflog head is only tolerable if a human/agent explicitly vouched for THIS commit:
+     # write the full sha of the adopted commit into $SCR/ACK-REFLOG. Never weaken this check instead.
+     ack=$(tr -d ' \n' < "$SCR/ACK-REFLOG" 2>/dev/null)
+     if [ -n "$ack" ] && [ "$ack" = "$(git -C "$MAC" rev-parse HEAD)" ]; then
+       ok "Mac reflog head is foreign but ACKNOWLEDGED: ${last:0:55} (ACK-REFLOG matches HEAD; delete it once a landing supersedes)"
+     else
+       no "Mac reflog head is NOT a merge: '$last' -- a second writer moved the branch; halt and reconcile (or, if adoption is intended, write the exact adopted sha into $SCR/ACK-REFLOG)"
+     fi ;;
 esac
 dirty=$(git -C "$MAC" status --porcelain | grep -vc '^??' || true)
 [ "$dirty" = "0" ] && ok "Mac tracked-dirty=0" || no "Mac tracked-dirty=$dirty (second writer?)"
