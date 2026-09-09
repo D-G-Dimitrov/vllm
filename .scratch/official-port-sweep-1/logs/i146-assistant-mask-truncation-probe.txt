@@ -1,0 +1,29 @@
+===== item 146 / ff0c3cb03c [Bugfix][Frontend] Truncate the assistant tokens mask with the prompt (#54539) =====
+module overlaid: vllm/renderers/params.py    probe: probe146.py    vllm: 0.1.dev20073+g8e685d198
+
+----- PROBE against NEW module -----
+  marker count=3 (expect >=1 = new code)
+=== truncate_prompt_tokens=4, truncation_side=left (the upstream test's case) ===
+side=left  keep=4  tokens=[6, 7, 8, 9]  len(mask)=4  mask=[1, 1, 0, 0]
+     lengths aligned: True   mask labels the surviving tokens: True (expected [1, 1, 0, 0])
+     offsets=4 is_token_ids=4
+=== truncate_prompt_tokens=4, truncation_side=right ===
+side=right keep=4  tokens=[0, 1, 2, 3]  len(mask)=4  mask=[0, 0, 1, 1]
+     lengths aligned: True   mask labels the surviving tokens: True (expected [0, 0, 1, 1])
+     offsets=4 is_token_ids=4
+=== control: no truncation (nothing may change) ===
+     tokens==orig: True  mask==orig: True
+
+----- PROBE against BASE module (this is the differential) -----
+  marker count=0 (expect 0 = base code)
+=== truncate_prompt_tokens=4, truncation_side=left (the upstream test's case) ===
+side=left  keep=4  tokens=[6, 7, 8, 9]  len(mask)=10  mask=[0, 0, 1, 1, 1, 1, 1, 1, 0, 0]
+     lengths aligned: False   mask labels the surviving tokens: False (expected [1, 1, 0, 0])
+     offsets=4 is_token_ids=4
+=== truncate_prompt_tokens=4, truncation_side=right ===
+side=right keep=4  tokens=[0, 1, 2, 3]  len(mask)=10  mask=[0, 0, 1, 1, 1, 1, 1, 1, 0, 0]
+     lengths aligned: False   mask labels the surviving tokens: False (expected [0, 0, 1, 1])
+     offsets=4 is_token_ids=4
+=== control: no truncation (nothing may change) ===
+     tokens==orig: True  mask==orig: True
+----- EVIDENCE-COMPLETE -----

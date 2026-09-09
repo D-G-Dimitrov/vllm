@@ -1,0 +1,39 @@
+item 146  upstream ff0c3cb03c5d52fe21ebcf98f3e45325b1689116  landing a4fd3419f8441a0853b57775505a6673ce4d1c2c
+[Bugfix][Frontend] Truncate the assistant tokens mask with the prompt (#54539)   base b5debfaf2
+
+== pick / faithfulness ==
+  HEAD=b5debfaf2 dirty=0 unmerged=0 seq=0  health_before=200
+  2 files changed, 67 insertions(+), 11 deletions(-); rc=0 HEAD=a4fd3419f ahead=1 dirty=0
+  test_render.py: blob EQ  delta_vs_upstream IDENTICAL
+  params.py:      blob EQ  delta_vs_upstream IDENTICAL
+  numstat ours: tests/entrypoints/scale_out/render/test_render.py +46/-0
+                vllm/renderers/params.py +21/-11        numstat up: identical
+  patch-id EQUAL (f213569c8c6b35e03ec135da0c2c39202a6c3166) [trust blob EQ, not patch-id]
+  collisions: []   health_after=200 HEAD=a4fd3419f dirty=0 unmerged=0 seq=0
+
+== diff read ==
+Introduces a module-level registry:
+    _PARALLEL_TO_PROMPT_TOKENS = ("prompt_token_offsets", "prompt_is_token_ids", "_assistant_tokens_mask")
+and replaces the two hand-written per-key truncation blocks in TokenizeParams.apply_post_tokenization with
+one loop over that registry:
+    for key in _PARALLEL_TO_PROMPT_TOKENS:
+        parallel = prompt_dict.get(key)
+        if parallel is None: continue
+        truncation = self._truncation_slice(tokenizer, len(parallel))
+        if truncation is not None: prompt_dict[key] = parallel[truncation]
+Net behavior delta = exactly one newly-covered key, `_assistant_tokens_mask` (renderer-internal, stashed by
+HfRenderer.render_messages and consumed via vllm/inputs/engine.py when return_assistant_tokens_mask=True).
+Everything else is the same code expressed once. Doc-comment updates only elsewhere.
+
+== why this is inert for the fork's serving path ==
+It changes behavior only when BOTH opt-ins are on: `return_assistant_tokens_mask=True` AND prompt truncation
+(`truncate_prompt_tokens`, or a negative value resolving through max_input_tokens). Neither is on for the
+fork's Qwen serving. And the only behavior that changes was already broken (mask describing different
+positions than the tokens it labels), so no working behavior is altered.
+
+== why the repo's own test could not be run here (recorded so the next agent does not retry it) ==
+tests/entrypoints/scale_out/render/test_render.py imports `tests.utils` at module scope, which does
+`from vllm.v1.engine.utils import get_engine_process_shutdown_timeout` -- a symbol that exists on the fork
+tip but NOT in the production image build (0.1.dev20073+g8e685d198). Collection therefore errors for
+version-skew reasons unrelated to this pick, and the test additionally needs a live app `client` fixture.
+Replaced by a direct probe of the function the fix lives in.

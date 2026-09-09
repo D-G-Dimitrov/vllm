@@ -1143,3 +1143,47 @@ the fill path is exercised by the unit tests through mocks.
 *Rollback:* `git revert b5debfaf2`.
 
 `tip 04ae2431c -> b5debfaf2`.
+
+### 146. `ff0c3cb03c` -> `a4fd3419f` — [Bugfix][Frontend] Truncate the assistant tokens mask with the prompt (#54539)
+
+*Full depth (hybrid): renderer fix + CPU behavioral probe (mask misalignment reproduced on base in both truncation directions).* **Full depth (hybrid): serving-path module + CPU behavioral probe, base-vs-new differential.**
+2 files, +67/−11; both `blob EQ` (fork never touched either), numstat identical to upstream
+(`logs/i146-faithfulness.txt`).
+
+*What it does.* Introduces `_PARALLEL_TO_PROMPT_TOKENS = ("prompt_token_offsets", "prompt_is_token_ids",
+"_assistant_tokens_mask")` and replaces two hand-written per-key truncation blocks in
+`TokenizeParams.apply_post_tokenization` with one loop over it. The net behavior delta is **exactly one newly
+covered key**, `_assistant_tokens_mask` — renderer-internal, stashed by `HfRenderer.render_messages`, consumed
+through `vllm/inputs/engine.py` when `return_assistant_tokens_mask=True`.
+
+*Why it is inert for the fork's serving.* Behavior changes only when **both** opt-ins are on:
+`return_assistant_tokens_mask=True` **and** prompt truncation. Neither is on for Qwen serving. And the only path
+that changes was already wrong (the mask describing different positions than the tokens it labels), so no
+working behavior moves.
+
+*Leg* (CPU, production image, GPU masked, `:8000` 200 before/after) in
+`logs/i146-assistant-mask-truncation-probe.txt` — the repo's own test was **not runnable here** and that is
+recorded rather than glossed: `test_render.py` imports `tests.utils` at module scope, which needs
+`vllm.v1.engine.utils.get_engine_process_shutdown_timeout`, a symbol present on the fork tip but absent from the
+image build (`0.1.dev20073+g8e685d198`) → collection errors for version skew unrelated to this pick; it also wants
+a live app `client` fixture. So the probe exercises the fixed function directly, with the module overlaid into the
+image package (marker `_PARALLEL_TO_PROMPT_TOKENS` = 3 vs 0 proves which version ran):
+
+| case | new code | base code |
+|---|---|---|
+| `truncate_prompt_tokens=4, side=left` | tokens `[6,7,8,9]`, mask `[1,1,0,0]` — **aligned and correct** | tokens `[6,7,8,9]`, mask **length 10** — misaligned, wrong labels |
+| `side=right` | tokens `[0,1,2,3]`, mask `[0,0,1,1]` ✓ | mask **length 10** — misaligned |
+| control, no truncation | unchanged | unchanged |
+
+`prompt_token_offsets` / `prompt_is_token_ids` truncate correctly on **both** trees (length 4 everywhere), which
+sharpens the finding: the pre-existing keys were always handled, and only the mask was being left behind — the
+precise defect the commit describes, demonstrated on this box in both truncation directions.
+
+*Method note for reuse:* two harness traps were hit and are now encoded in `logs/`-adjacent practice — (a) the
+probe must be mounted **outside** the repo tree, because `python3 /w/probe.py` puts `/w` on `sys.path[0]` and
+shadows the built `vllm` (fails on `vllm._C_stable_libtorch`); (b) `bash -n` the runner before shipping it.
+Surrounding modules come from the image build; the module under test is exact.
+
+*Rollback:* `git revert a4fd3419f`.
+
+`tip b5debfaf2 -> a4fd3419f`.
