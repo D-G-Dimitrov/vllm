@@ -963,3 +963,56 @@ Full depth with a real CPU leg (no GPU touched). New tests on the picked tree: *
 Ledger note: this entry was first written at ~21:2x and silently reverted along with its tracker tick (both files back to the previous item's content *and* mtime, no ledger commit, jetson mirror still the previous sha) while the pick itself landed and pushed correctly. Cause unidentified; `tools/ledger-verify.sh` now asserts every entry in SRC + origin + the jetson mirror, and `tick.sh` calls it.
 
 `tip 2c4b66ba7 -> e049f5d03`.
+
+### 142. `446c769482` -> `4ca9852ed` — [Distributed] Add opt-in FlashInfer PCIe IPC all-reduce backend (#53576)
+
+*Full depth (hybrid): resolve-and-note + CPU leg in the production image.* **Resolve-and-note landing (owner grant 2026-09-08, skill Verification 18).** One conflicted hunk, in one file:
+`cuda_communicator.py`, where both sides add a function-local import to the same import block — ours
+`HierarchicalAllReduce` (the fork's `VLLM_HIER_ALL_REDUCE` backend) and upstream's
+`FlashInferPcieIpcAllReduce`. Resolution = **verbatim union of both sides**, upstream first (keeps the block
+isort/ruff-sorted: `f` < `h`). Rejected alternative: taking either side — dropping one import yields `NameError`
+at every TP-group construction. Applied by `logs/i142-resolver.py`, which asserts both sides verbatim, asserts the
+conflict set is exactly that one file, refuses if the pick ever applies cleanly (so the note can't be bypassed),
+and aborts the cherry-pick on any mismatch.
+
+*Zero default-behavior delta — measured in the production image, not reasoned.* New env
+`VLLM_ALLREDUCE_USE_FLASHINFER_PCIE_IPC` defaults `"0"`, so `fi_pcie_ipc_ar_comm is None` and dispatch falls
+through the unchanged chain; the fork's `hier_ar_comm` branch sits below it, untouched (`all_reduce` source
+offsets measured: quick-reduce 902 → **pcie 1087** → fi_ar 1193 → fork hier 1755). Only two things are
+unconditional: (1) `parallel_state.destroy()` now releases the device communicator *before* destroying its
+process groups (upstream's own new test covers it), (2) `kernel_warmup` gains a module-level import plus one
+call — its transitive deps were checked in-tree first (`flashinfer_autotune_cache.resolve_flashinfer_autotune_file`,
+`parallel_state.in_the_same_node_as`) so the call is an early-return on the default path, not an ImportError
+waiting on every startup.
+
+*Faithfulness* (`logs/i142-faithfulness.txt`): 7/7 files, identical file set, identical changed-line delta per
+file, per-file numstat equal to upstream. 4 files `blob EQ`. The 3 `blob NE` files (`cuda_communicator.py`,
+`envs.py` +327/−2, `kernel_warmup.py` +8/−0) are each **gap-invariant** with every fork-added line still present;
+symbol silent-loss scan clean; every upstream added line present in the result.
+
+*Full-depth leg* (CPU, production image, `CUDA_VISIBLE_DEVICES=""`, `:8000` = 200 before and after) in
+`logs/i142-pcie-ipc-allreduce-cpu-leg.txt`: **NEW tree `/w/vllm/__init__.py` → 8/8 upstream tests pass**, all
+names confirmed (`-rA`), including the two that matter to the fork — dispatch precedence *with
+`hier_ar_comm` present in the merged method* and the teardown-order test. Mismatched pair (parent tree `/b` +
+the new test file) → **collection error**, proving the tests are behavioural rather than a no-op. Pre-existing
+`test_comm_ops.py::test_flashinfer_all_reduce_precedes_nccl` still passes on the merged dispatch.
+Differential probe: base reports `ABSENT-IN-TREE` / `ModuleNotFoundError`, new tree reports the symbols live.
+
+*Stronger inertness than item 139, and this is the useful fact:* the runtime image's FlashInfer does **not**
+export `comm.PcieIpcAllReduceWorkspace` (`_pcie_ipc_available == False`), so on this box the backend is doubly
+inert — env-gated off **and** unavailable in the FlashInfer build. Setting the env var here only logs
+`warning_once` and falls back. No GPU leg (never-touch-GPU rule): the real workspace/`tune()`/graph-capture path
+is unexercised, and SM 8.7 is not a target for a single-node PCIe TP2/4/8 backend anyway.
+
+*Revisit before:* enabling `VLLM_ALLREDUCE_USE_FLASHINFER_PCIE_IPC` together with the fork's
+`VLLM_HIER_ALL_REDUCE`. Upstream places the new backend **above** the fork's hierarchical one in dispatch order,
+so with both enabled the PCIe workspace wins for any shape it supports. That is upstream's stated precedence,
+but the fork added `hier` into a list that predates it and nobody has tested the combination. Rollback:
+`git revert 4ca9852ed`.
+
+*Handoff correction recorded so the next agent does not re-inherit it:* handoff §4.3 claimed "the fork already
+carries its own `flashinfer_pcie_ipc_all_reduce.py`". It does not — `probe.sh` prints `fork=HEAD:vllm` because
+`git rev-parse HEAD:<missing path>` **echoes the unresolved argument** instead of failing. Verified absent in
+both index and worktree; both upstream files landed as genuine new files (`blob EQ`).
+
+`tip e049f5d03 -> 4ca9852ed`.

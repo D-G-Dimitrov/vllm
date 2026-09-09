@@ -1,0 +1,25 @@
+== A. file sets ==
+  identical (7 files)
+== B. per-file blob + changed-line delta ==
+  test_comm_ops.py                                           blob EQ  delta IDENTICAL
+  test_flashinfer_pcie_ipc_all_reduce.py                     blob EQ  delta IDENTICAL
+  cuda_communicator.py                                       blob NE  delta IDENTICAL
+  flashinfer_pcie_ipc_all_reduce.py                          blob EQ  delta IDENTICAL
+  parallel_state.py                                          blob EQ  delta IDENTICAL
+  envs.py                                                    blob NE  delta IDENTICAL
+  kernel_warmup.py                                           blob NE  delta IDENTICAL
+== C. gap invariance for every blob-NE file (fork delta must be byte-intact) ==
+  GAP INVARIANT: vllm/distributed/device_communicators/cuda_communicator.py  (fork deviation identical before/after)
+      all fork-added lines still present
+  GAP INVARIANT: vllm/envs.py  (fork deviation identical before/after)
+      all fork-added lines still present
+  GAP INVARIANT: vllm/model_executor/warmup/kernel_warmup.py  (fork deviation identical before/after)
+      all fork-added lines still present
+== D. silent-deletion scan (symbol names, HEAD-parent vs result) ==
+  (no output above = nothing silently deleted)
+== E. upstream hunks all present in result (no dropped hunk) ==
+  every added upstream line is present in the result tree
+== F. state ==
+  numstat ours: tests/distributed/test_comm_ops.py +1/-0  tests/distributed/test_flashinfer_pcie_ipc_all_reduce.py +146/-0  vllm/distributed/device_communicators/cuda_communicator.py +33/-0  vllm/distributed/device_communicators/flashinfer_pcie_ipc_all_reduce.py +239/-0  vllm/distributed/parallel_state.py +17/-4  vllm/envs.py +7/-0  vllm/model_executor/warmup/kernel_warmup.py +7/-0  
+  numstat up:   tests/distributed/test_comm_ops.py +1/-0  tests/distributed/test_flashinfer_pcie_ipc_all_reduce.py +146/-0  vllm/distributed/device_communicators/cuda_communicator.py +33/-0  vllm/distributed/device_communicators/flashinfer_pcie_ipc_all_reduce.py +239/-0  vllm/distributed/parallel_state.py +17/-4  vllm/envs.py +7/-0  vllm/model_executor/warmup/kernel_warmup.py +7/-0  
+  dirty=0 unmerged=0 seq=0  health=200

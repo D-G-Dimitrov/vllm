@@ -1,0 +1,97 @@
+----- LEG A  NEW tree: the 8 upstream tests added by this pick -----
+A1 tree marker:
+  A1 vllm.__file__ = /w/vllm/__init__.py
+  /w/vllm/__init__.py:7: RuntimeWarning: Failed to read commit hash:
+  No module named 'vllm._version'
+    from .version import __version__, __version_tuple__  # isort:skip
+
+../opt/venv/lib/python3.12/site-packages/torch/jit/_script.py:365: 14 warnings
+  /opt/venv/lib/python3.12/site-packages/torch/jit/_script.py:365: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+==================================== PASSES ====================================
+_____________________ test_setup_uses_exact_graph_capacity _____________________
+----------------------------- Captured stdout call -----------------------------
+INFO 09-09 06:58:16 [flashinfer_pcie_ipc_all_reduce.py:149] Initialized FlashInfer PCIe IPC all-reduce for TP4, hidden_dim=4096, dtype=torch.bfloat16, max_tokens=32.
+------------------------------ Captured log call -------------------------------
+INFO     vllm.distributed.device_communicators.flashinfer_pcie_ipc_all_reduce:flashinfer_pcie_ipc_all_reduce.py:149 Initialized FlashInfer PCIe IPC all-reduce for TP4, hidden_dim=4096, dtype=torch.bfloat16, max_tokens=32.
+=========================== short test summary info ============================
+PASSED tests/distributed/test_flashinfer_pcie_ipc_all_reduce.py::test_setup_uses_exact_graph_capacity
+PASSED tests/distributed/test_flashinfer_pcie_ipc_all_reduce.py::test_should_use_only_prepared_hidden_shape[shape0-dtype0-True-True]
+PASSED tests/distributed/test_flashinfer_pcie_ipc_all_reduce.py::test_should_use_only_prepared_hidden_shape[shape1-dtype1-True-False]
+PASSED tests/distributed/test_flashinfer_pcie_ipc_all_reduce.py::test_should_use_only_prepared_hidden_shape[shape2-dtype2-True-False]
+PASSED tests/distributed/test_flashinfer_pcie_ipc_all_reduce.py::test_should_use_only_prepared_hidden_shape[shape3-dtype3-False-False]
+PASSED tests/distributed/test_flashinfer_pcie_ipc_all_reduce.py::test_capture_rebinds_workspace_even_on_error
+PASSED tests/distributed/test_flashinfer_pcie_ipc_all_reduce.py::test_cuda_dispatch_prefers_pcie_ipc_before_existing_flashinfer
+PASSED tests/distributed/test_flashinfer_pcie_ipc_all_reduce.py::test_group_destroy_releases_communicator_before_process_groups
+8 passed, 15 warnings in 32.02s
+----- LEG B  BASE tree + the NEW test file (mismatched pair: must fail, proving the tests are behavioural) -----
+B1 tree marker:
+  B1 vllm.__file__ = /b/vllm/__init__.py
+  No module named 'vllm._version'
+    from .version import __version__, __version_tuple__  # isort:skip
+
+../opt/venv/lib/python3.12/site-packages/torch/jit/_script.py:365: 14 warnings
+  /opt/venv/lib/python3.12/site-packages/torch/jit/_script.py:365: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+ERROR tests/distributed/test_flashinfer_pcie_ipc_all_reduce.py
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+15 warnings, 1 error in 22.85s
+----- LEG C  NEW tree: pre-existing comm_ops test the pick edits (FI-AR precedence must still hold) -----
+=============================== warnings summary ===============================
+vllm/__init__.py:7
+  /w/vllm/__init__.py:7: RuntimeWarning: Failed to read commit hash:
+  No module named 'vllm._version'
+    from .version import __version__, __version_tuple__  # isort:skip
+
+../opt/venv/lib/python3.12/site-packages/torch/jit/_script.py:365: 14 warnings
+  /opt/venv/lib/python3.12/site-packages/torch/jit/_script.py:365: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+==================================== PASSES ====================================
+=========================== short test summary info ============================
+PASSED tests/distributed/test_comm_ops.py::test_flashinfer_all_reduce_precedes_nccl
+1 passed, 28 deselected, 15 warnings in 35.89s
+----- LEG D  NEW tree: defaults, import chain, dispatch order, teardown order -----
+python3: can't open file '/w/.i142_probe.py': [Errno 2] No such file or directory
+----- LEG E  BASE tree: same probe (shows what the pick changed, and that base has no such module) -----
+cp: cannot stat '/w/.i142_probe.py': No such file or directory
+python3: can't open file '/b/.i142_probe.py': [Errno 2] No such file or directory
+----- LEG-ALL-DONE -----
+
+----- LEG D  NEW tree: defaults, import chain, dispatch order, teardown order -----
+/w/vllm/__init__.py
+TREE-MARKER argv0/sys.path[0] = /w
+TREE-MARKER cwd = /w
+env VLLM_ALLREDUCE_USE_FLASHINFER_PCIE_IPC = False
+env VLLM_BATCH_INVARIANT = False
+=> use_flashinfer_pcie_ipc_allreduce (default env) = False
+flashinfer.comm imported; has PcieIpcAllReduceWorkspace = False
+pcie module file = /w/vllm/distributed/device_communicators/flashinfer_pcie_ipc_all_reduce.py
+pcie _pcie_ipc_available = False
+has FlashInferPcieIpcAllReduce = True
+has warmup_flashinfer_pcie_ipc_allreduce = True
+kernel_warmup file = /w/vllm/model_executor/warmup/kernel_warmup.py
+kernel_warmup has warmup_flashinfer_pcie_ipc_allreduce = True
+kernel_warmup() calls warmup_flashinfer_pcie_ipc_allreduce = True
+cuda_communicator file = /w/vllm/distributed/device_communicators/cuda_communicator.py
+dispatch line-order indices = [902, 1087, 1193, 1755] (pcie after quick-reduce, before fi_ar, before fork hier)
+destroy(): communicator before device_group = True
+LEG-DONE
+
+----- LEG E  BASE tree: same probe (differential) -----
+/b/vllm/__init__.py
+TREE-MARKER argv0/sys.path[0] = /b
+TREE-MARKER cwd = /b
+env VLLM_ALLREDUCE_USE_FLASHINFER_PCIE_IPC = 'ABSENT-IN-TREE'
+env VLLM_BATCH_INVARIANT = False
+=> use_flashinfer_pcie_ipc_allreduce (default env) = False
+flashinfer.comm imported; has PcieIpcAllReduceWorkspace = False
+pcie module import -> ModuleNotFoundError No module named 'vllm.distributed.device_communicators.flashinfer_pcie_ipc_all_reduce'
+
+----- EVIDENCE-COMPLETE -----
