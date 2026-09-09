@@ -1016,3 +1016,49 @@ carries its own `flashinfer_pcie_ipc_all_reduce.py`". It does not — `probe.sh`
 both index and worktree; both upstream files landed as genuine new files (`blob EQ`).
 
 `tip e049f5d03 -> 4ca9852ed`.
+
+### 143. `ce2e343be1` -> `0750a253a` — [ROCm] Keep GLM-5.2 on MRV1 and disable default breakable cudagraph (#53155)
+
+*Minimum gate (hybrid) + CPU leg: CUDA-path differential measured across both trees.* **Minimum gate + CPU leg (ROCm-scoped, but GLM is a fork family so the CUDA path was measured, not assumed).**
+`ROCM_DEFAULT_MRV1_ARCHITECTURES` gained `GlmMoeDsaForCausalLM` and `default_breakable_cudagraph_architectures()`
+now returns `frozenset()` — both reachable only under `current_platform.is_rocm()`. Verified from source, not
+inferred: the set has exactly ONE consumer in the repo (`vllm/config/vllm.py:658`), inside
+`if model_config is not None and current_platform.is_rocm():`, and the empty-set return sits inside an
+`if current_platform.is_rocm():` branch.
+
+*Faithfulness* (`logs/i143-faithfulness.txt`): 2/2 files, identical file set and changed-line delta, per-file
+numstat equal to upstream; `tests/test_config.py` `blob EQ`; `vllm/config/vllm.py` `blob NE` (fork +3/−0) is
+**gap-invariant** with every fork-added line present; symbol silent-loss scan clean; every upstream added line
+present.
+
+*Leg* (CPU, production image, GPU masked, `:8000` 200 before/after) in `logs/i143-rocm-mrv1-glm-leg.txt`:
+**7 passed** on the new tree (`/w/vllm/__init__.py` marker) by name, including both changed
+`test_dsa_models_default_to_mrv2_and_breakable_cudagraph[...GlmMoeDsaForCausalLM]` params. The discriminating
+measurement is the **CUDA-visible path across both trees**: `default_breakable_cudagraph_architectures()` returns
+the *identical* 19-entry set on base (`/b`) and new (`/w`), with `GlmMoeDsaForCausalLM` still present — so Jetson
+behavior is bit-for-bit unchanged and the only delta is `ROCM_DEFAULT_MRV1 set` going
+`[DeepseekV32, DeepseekV4]` → `[DeepseekV32, DeepseekV4, GlmMoeDsa]`. Base's own suite also passes (7), so there
+was no pre-existing failure being papered over. No GPU leg needed: nothing here reaches a kernel.
+
+---
+**INCIDENT during this item — recorded here because it is the durable record.** At 10:31:47 this session's ledger
+source directory `/Users/mitaka/Projects/PyCharm/vllm-mitaka/.scratch/official-port-sweep-1/` was **deleted** (a
+`checkout: moving from mitaka/backport to mitaka/backport` reflog entry lands in the same second), and at 10:32:44
+a `git cherry-pick` of THIS item landed on the Mac clone's `mitaka/backport` **without the `-x` trailer**. It was
+not this session: `tools/pick.sh` always uses `-x` and structurally cannot run on the Mac (it opens with
+`cd ~/dev/vllm`, which does not exist there); `.git/COMMIT_EDITMSG` was not touched (still Sep 4), no hook or
+`core.hooksPath` exists, no cron/LaunchAgent references vllm, no GUI git client is installed, no process holds a
+cwd in `vllm-mitaka`, nothing ran on jetson, and the only other live pi session (cwd `pet-project`) has zero
+references to these repos in its transcript. **Zero data loss**: the ledger was restored from
+`mitaka/backport-ledger` (`diff -rq` against the worktree = byte-identical, entry 142 + its tick intact, audit
+back to 138/178/1 = 317), and the two 143 commits were proven **tree-identical** (`be2e9d232c7e…`) by
+`rev-parse <sha>^{tree}` — not by patch-id, which cannot distinguish them. Correlation worth revisiting:
+`pi-hermes-memory` wrote a `.MEMORY.md.retired-…` at 10:34:48 and a `.MEMORY.md.recovery-…` at 10:42:02, the only
+filesystem activity anywhere in the window; the 2026-09-08 incident (bookkeeping files rolled back to the
+previous item's content **and mtime**) has the same shape as an mtime-preserving restore.
+
+*Convergence:* phantom commit kept as tombstone ref `refs/backup/phantom-143` = `92e33c04d` (not a head, never
+pushed), Mac branch reset to `4ca9852ed`, then this commit landed from jetson and asserted three ways. Rollback:
+`git revert 0750a253a`.
+
+`tip 4ca9852ed -> 0750a253a`.

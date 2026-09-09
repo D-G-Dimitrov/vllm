@@ -1,0 +1,32 @@
+----- LEG A  NEW tree: the two upstream config tests this pick edits -----
+A-tree:
+   /w/vllm/__init__.py
+PASSED tests/test_config.py::test_rocm_keeps_compiled_deepseek_defaults
+PASSED tests/test_config.py::test_dsa_models_default_to_mrv2_and_breakable_cudagraph[no-mtp-nvidia/GLM-5.2-NVFP4-GlmMoeDsaForCausalLM]
+PASSED tests/test_config.py::test_dsa_models_default_to_mrv2_and_breakable_cudagraph[no-mtp-zai-org/GLM-5.2-FP8-GlmMoeDsaForCausalLM]
+PASSED tests/test_config.py::test_dsa_models_default_to_mrv2_and_breakable_cudagraph[no-mtp-nvidia/DeepSeek-V3.2-NVFP4-DeepseekV32ForCausalLM]
+PASSED tests/test_config.py::test_dsa_models_default_to_mrv2_and_breakable_cudagraph[mtp-nvidia/GLM-5.2-NVFP4-GlmMoeDsaForCausalLM]
+PASSED tests/test_config.py::test_dsa_models_default_to_mrv2_and_breakable_cudagraph[mtp-zai-org/GLM-5.2-FP8-GlmMoeDsaForCausalLM]
+PASSED tests/test_config.py::test_dsa_models_default_to_mrv2_and_breakable_cudagraph[mtp-nvidia/DeepSeek-V3.2-NVFP4-DeepseekV32ForCausalLM]
+7 passed, 225 deselected, 15 warnings in 29.90s
+----- LEG B  NEW tree probe -----
+TREE vllm.__file__ = /w/vllm/__init__.py
+TREE sys.path[0] = /w cwd = /w
+current_platform.is_rocm() = False
+CUDA-PATH default_breakable set = ['DeepSeekV4MTPModel', 'DeepseekV32ForCausalLM', 'DeepseekV32MTPModel', 'DeepseekV4ForCausalLM', 'Dots3NoteForCausalLM', 'Dots3NoteMTPModel', 'Glm5NextForCausalLM', 'Glm5NextForConditionalGeneration', 'Glm5NextMTPModel', 'GlmMoeDsaForCausalLM', 'HYV4ForCausalLM', 'HYV4MTPModel', 'InklingForCausalLM', 'InklingForConditionalGeneration', 'KimiK3ForConditionalGeneration', 'KimiK3MTPModel', 'KimiLinearForCausalLM', 'MiniMaxM3SparseForCausalLM', 'MiniMaxM3SparseForConditionalGeneration']
+ROCM_DEFAULT_MRV1 set = ['DeepseekV32ForCausalLM', 'DeepseekV4ForCausalLM', 'GlmMoeDsaForCausalLM']
+GlmMoeDsaForCausalLM in DEFAULT_BREAKABLE (non-ROCm path) = True
+GUARD line preceding consumer = if model_config is not None and current_platform.is_rocm():
+LEG-DONE
+----- LEG C  BASE tree probe (differential of the CUDA-visible path) -----
+TREE vllm.__file__ = /b/vllm/__init__.py
+TREE sys.path[0] = /b cwd = /b
+current_platform.is_rocm() = False
+CUDA-PATH default_breakable set = ['DeepSeekV4MTPModel', 'DeepseekV32ForCausalLM', 'DeepseekV32MTPModel', 'DeepseekV4ForCausalLM', 'Dots3NoteForCausalLM', 'Dots3NoteMTPModel', 'Glm5NextForCausalLM', 'Glm5NextForConditionalGeneration', 'Glm5NextMTPModel', 'GlmMoeDsaForCausalLM', 'HYV4ForCausalLM', 'HYV4MTPModel', 'InklingForCausalLM', 'InklingForConditionalGeneration', 'KimiK3ForConditionalGeneration', 'KimiK3MTPModel', 'KimiLinearForCausalLM', 'MiniMaxM3SparseForCausalLM', 'MiniMaxM3SparseForConditionalGeneration']
+ROCM_DEFAULT_MRV1 set = ['DeepseekV32ForCausalLM', 'DeepseekV4ForCausalLM']
+GlmMoeDsaForCausalLM in DEFAULT_BREAKABLE (non-ROCm path) = True
+GUARD line preceding consumer = if model_config is not None and current_platform.is_rocm():
+LEG-DONE
+----- LEG D  BASE tree: same tests, old expectations (proves the tests actually changed) -----
+7 passed, 225 deselected, 15 warnings in 30.63s
+----- EVIDENCE-COMPLETE -----

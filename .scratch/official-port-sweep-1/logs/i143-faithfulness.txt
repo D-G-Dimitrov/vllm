@@ -1,0 +1,16 @@
+== A. file sets ==
+  identical (2 files)
+== B. per-file blob + changed-line delta ==
+  test_config.py                                             blob EQ  delta IDENTICAL
+  vllm.py                                                    blob NE  delta IDENTICAL
+== C. gap invariance for every blob-NE file (fork delta must be byte-intact) ==
+  GAP INVARIANT: vllm/config/vllm.py  (fork deviation identical before/after)
+      all fork-added lines still present
+== D. silent-deletion scan (symbol names, HEAD-parent vs result) ==
+  (no output above = nothing silently deleted)
+== E. upstream hunks all present in result (no dropped hunk) ==
+  every added upstream line is present in the result tree
+== F. state ==
+  numstat ours: tests/test_config.py +5/-2  vllm/config/vllm.py +5/-5  
+  numstat up:   tests/test_config.py +5/-2  vllm/config/vllm.py +5/-5  
+  dirty=0 unmerged=0 seq=0  health=200
