@@ -1187,3 +1187,33 @@ Surrounding modules come from the image build; the module under test is exact.
 *Rollback:* `git revert a4fd3419f`.
 
 `tip b5debfaf2 -> a4fd3419f`.
+
+### 147. `ec32f669bb` -> `d51c46e35` — [Feature][MM_UUIDs] Allow empty video URLs when using multi-modal UUIDs (#54220)
+
+*Full depth: CPU test differential (12 pass new; base fails exactly the video-None case, image-None already passed).* **Full depth: CPU test differential (input-path feature, and this cluster serves a VL model).**
+4 files, +146/−1, **all four `blob EQ`** with numstat identical to upstream (`vllm/multimodal/parse.py` +7,
+`tests/multimodal/test_parse.py` +20/−1, `tests/entrypoints/multimodal/openai/chat_completion/test_video.py` +112,
+docs +7).
+
+*Why non-null traffic provably cannot change.* The entire production delta is one early-`continue` guarded by
+`if data_item is None:` inside `MultiModalDataParser._parse_videos` (plus `| None` on the return type and on the
+`metadata_lst`). No existing statement moved, so any request that does not send `None` video items executes
+byte-identical code. Fork serving sends real URIs, so it is inert here; the new capability only engages for
+clients sending empty video entries **with** `mm_uuids`.
+
+*Leg* (CPU, production image, GPU masked, `:8000` 200 before/after) in `logs/i147-none-video-url-leg.txt`, with
+`parse.py` overlaid into the image package (marker count 1 vs 0):
+new → **12 passed**; base + the same tests → **1 failed / 11 passed**, and the single failure is exactly
+`test_parse_mm_data_accepts_none_cached_item[video-VideoProcessorItems]` while the `[image-ImageProcessorItems]`
+variant passes on base too — which localizes the defect precisely: images already tolerated a cached `None`,
+videos did not. Base + base tests → **10 passed**, so nothing was papered over.
+
+*Residual risk, stated rather than smoothed over.* The change lets a `None` flow downstream into
+`VideoProcessorItems`; the contract that makes that safe is the multimodal-UUID path, and its end-to-end coverage
+is the new +112-line `test_video.py`, which needs a live OpenAI server (and a real model) and was **not** run on
+this CPU-only box. What was verified is the parser-level contract plus the fact that no existing path changed. If
+the fork ever starts sending null video items with UUIDs, that e2e test is the thing to run on GPU first.
+
+*Rollback:* `git revert d51c46e35`.
+
+`tip a4fd3419f -> d51c46e35`.

@@ -1,0 +1,49 @@
+===== item 147 / ec32f669bb [Feature][MM_UUIDs] Allow empty video URLs when using multi-modal UUIDs (#54220)  module under test: vllm/multimodal/parse.py   tests: tests/multimodal/test_parse.py =====
+vllm package: /usr/local/lib/python3.12/dist-packages/vllm (0.1.dev20073+g8e685d198)   marker pattern: Allow None video items
+
+----- LEG A  NEW module + NEW tests -----
+  marker count=1 (expect >=1 = new code)
+PASSED w/tests/multimodal/test_parse.py::test_image_size_hwc_chw[image0]
+PASSED w/tests/multimodal/test_parse.py::test_image_size_hwc_chw[image1]
+PASSED w/tests/multimodal/test_parse.py::test_image_size_hwc_chw[image2]
+PASSED w/tests/multimodal/test_parse.py::test_image_size_hwc_chw[image3]
+PASSED w/tests/multimodal/test_parse.py::test_image_size_hwc_chw[image4]
+PASSED w/tests/multimodal/test_parse.py::test_frame_size_hwc_chw[frame0]
+PASSED w/tests/multimodal/test_parse.py::test_frame_size_hwc_chw[frame1]
+PASSED w/tests/multimodal/test_parse.py::test_frame_size_hwc_chw[frame2]
+PASSED w/tests/multimodal/test_parse.py::test_frame_size_hwc_chw[frame3]
+PASSED w/tests/multimodal/test_parse.py::test_frame_size_hwc_chw[frame4]
+PASSED w/tests/multimodal/test_parse.py::test_parse_mm_data_accepts_none_cached_item[image-ImageProcessorItems]
+PASSED w/tests/multimodal/test_parse.py::test_parse_mm_data_accepts_none_cached_item[video-VideoProcessorItems]
+12 passed in 23.99s
+
+----- LEG B  BASE module + NEW tests (new tests should fail here if they pin the fix) -----
+  marker count=0 (expect 0 = base code)
+        reachable, it will emit an error.
+PASSED w/tests/multimodal/test_parse.py::test_image_size_hwc_chw[image0]
+PASSED w/tests/multimodal/test_parse.py::test_image_size_hwc_chw[image1]
+PASSED w/tests/multimodal/test_parse.py::test_image_size_hwc_chw[image2]
+PASSED w/tests/multimodal/test_parse.py::test_image_size_hwc_chw[image3]
+PASSED w/tests/multimodal/test_parse.py::test_image_size_hwc_chw[image4]
+PASSED w/tests/multimodal/test_parse.py::test_frame_size_hwc_chw[frame0]
+PASSED w/tests/multimodal/test_parse.py::test_frame_size_hwc_chw[frame1]
+PASSED w/tests/multimodal/test_parse.py::test_frame_size_hwc_chw[frame2]
+PASSED w/tests/multimodal/test_parse.py::test_frame_size_hwc_chw[frame3]
+PASSED w/tests/multimodal/test_parse.py::test_frame_size_hwc_chw[frame4]
+PASSED w/tests/multimodal/test_parse.py::test_parse_mm_data_accepts_none_cached_item[image-ImageProcessorItems]
+FAILED w/tests/multimodal/test_parse.py::test_parse_mm_data_accepts_none_cached_item[video-VideoProcessorItems]
+1 failed, 11 passed in 23.89s
+
+----- LEG C  BASE module + BASE tests (pre-existing health) -----
+PASSED b/tests/multimodal/test_parse.py::test_image_size_hwc_chw[image0]
+PASSED b/tests/multimodal/test_parse.py::test_image_size_hwc_chw[image1]
+PASSED b/tests/multimodal/test_parse.py::test_image_size_hwc_chw[image2]
+PASSED b/tests/multimodal/test_parse.py::test_image_size_hwc_chw[image3]
+PASSED b/tests/multimodal/test_parse.py::test_image_size_hwc_chw[image4]
+PASSED b/tests/multimodal/test_parse.py::test_frame_size_hwc_chw[frame0]
+PASSED b/tests/multimodal/test_parse.py::test_frame_size_hwc_chw[frame1]
+PASSED b/tests/multimodal/test_parse.py::test_frame_size_hwc_chw[frame2]
+PASSED b/tests/multimodal/test_parse.py::test_frame_size_hwc_chw[frame3]
+PASSED b/tests/multimodal/test_parse.py::test_frame_size_hwc_chw[frame4]
+10 passed in 23.81s
+----- EVIDENCE-COMPLETE -----
