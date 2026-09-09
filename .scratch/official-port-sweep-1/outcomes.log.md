@@ -1486,3 +1486,34 @@ while `run-intel-test.sh:20` exports `PYTHONPATH=".."` — two different spellin
 *Rollback:* `git revert 67ffa8aa7`.
 
 `tip e0e9a021d -> 67ffa8aa7`.
+
+### 155. `4707679cd2` -> `aeb5deca9` — [Bugfix][MiniCPM-V] Route video_embeds to the shared vision parser (#54633)
+
+*Minimum gate: MiniCPM-V/O model-scoped; upstream CPU test unrunnable on image build (skew chain into fork-diverged fused_moe/utils.py).* **Minimum gate (model-scoped bugfix; upstream's CPU test is NOT runnable on this image build — stated plainly, not glossed). 3 files, +75/−8, all `blob EQ`, patch-id EQUAL, zero collisions.**
+
+Bug: `MiniCPMVBaseModel._parse_and_validate_multimodal_inputs` built the video branch's image kwargs with
+`{k.removeprefix("video_"): v for k, v in kwargs.items()}` over **all** kwargs, so on a mixed image+video request
+`video_pixel_values`→`pixel_values` collided with the real `pixel_values` (last wins) and `tgt_sizes`/`image_embeds`
+leaked into the video branch, so `video_embeds` never reached the shared vision parser. Fix adds the allowlist
+`_VIDEO_TO_IMAGE_KWARGS` + `_image_kwargs_from_video` (minicpmv.py:472-485); `minicpmv4_6.py`'s −7/+2 is a
+behaviour-preserving dedupe onto the shared helper (its old code already filtered `k.startswith("video_")`).
+
+*Why minimum-gate.* Reachable in this fork (`registry.py:503-506` registers both models) and **not** platform-gated,
+so it is not a skip — but upstream's new `tests/model_executor/test_minicpmv.py` cannot import here: tip's
+`minicpmv.py:82` needs `cached_encode` from `multimodal/processing/processor`, absent from image build
+`0.1.dev20073+g8e685d198`; after overlaying `processor.py` + `qwen3_5.py` the chain next failed on
+`is_model_fused_shared_expert_compatible` from `layers/fused_moe/utils.py` — **where the fork itself carries local
+MoE changes**. Continuing to overlay would have produced a hybrid package testing my overlay rather than either
+tree, so I stopped at two attempts. No leg, no GPU: the fork's serving path here runs Qwen/DSV4, not MiniCPM.
+
+*What was verified instead:* the allowlist is 1:1 with the declared field set at `minicpmv.py:488-497`
+(`video_pixel_values`, `video_image_sizes`, `video_tgt_sizes`, `video_embeds`), and `grep -rn 'removeprefix("video_")'`
+post-pick returns nothing — no leftover un-prefixed pass-through. `_VIDEO_TO_IMAGE_KWARGS`'s only importer is
+`minicpmv4_6.py:62`, already in the changed set. No new config field or env var.
+
+*Blast radius to watch (inherits beyond the tested classes):* `MiniCPMVBaseModel` subclasses MiniCPMV2_0/2_5/2_6/4_0/4_5/MiniCPMV
+and `MiniCPMOBaseModel._parse_and_validate_multimodal_inputs` calls `super()` (`minicpmo.py:900-901`), with MiniCPMO
+mixing in MiniCPMV2_6/4_5 — **so MiniCPMO behavior changes too and upstream added no MiniCPMO test.**
+*Rollback:* `git revert aeb5deca9`.
+
+`tip 67ffa8aa7 -> aeb5deca9`.
