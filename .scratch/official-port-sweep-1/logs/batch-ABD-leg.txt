@@ -1,0 +1,201 @@
+===== batch leg: A=8905633687 B=ce7391712b D=4707679cd2  base=da87294a4  image vllm=0.1.dev20073+g8e685d198 =====
+pkg: /usr/local/lib/python3.12/dist-packages/vllm
+
+----- A token-offset origins / NEW (A token-offset origins pick) -----
+  MISSING vllm/renderers/base.py in /w
+  MISSING vllm/renderers/params.py in /w
+  marker '_apply_prompt_char_offset' in base.py = ERR
+E       assert [(0, 1), (1, ..., (5, 6), ...] == [(36, 37), (3...39), (39, 40)]
+E         
+E         At index 0 diff: (0, 1) != (36, 37)
+E         Left contains 12 more items, first extra item: (4, 5)
+E         Use -v to get more diff
+
+wA/tests/renderers/test_token_offsets.py:294: AssertionError
+=========================== short test summary info ============================
+FAILED wA/tests/renderers/test_token_offsets.py::TestTruncationKeepsOffsetsAligned::test_text_pretrim_preserves_source_offsets[left-expected_offsets0]
+FAILED wA/tests/renderers/test_token_offsets.py::TestTruncationKeepsOffsetsAligned::test_text_pretrim_preserves_source_offsets[right-expected_offsets1]
+FAILED wA/tests/renderers/test_token_offsets.py::TestTruncationKeepsOffsetsAligned::test_async_left_text_pretrim_preserves_source_offsets
+3 failed, 12 deselected in 1.66s
+
+----- A token-offset origins / BASE (base da87294a4) -----
+  marker '_apply_prompt_char_offset' in base.py = ERR
+            (39, 40),
+        ]
+E       assert [(12, 13), (1...15), (15, 16)] == [(36, 37), (3...39), (39, 40)]
+E         
+E         At index 0 diff: (12, 13) != (36, 37)
+E         Use -v to get more diff
+
+wA/tests/renderers/test_token_offsets.py:294: AssertionError
+=========================== short test summary info ============================
+FAILED wA/tests/renderers/test_token_offsets.py::TestTruncationKeepsOffsetsAligned::test_text_pretrim_preserves_source_offsets[left-expected_offsets0]
+FAILED wA/tests/renderers/test_token_offsets.py::TestTruncationKeepsOffsetsAligned::test_async_left_text_pretrim_preserves_source_offsets
+2 failed, 1 passed, 12 deselected in 1.82s
+
+----- B embedding decode bound / NEW (B embedding decode bound pick) -----
+  MISSING vllm/envs.py in /w
+  MISSING vllm/utils/sparse_utils.py in /w
+  MISSING vllm/renderers/embed_utils.py in /w
+  MISSING vllm/multimodal/media/image.py in /w
+  MISSING vllm/multimodal/media/audio.py in /w
+  MISSING vllm/multimodal/media/video.py in /w
+  marker '_MAX_EMBED_DECODE_BYTES' in envs.py = ERR
+ImportError while importing test module '/wB/tests/renderers/test_sparse_tensor_validation.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+wB/tests/renderers/test_sparse_tensor_validation.py:24: in <module>
+    from vllm.multimodal.media.video import VideoEmbeddingMediaIO
+E   ImportError: cannot import name 'VideoEmbeddingMediaIO' from 'vllm.multimodal.media.video' (/usr/local/lib/python3.12/dist-packages/vllm/multimodal/media/video.py)
+------------------------------- Captured stderr --------------------------------
+W0909 19:20:20.911000 153 usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py:178] No CUDA runtime is found, using CUDA_HOME='/usr/local/cuda'
+=========================== short test summary info ============================
+ERROR wB/tests/renderers/test_sparse_tensor_validation.py
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+1 error in 0.21s
+
+----- B embedding decode bound / BASE (base da87294a4) -----
+  marker '_MAX_EMBED_DECODE_BYTES' in envs.py = ERR
+ImportError while importing test module '/wB/tests/renderers/test_sparse_tensor_validation.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+wB/tests/renderers/test_sparse_tensor_validation.py:26: in <module>
+    from vllm.utils.sparse_utils import safe_to_dense
+E   ImportError: cannot import name 'safe_to_dense' from 'vllm.utils.sparse_utils' (/usr/local/lib/python3.12/dist-packages/vllm/utils/sparse_utils.py)
+------------------------------- Captured stderr --------------------------------
+W0909 19:20:53.275000 205 usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py:178] No CUDA runtime is found, using CUDA_HOME='/usr/local/cuda'
+=========================== short test summary info ============================
+ERROR wB/tests/renderers/test_sparse_tensor_validation.py
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+1 error in 0.20s
+
+----- D MiniCPM-V video_embeds / NEW (D MiniCPM-V video_embeds pick) -----
+  MISSING vllm/model_executor/models/minicpmv.py in /w
+  MISSING vllm/model_executor/models/minicpmv4_6.py in /w
+  marker '_VIDEO_TO_IMAGE_KWARGS' in minicpmv.py = ERR
+------------------------------- Captured stderr --------------------------------
+W0909 19:21:24.768000 239 usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py:178] No CUDA runtime is found, using CUDA_HOME='/usr/local/cuda'
+=============================== warnings summary ===============================
+usr/local/lib/python3.12/dist-packages/torch/jit/_script.py:365: 14 warnings
+  /usr/local/lib/python3.12/dist-packages/torch/jit/_script.py:365: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+ERROR wD/tests/model_executor/test_minicpmv.py - AttributeError: module 'vllm...
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+14 warnings, 1 error in 0.98s
+
+----- D MiniCPM-V video_embeds / BASE (base da87294a4) -----
+  marker '_VIDEO_TO_IMAGE_KWARGS' in minicpmv.py = ERR
+------------------------------- Captured stderr --------------------------------
+W0909 19:21:57.751000 279 usr/local/lib/python3.12/dist-packages/torch/utils/cpp_extension.py:178] No CUDA runtime is found, using CUDA_HOME='/usr/local/cuda'
+=============================== warnings summary ===============================
+usr/local/lib/python3.12/dist-packages/torch/jit/_script.py:365: 14 warnings
+  /usr/local/lib/python3.12/dist-packages/torch/jit/_script.py:365: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+ERROR wD/tests/model_executor/test_minicpmv.py - AttributeError: module 'vllm...
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+14 warnings, 1 error in 0.95s
+
+----- EVIDENCE-COMPLETE -----
+===== batch leg: A=8905633687 B=ce7391712b D=4707679cd2  base=da87294a4  image vllm=0.1.dev20073+g8e685d198 =====
+pkg: /usr/local/lib/python3.12/dist-packages/vllm
+
+----- A token-offset origins / NEW (A token-offset origins pick) -----
+  marker '_apply_prompt_char_offset' in base.py = 3
+...                                                                      [100%]
+3 passed, 12 deselected in 1.75s
+
+----- A token-offset origins / BASE (base da87294a4) -----
+  marker '_apply_prompt_char_offset' in base.py = 0
+ERR
+>       assert result["prompt_token_offsets"] == [
+            (36, 37),
+            (37, 38),
+            (38, 39),
+            (39, 40),
+        ]
+E       assert [(12, 13), (1...15), (15, 16)] == [(36, 37), (3...39), (39, 40)]
+E         
+E         At index 0 diff: (12, 13) != (36, 37)
+E         Use -v to get more diff
+
+wA/tests/renderers/test_token_offsets.py:294: AssertionError
+=========================== short test summary info ============================
+FAILED wA/tests/renderers/test_token_offsets.py::TestTruncationKeepsOffsetsAligned::test_text_pretrim_preserves_source_offsets[left-expected_offsets0]
+FAILED wA/tests/renderers/test_token_offsets.py::TestTruncationKeepsOffsetsAligned::test_async_left_text_pretrim_preserves_source_offsets
+2 failed, 1 passed, 12 deselected in 1.65s
+
+----- B embedding decode bound / NEW (B embedding decode bound pick) -----
+  marker '_MAX_EMBED_DECODE_BYTES' in envs.py = 4
+..................                                                       [100%]
+=============================== warnings summary ===============================
+tests/renderers/test_sparse_tensor_validation.py::TestEmbeddingDecodeSizeLimit::test_oversized_sparse_tensor_rejected
+  /wB/tests/renderers/test_sparse_tensor_validation.py:440: UserWarning: Sparse invariant checks are implicitly disabled. Memory errors (e.g. SEGFAULT) will occur when operating on a sparse tensor which violates the invariants, but checks incur performance overhead. To silence this warning, explicitly opt in or out. See `torch.sparse.check_sparse_tensor_invariants.__doc__` for guidance.  (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/Context.cpp:816.)
+    return torch.sparse_coo_tensor(indices, values, shape, dtype=torch.float32)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+18 passed, 24 deselected, 1 warning in 9.48s
+
+----- B embedding decode bound / BASE (base da87294a4) -----
+  marker '_MAX_EMBED_DECODE_BYTES' in envs.py = 0
+ERR
+
+==================================== ERRORS ====================================
+______ ERROR collecting tests/renderers/test_sparse_tensor_validation.py _______
+ImportError while importing test module '/wB/tests/renderers/test_sparse_tensor_validation.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+wB/tests/renderers/test_sparse_tensor_validation.py:26: in <module>
+    from vllm.utils.sparse_utils import safe_to_dense
+E   ImportError: cannot import name 'safe_to_dense' from 'vllm.utils.sparse_utils' (/usr/local/lib/python3.12/dist-packages/vllm/utils/sparse_utils.py)
+------------------------------- Captured stderr --------------------------------
+=========================== short test summary info ============================
+ERROR wB/tests/renderers/test_sparse_tensor_validation.py
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+1 error in 0.20s
+
+----- D MiniCPM-V video_embeds / NEW (D MiniCPM-V video_embeds pick) -----
+  marker '_VIDEO_TO_IMAGE_KWARGS' in minicpmv.py = 3
+usr/local/lib/python3.12/dist-packages/vllm/_aiter_ops.py:1607: in <module>
+    class rocm_aiter_ops:
+usr/local/lib/python3.12/dist-packages/vllm/_aiter_ops.py:1695: in rocm_aiter_ops
+    _FP4_GEMM_DYNAMIC_QUANT_ASM = envs.VLLM_ROCM_USE_AITER_FP4_ASM_GEMM
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+usr/local/lib/python3.12/dist-packages/vllm/envs.py:2520: in __getattr__
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+E   AttributeError: module 'vllm.envs' has no attribute 'VLLM_ROCM_USE_AITER_FP4_ASM_GEMM'. Did you mean: 'VLLM_ROCM_USE_AITER_FP4BMM'?
+------------------------------- Captured stderr --------------------------------
+=============================== warnings summary ===============================
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+ERROR wD/tests/model_executor/test_minicpmv.py - AttributeError: module 'vllm...
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+14 warnings, 1 error in 0.95s
+
+----- D MiniCPM-V video_embeds / BASE (base da87294a4) -----
+  marker '_VIDEO_TO_IMAGE_KWARGS' in minicpmv.py = 0
+ERR
+usr/local/lib/python3.12/dist-packages/vllm/_aiter_ops.py:1607: in <module>
+    class rocm_aiter_ops:
+usr/local/lib/python3.12/dist-packages/vllm/_aiter_ops.py:1695: in rocm_aiter_ops
+    _FP4_GEMM_DYNAMIC_QUANT_ASM = envs.VLLM_ROCM_USE_AITER_FP4_ASM_GEMM
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+usr/local/lib/python3.12/dist-packages/vllm/envs.py:2520: in __getattr__
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+E   AttributeError: module 'vllm.envs' has no attribute 'VLLM_ROCM_USE_AITER_FP4_ASM_GEMM'. Did you mean: 'VLLM_ROCM_USE_AITER_FP4BMM'?
+------------------------------- Captured stderr --------------------------------
+=============================== warnings summary ===============================
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+ERROR wD/tests/model_executor/test_minicpmv.py - AttributeError: module 'vllm...
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+14 warnings, 1 error in 0.94s
+
+----- EVIDENCE-COMPLETE -----

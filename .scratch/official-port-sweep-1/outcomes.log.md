@@ -1404,3 +1404,34 @@ other `test_areas/*.yaml`, and `mi355_2` previously appeared only as an `agent_p
 *Rollback:* `git revert da87294a4`.
 
 `tip d1dc60334 -> da87294a4`.
+
+### 152. `8905633687` -> `6c9f98f11` — [Bugfix][Frontend] Preserve token offset origins after left text pre-trimming (#54692)
+
+*Full depth: CPU differential leg (new 3 passed / base 2 failed 1 passed).* **Full depth (CPU differential leg). 3 files, +112/−0, all `blob EQ`, patch-id EQUAL, zero collisions.**
+
+Bug: when a request asks for `return_token_offsets` *and* sets `truncate_prompt_tokens` *and* `truncation_side="left"`,
+the text pre-trim at `params.py:376-379` (`text = text[-max_input_chars:]`) shifted every reported offset back to
+origin. Fix adds `TokenizeParams._get_text_truncation_offset` (params.py:384-407) and
+`BaseRenderer._apply_prompt_char_offset` (early-out `if char_offset == 0: return prompt`), so non-affected traffic
+pays one attribute lookup + one int compare.
+
+*Leg (CPU, production image, GPU masked, `:8000` 200 before/after),* `logs/batch-ABD-leg.txt`: item's two modules
+overlaid into the image package, upstream's new `tests/renderers/test_token_offsets.py -k pretrim`.
+**NEW: 3 passed. BASE (fork tip `da87294a4` modules, marker `_apply_prompt_char_offset`=0): 2 failed, 1 passed** —
+exactly `test_text_pretrim_preserves_source_offsets[left]` and the async variant, which is precisely what the fix
+repairs; the `right` case already passed on the fork. Tests use the in-file `_OffsetTokenizer` (`max_chars_per_token=1`),
+so no HF download and no GPU; the file's other 12 tests were deselected (they need the `gpt2` tokenizer over network).
+
+*Fork relevance:* runtime code on the API-server request path (`vllm/renderers/base.py:547,552,587,592`), **not**
+platform-gated; fork does not diverge in either changed file. Both new symbols are private and used only inside
+`base.py` (repo-wide grep: defs + 4 call sites). No new config field or env var.
+
+*Residual:* the new bound is a **second copy** of the `max_input_tokens * tokenizer.max_chars_per_token` formula
+(upstream comment-free duplication at params.py:384-407 vs :376-379) — if one drifts, offsets silently desync. Worth
+watching on future picks. Consumers of `prompt_token_offsets`: `entrypoints/scale_out/render/serving.py:157,228`,
+`inputs/engine.py:43`, `inputs/llm.py:118` — the fork's `scale_out/token_in_token_out/serving.py` diverges nearby
+(`_preflight()`) but is untouched here.
+
+*Rollback:* `git revert 6c9f98f11`.
+
+`tip da87294a4 -> 6c9f98f11`.
