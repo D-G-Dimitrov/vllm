@@ -1,0 +1,24 @@
+===== item 150 / d0e695a91b  [Distributed] pre-shared ncclUniqueId rendezvous for weight transfer (#53784) =====
+vllm package: /usr/local/lib/python3.12/dist-packages/vllm (0.1.dev20073+g8e685d198)
+
+----- PROBE against NEW modules (d1dc60334) -----
+  overlaid 5 module(s); marker nccl_unique_id_b64 in nccl_common.py = 11
+NCCL_UNIQUE_ID_BYTES: 128
+A TCP path      : uid_bytes= None  payload= ['master_address', 'master_port', 'packed', 'packed_buffer_size_bytes', 'packed_num_buffers', 'rank_offset', 'world_size']
+B uid path      : len(uid_bytes)= 128  payload= ['nccl_unique_id_b64', 'packed', 'packed_buffer_size_bytes', 'packed_num_buffers', 'rank_offset', 'world_size']  repr_hides_uid= True
+C validate neither set : ValueError: NCCLWeightTransferInitInfo: need nccl_unique_id_b64, or both
+C validate both set    : ValueError: NCCLWeightTransferInitInfo: pass nccl_unique_id_b64 OR maste
+C validate not base64  : ValueError: NCCLWeightTransferInitInfo: nccl_unique_id_b64 is not valid 
+C validate wrong length: ValueError: NCCLWeightTransferInitInfo: nccl_unique_id_b64 must decode t
+D positional  : TypeError (kw_only in effect)
+E decode helper : direct call -> bytes
+F serving path  : __init__ calls _init_comm: True
+                : _init_comm present: True | from_unique_id_bytes is classmethod: True
+
+----- PROBE against BASE modules (cd934d93e) -----
+  overlaid 5 module(s); marker nccl_unique_id_b64 in nccl_common.py = 0
+Traceback (most recent call last):
+  File "/probe/probe150.py", line 11, in <module>
+    from vllm.distributed.weight_transfer.nccl_common import (
+ImportError: cannot import name 'decode_nccl_unique_id' from 'vllm.distributed.weight_transfer.nccl_common' (/usr/local/lib/python3.12/dist-packages/vllm/distributed/weight_transfer/nccl_common.py)
+----- EVIDENCE-COMPLETE -----

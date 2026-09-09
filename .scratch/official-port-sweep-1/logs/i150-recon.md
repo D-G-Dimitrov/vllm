@@ -1,0 +1,27 @@
+upstream: d0e695a91b67a8214c2e9ed77595186d2f2844b6 "[Distributed] Support pre-shared ncclUniqueId rendezvous for weight transfer" (#53784)
+pick: d1dc60334   conflicts: 0
+files: tests/distributed/test_weight_transfer_nccl_uid.py +465/-0 | vllm/distributed/device_communicators/pynccl.py +68/-0 | vllm/distributed/device_communicators/pynccl_wrapper.py +3/-0 | vllm/distributed/weight_transfer/nccl_common.py +124/-7 | vllm/distributed/weight_transfer/nccl_engine.py +10/-1 | vllm/distributed/weight_transfer/sparse_nccl_engine.py +3/-1
+blob: ALL 6 EQ (byte-identical to upstream; delta IDENTICAL per file; patch-id EQUAL cc596a9cca92ed5105d3d2d6b269eedc99352170; file sets identical; collisions with 337d3f5dd: none)
+changed_symbols:
+  NCCLWeightTransferInitInfo (nccl_common.py:71) -> @dataclass(kw_only=True); master_address: str|None=None, master_port: int|None=None (were required); new nccl_unique_id_b64: str|None = field(default=None, repr=False); new __post_init__ + property nccl_unique_id_bytes -> bytes|None; rank_offset/world_size still required
+  decode_nccl_unique_id(*, master_address, master_port, nccl_unique_id_b64, ctx) -> bytes|None  NEW (nccl_common.py:31; xor-mode check, strict RFC-4648 base64, len must == 128)
+  worker_init_payload(init_info: NCCLWeightTransferInitInfo) -> dict  NEW (nccl_common.py:117; asdict() minus None-valued keys)
+  uid_init_process_group(nccl_unique_id_bytes, rank, world_size, device) -> PyNcclCommunicator  NEW (nccl_common.py:161)
+  worker_init_process_group(init_info, parallel_config)  same signature (nccl_common.py:182), body now branches uid vs TCPStore; asserts master_address/master_port on TCP path
+  PyNcclCommunicator._init_comm(self, device) -> None  NEW (pynccl.py:137; init body moved verbatim out of __init__)
+  PyNcclCommunicator.from_unique_id_bytes(cls, unique_id_bytes, rank, world_size, device, library_path=None)  NEW classmethod (pynccl.py:164; cls.__new__, self.group=None, raises RuntimeError if NCCLLibrary load fails)
+  PyNcclCommunicator.group  annotation widened to ProcessGroup | StatelessProcessGroup | None (pynccl.py:64)
+  NCCL_UNIQUE_ID_BYTES = ctypes.sizeof(ncclUniqueId)  NEW module const (=128, pynccl_wrapper.py:54); NCCLLibrary.unique_id_from_bytes already present in fork (pynccl_wrapper.py:469)
+  call-site only: init_weight_transfer_engine(worker_init_payload(worker_init_info)) replaces asdict(...) (nccl_engine.py:313, sparse_nccl_engine.py:261); asdict still used in both files, no dead import
+external_callers: NONE for any new/changed symbol outside the 6 changed files. Dict-based consumers, signature-stable: vllm/distributed/weight_transfer/base.py:421-439 parse_init_info -> init_info_cls(**init_dict); vllm/v1/worker/gpu_worker.py:1480 init_weight_transfer_engine(dict). Positional-construction audit clean: tests/distributed/test_weight_transfer.py:459 and :1629 use kwargs (kw_only-safe), :1618 monkeypatches worker_init_process_group; no examples/ file references NCCLWeightTransferInitInfo or nccl_unique_id_b64; no pynccl_comm.group / model_update_group.group reads anywhere.
+new_flags: NCCLWeightTransferInitInfo.nccl_unique_id_b64 = None (init-info/wire field only — no vllm/config/ change, no CLI flag, no new env var; reuses existing envs.VLLM_DISABLE_PYNCCL; WeightTransferConfig untouched)
+fork_impact: Nothing changes for a TP server on this box. Inference collectives are untouched; the only serving-path code that executes differently is PyNcclCommunicator.__init__, whose init body was moved verbatim into _init_comm, plus one new module constant and a classmethod nothing calls. Behavior changes only when weight_transfer_config selects nccl/sparse-nccl AND the trainer sends nccl_unique_id_b64 in the init_weight_transfer_engine payload; then the worker skips TCPStore/StatelessProcessGroup and calls ncclCommInitRank directly. With the default (field unset) the worker takes the same stateless_init_process_group path as before, and the new payload omitting None keys stays wire-compatible with an older server. The server already running on :8000 predates the pick and is unaffected unless restarted.
+concerns:
+  - kw_only=True breaks positional NCCLWeightTransferInitInfo(...) construction for any out-of-tree/fork caller (clean in-fork).
+  - __post_init__ raises ValueError at construction; base.parse_init_info only maps TypeError->ValueError, so this ValueError surfaces raw via the RLHF dev route (vllm/entrypoints/serve/dev/rlhf/api_router.py:157).
+  - Unique-id path has no store barrier: all ranks must enter init concurrently, and a foreign (non-vLLM) peer must repeat the 1-element warm-up all_reduce or all ranks deadlock; it also fails loudly instead of silently disabling pynccl.
+  - from_unique_id_bytes returns a disabled communicator without setting self.nccl/self.device when world_size==1 or VLLM_DISABLE_PYNCCL; later .nccl access would AttributeError.
+  - New 465-line test file imports ray helpers from the fork's sibling tests/distributed/test_weight_transfer.py (present at :70, :92, :112) and contains 2 multi-GPU integration tests needing ray + a torch-free cupy peer.
+  - Not run: ruff/mypy/pytest/GPU (no venv on jetson, only /usr/bin/python3; GPU use prohibited by task). No import of the new module executed.
+  - pybase64 newly imported by nccl_common.py: already a hard dep (requirements/common.txt:47) and already imported by weight_transfer/clients.py and ipc_engine.py.
+jetson_state: head=d1dc60334 dirty=0 health=200

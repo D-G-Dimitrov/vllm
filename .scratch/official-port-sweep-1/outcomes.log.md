@@ -1311,3 +1311,49 @@ deliberate, not an omission, and it is why the landing sha is not a `pick.sh` ou
 *Rollback:* `git revert cd934d93e`.
 
 `tip 3110ecd5e -> cd934d93e`.
+
+### 150. `d0e695a91b` -> `d1dc60334` — [Distributed] Support pre-shared ncclUniqueId rendezvous for weight transfer (#53784)
+
+*Full depth: delegated recon (scout/fresh) + parent CPU probe; _init_comm verified byte-identical to __init__'s former tail.* **Full depth: delegated recon + parent-side CPU probe. 6 files, +673/−9, all six `blob EQ`, numstat identical, zero swap collisions.**
+
+*Division of labour (first item run this way).* A `scout` with `context: fresh` did the pick, read all six
+diffs, grepped every changed symbol for external callers, and pulled defaults — its report is
+`logs/i150-recon.md`. Key finding: **no caller outside the six changed files** for any new or changed symbol; the
+nearest consumers (`weight_transfer/base.py:421-439` `parse_init_info`, `gpu_worker.py:1480`) are dict-based and
+signature-stable; `tests/distributed/test_weight_transfer.py:459/1629` build the dataclass with kwargs, so
+`kw_only=True` is fork-clean. (The earlier `worker` attempt with `context: fork` died instantly — see skill 28.)
+
+*Parent-side leg* (CPU, production image, GPU masked, `:8000` 200 before/after) in
+`logs/i150-nccl-uid-leg.txt`, five modules overlaid, marker `nccl_unique_id_b64` = 11 (new) vs 0 (base):
+- new: `NCCL_UNIQUE_ID_BYTES == 128`; TCP path yields `uid_bytes=None` and a payload **carrying**
+  `master_address`/`master_port`; uid path yields 128 bytes and a payload **without** those keys — `None` keys are
+  stripped, so a new trainer stays wire-compatible with an old server; `repr()` hides the uid (`repr=False`).
+- all four misuse cases raise `ValueError` with specific messages (neither set / both set / not base64 / wrong
+  length), and positional construction raises `TypeError` — the `kw_only` break is loud, not silent.
+- base + same probe → **ImportError** on `decode_nccl_unique_id`, confirming the whole surface is new.
+
+*The one line the serving path executes differently, verified rather than assumed.* `pynccl.py` shows **+68/−0**,
+which I first read as "nothing moved, so the scout's 'verbatim move' claim is wrong". That reasoning was wrong: the
+block was relocated to immediately after its original position, so diff absorbs it and reports a pure insertion.
+Extracting base's `__init__` tail (19 lines) against the new `_init_comm` body showed the only difference is four
+docstring lines from my own slice offset — the **executable body is byte-identical**. So `PyNcclCommunicator.__init__`
+behavior is preserved. Lesson recorded: `-0` in numstat does not prove nothing moved.
+
+*Inert for the fork.* The new field is a wire/init-info field only (`nccl_unique_id_b64 = None`) — no
+`vllm/config/` change, no CLI arg, no env var, `WeightTransferConfig` untouched. Default `None` keeps the
+`stateless_init_process_group` (TCPStore) path exactly as before; the direct-`ncclCommInitRank` path engages only
+when a trainer sends `nccl_unique_id_b64`. `pybase64` is already a hard dep (`requirements/common.txt:47`).
+
+*Residual risks (not closed here).* (1) No GPU/ray leg: the +465-line test file's 2 integration tests need 2 GPUs
++ ray + a torch-free peer. (2) The uid path has **no store barrier** — all ranks must enter init concurrently and a
+non-vLLM peer must issue the matching one-element warm-up `all_reduce` or every rank deadlocks; it fails loudly
+(`RuntimeError`) rather than silently disabling pynccl. (3) `from_unique_id_bytes` mirrors `__init__`'s early-return
+for `world_size == 1` / `VLLM_DISABLE_PYNCCL` without setting `self.nccl`/`self.device`, so a later `.nccl` access
+on that path would `AttributeError`. (4) `__post_init__` raises `ValueError` at construction, and
+`base.parse_init_info` only converts `TypeError`→`ValueError`, so misuse surfaces raw over the RLHF dev route
+(`entrypoints/serve/dev/rlhf/api_router.py:157`). None of these are on the fork's serving path today; all four are
+on the path the moment weight-transfer-with-UID is used.
+
+*Rollback:* `git revert d1dc60334`.
+
+`tip cd934d93e -> d1dc60334`.
