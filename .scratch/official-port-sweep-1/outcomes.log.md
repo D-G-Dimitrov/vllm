@@ -1217,3 +1217,47 @@ the fork ever starts sending null video items with UUIDs, that e2e test is the t
 *Rollback:* `git revert d51c46e35`.
 
 `tip a4fd3419f -> d51c46e35`.
+
+### 148. `4ac452ad98` -> `3110ecd5e` — [Core] Release NCCL communicator memory in sleep mode (#51485)
+
+*Resolve-and-note (1 mechanical hunk = disjoint fork PLE block vs upstream rename; verbatim union) + default-off flag; CPU leg blocked by image/tip symbol skew.* **Resolve-and-note (one mechanical hunk, verbatim union) + resolve verification. CPU leg blocked by image version skew — recorded, not hidden.**
+12 files, +182/−6. Forecast said CONFLICT and it was real: one hunk in `vllm/v1/worker/gpu_worker.py`.
+
+*Why this conflict and not a functional one.* The fork inserted its PLE-offload methods (`_has_ple_layers`,
+`_validate_ple_offload_config`, the `PleOffloadWorker` spawn/wait pair) immediately **before**
+`def _get_sleep_mode_backend(...)`; upstream rewrote **exactly that def line** into a `sleep_mode_backend`
+`@property`. Git could not tell "insert before" from "rewrite this line", so it swallowed the whole fork block.
+The two changes are disjoint members of the same class — which is what makes a verbatim union legitimate here
+rather than a judgment call.
+
+*Resolution* (`logs/i148-resolver.py`, which refuses to write unless the block matches the expected shape): keep
+every fork line, drop the **one base line upstream deletes by design** (the old `def`), take upstream's
+`@property` + `def sleep_mode_backend` pair. Guard output: PLE methods present 2/2, old def removed, new property
+present, `ast.parse` OK. Post-resolve `grep -rn _get_sleep_mode_backend --include=*.py .` → **0 hits**, so the
+rename propagated everywhere including the fork-inherited test — and that test is adapted **by the upstream commit
+itself**, not by me, so I introduced no edit outside the pick.
+
+*Faithfulness* (`logs/i148-faithfulness.txt`): 12/12 files, per-file numstat diff **empty**, 9 blob EQ. The 3 NE
+files are all pre-existing fork divergence, none inside an upstream hunk: `gpu_worker.py` (the PLE block, i.e. the
+conflict), `cuda_communicator.py` (fork import block from item 142), `arg_utils.py` (fork CLI flags; upstream's +6
+applied cleanly and matches upstream numstat).
+
+*Why it is safe to land despite no test leg.* The behavior is **off by default**:
+`vllm/config/model.py` → `enable_nccl_comm_suspend: bool = False`, and both new calls are guarded by
+`if self.vllm_config.model_config.enable_nccl_comm_suspend:` (`gpu_worker.py:367-368` suspend, `:389-390` resume).
+Fork sleep/wake therefore runs the same code as before; the NCCL-communicator release only engages if someone
+passes `--enable-nccl-comm-suspend`. The overlay marker confirmed the mechanism end to end (flag present in
+`model.py`: new = 1, base = 0).
+
+*Leg could not run, and here is the exact reason* (`logs/i148-nccl-sleep-leg.txt`): this item spans 9 modules, so
+the single-module overlay was widened to overlay all of them — which works until the tip's `vllm/config/model.py`
+does `from vllm.transformers_utils.config import checkpoint_has_lm_head`, a symbol the production image build
+(`0.1.dev20073+g8e685d198`) predates → `ImportError` during collection on all three legs, new and base alike.
+Chasing the transitive closure of tip-vs-image symbol skew would be unbounded, so I stopped there rather than
+declare a pass. Upstream's own coverage (`test_pynccl.py` +39, `test_sleep_mode_backend.py` +49, and the
+`test_kv_cache_allocation_scope.py` adaptation) needs a real NCCL/GPU environment anyway. **If the fork ever turns
+this flag on, run those on GPU first** — that is the one residual risk this entry carries.
+
+*Rollback:* `git revert 3110ecd5e`.
+
+`tip d51c46e35 -> 3110ecd5e`.

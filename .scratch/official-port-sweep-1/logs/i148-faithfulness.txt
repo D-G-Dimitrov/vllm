@@ -1,0 +1,34 @@
+item 148  upstream 4ac452ad9883864bb3ab0412a45a63cbf62d730a  landing 3110ecd5e5da5edf396c4d52aa432346f663e239
+[Core] Release NCCL communicator memory in sleep mode (#51485)   base d51c46e35   FORECAST=CONFLICT
+
+== conflict ==
+1 conflicted hunk in vllm/v1/worker/gpu_worker.py. The fork inserted whole PLE-offload methods (_has_ple_layers,
+_validate_ple_offload_config, PleOffloadWorker spawn/wait) immediately before `def _get_sleep_mode_backend(...)`;
+upstream rewrote exactly that def line into a `sleep_mode_backend` property. Git could not distinguish
+"insert before" from "rewrite that line", so it flagged the whole fork block.
+
+== resolution (logs/i148-resolver.py, refuses unless the block matches the expected shape) ==
+verbatim union: keep every fork line, drop the ONE base line upstream deletes by design (the old def),
+take upstream's `@property` + `def sleep_mode_backend` pair. Guard output:
+  fork PLE methods present: 2 (expect 2)
+  old def removed: True      new property present: True      ast.parse: OK
+
+== faithfulness ==
+  files: ours=12 up=12 ; per-file numstat diff: EMPTY (identical +/- on every file)
+  blob EQ (9): test_pynccl.py, test_kv_cache_allocation_scope.py, test_sleep_mode_backend.py,
+    config/model.py, sleep_mode_backend.py, base_device_communicator.py, pynccl.py,
+    pynccl_wrapper.py, parallel_state.py
+  blob NE (3), all pre-existing fork divergence, none inside an upstream hunk:
+    vllm/v1/worker/gpu_worker.py                     fork PLE-offload block (the conflict itself)
+    vllm/distributed/.../cuda_communicator.py        fork divergence from item 142 (HierarchicalAllReduce
+                                                       + FlashInferPcieIpcAllReduce import block)
+    vllm/engine/arg_utils.py                         fork CLI flags; upstream hunk applied cleanly and its
+                                                       +6 lines match upstream numstat exactly
+
+== post-resolve correctness ==
+  grep -rn _get_sleep_mode_backend --include=*.py .   -> 0 hits (rename fully propagated, incl. the
+    fork-inherited test the upstream commit itself adapts)
+  PLE methods present: 2 ; sleep_mode_backend property at gpu_worker.py:339
+  gated calls at :367-368 (suspend) and :389-390 (resume), both under
+    `if self.vllm_config.model_config.enable_nccl_comm_suspend:`
+  new flag default: vllm/config/model.py -> `enable_nccl_comm_suspend: bool = False`

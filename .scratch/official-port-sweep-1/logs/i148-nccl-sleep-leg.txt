@@ -1,0 +1,22 @@
+===== item 148 / 4ac452ad98  [Core] Release NCCL communicator memory in sleep mode (#51485) =====
+vllm package: /usr/local/lib/python3.12/dist-packages/vllm (0.1.dev20073+g8e685d198)
+
+----- LEG A  NEW modules + NEW tests -----
+  overlaid 9 module(s) from /w
+  flag default present in model.py: 1
+ERROR w/tests/v1/worker/test_kv_cache_allocation_scope.py
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+1 error in 21.31s
+
+----- LEG B  BASE modules + NEW tests (new tests must fail = they pin the feature) -----
+  overlaid 9 module(s) from /b
+  flag default present in model.py: 0
+ERROR w/tests/v1/worker/test_kv_cache_allocation_scope.py
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+1 error in 21.05s
+
+----- LEG C  BASE modules + BASE tests (pre-existing health) -----
+ERROR b/tests/v1/worker/test_kv_cache_allocation_scope.py
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+1 error in 21.49s
+----- EVIDENCE-COMPLETE -----

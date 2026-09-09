@@ -199,7 +199,7 @@ Work every official PR from the wtdcode fork point through the sweep cutoff, **o
 - [x] 30dd1a7954 [DecodeBenchConnector] Fix HMA cache-group mapping (#54647)
 - [x] ff0c3cb03c [Bugfix][Frontend] Truncate the assistant tokens mask with the prompt (#54539)
 - [x] ec32f669bb [Feature][MM_UUIDs] Allow empty video URLs when using multi-modal UUIDs (#54220)
-- [ ] 4ac452ad98 [Core] Release NCCL communicator memory in sleep mode (#51485)
+- [x] 4ac452ad98 [Core] Release NCCL communicator memory in sleep mode (#51485)
 - [ ] fa99a6fea6 [Bugfix][Security] Bound the validation-error response body (#54684)
 - [ ] d0e695a91b [Distributed] Support pre-shared ncclUniqueId rendezvous for weight transfer (#53784)
 - [ ] 63988f3c2d [Quantization][Refactor][1/N] Adopt `QuantKey` in `QuarkConfig` and methods, relying on `weight_quant_key`, `act_quant_key` for quant method dispatch (#52958)
