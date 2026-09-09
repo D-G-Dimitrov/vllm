@@ -1,0 +1,36 @@
+===== item 149 / fa99a6fea6 [Bugfix][Security] Bound the validation-error response body (#54684)  module under test: vllm/entrypoints/serve/exception_handling/handlers/validation.py   tests: tests/entrypoints/serve/exception_handling/test_validation_exception_handler.py =====
+vllm package: /usr/local/lib/python3.12/dist-packages/vllm (0.1.dev20073+g8e685d198)   marker pattern: _MAX_REPORTED_ERRORS
+
+----- LEG A  NEW module + NEW tests -----
+  marker count=2 (expect >=1 = new code)
+ERROR w/tests/entrypoints/serve/exception_handling/test_validation_exception_handler.py
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+1 error in 25.26s
+
+----- LEG B  BASE module + NEW tests (new tests should fail here if they pin the fix) -----
+  marker count=0 (expect 0 = base code)
+ERROR w/tests/entrypoints/serve/exception_handling/test_validation_exception_handler.py
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+1 error in 25.08s
+
+----- LEG C  BASE module + BASE tests (pre-existing health) -----
+ERROR b/tests/entrypoints/serve/exception_handling/test_validation_exception_handler.py
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+1 error in 25.03s
+----- EVIDENCE-COMPLETE -----
+
+== supplement: the leg harness above errored at collection; the differential was obtained by direct runs ==
+cause: the TIP validation.py does `from vllm.entrypoints.serve.engine.protocol import ErrorInfo, ErrorResponse`
+     and that module does not exist in the production image build -> overlay alone was not enough.
+fix: co-overlay vllm/entrypoints/serve/engine/protocol.py (imports only time/typing/pydantic/logger/utils).
+
+BASE module + NEW tests  -> 13 passed, 4 FAILED:
+  TestValidationErrorBodyIsBounded::test_many_errors_are_capped
+  TestValidationErrorBodyIsBounded::test_container_input_is_described_not_echoed
+  TestValidationErrorBodyIsBounded::test_long_string_input_is_truncated
+  TestValidationErrorBodyIsBounded::test_union_loc_is_cleaned_in_the_message
+  (control: test_small_input_is_still_reported_verbatim PASSES on base -- base already echoes small
+   inputs verbatim, so that test is not the one pinning the change)
+NEW module (+ protocol.py) + NEW tests -> 17 passed, incl. all 5 TestValidationErrorBodyIsBounded.
+The other 12 tests (param fallback, clean_loc_for_param, server-path-leak protections) pass on BOTH
+trees, so the pre-existing error-handling behavior the fork depends on is untouched.

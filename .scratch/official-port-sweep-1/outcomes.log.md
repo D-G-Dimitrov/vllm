@@ -1261,3 +1261,53 @@ this flag on, run those on GPU first** — that is the one residual risk this en
 *Rollback:* `git revert 3110ecd5e`.
 
 `tip d51c46e35 -> 3110ecd5e`.
+
+### 149. `fa99a6fea6` -> `cd934d93e` — [Bugfix][Security] Bound the validation-error response body (#54684)
+
+*Full depth: CPU differential (base fails exactly the 4 bounded-body tests; control passes both ways) + convergence with a concurrent no-x cherry-pick.* **Full depth: CPU test differential on the API error path (17 pass on new; base fails exactly the 4 bounded-behavior tests).**
+2 files, +176/−1, both `blob EQ`, per-file numstat identical to upstream.
+
+*What it does.* Bounds the validation-error response body three ways: at most `_MAX_REPORTED_ERRORS = 10`
+entries rendered, each `input` value to `_MAX_ERROR_INPUT_CHARS = 200` chars, each rendered error to
+`_MAX_ERROR_CHARS = 1000`, plus a `...and N more errors` tail. Containers are **described, not rendered**
+(`<list of 12004 items>`) because `repr()` of the payload materializes the very string being avoided, and `loc`
+goes through the existing `clean_loc_for_param` (union branches were ~800 chars of type names per entry). The
+**true count is still reported** — only rendering is capped. Upstream measured 4,475 request bytes → 12,001 errors
+→ 23.6 MB response, ~5,300x amplification. This is on the path every malformed request to the fork's served
+endpoint takes, so it was legged rather than assumed. No fork code or test depends on the unbounded body:
+`grep -rln "validation errors:" --include=*.py .` matches only upstream's own new test file.
+
+*Leg* (CPU, production image, GPU masked, `:8000` 200 before/after) in `logs/i149-validation-body-leg.txt`:
+base module + new tests → **13 passed, 4 failed**, and the four are precisely
+`TestValidationErrorBodyIsBounded::{test_many_errors_are_capped, test_container_input_is_described_not_echoed,
+test_long_string_input_is_truncated, test_union_loc_is_cleaned_in_the_message}`, while
+`test_small_input_is_still_reported_verbatim` **passes on base** — a built-in control showing the tests isolate
+the bound and not the whole handler. New module + same tests → **17 passed**. The other 12 tests (param fallback,
+`clean_loc_for_param`, and the server-path-leak protections) pass on **both** trees, so existing error-handling
+behavior the fork relies on is untouched.
+
+*Method note.* The shared leg runner errored at collection: the tip's `validation.py` does
+`from vllm.entrypoints.serve.engine.protocol import ErrorInfo, ErrorResponse`, and that module does not exist in
+the production image build, so overlaying one module was not enough. Co-overlaying
+`vllm/entrypoints/serve/engine/protocol.py` (stdlib/pydantic/logger/utils only) fixed it. That is the second item
+in a row where image-vs-tip module skew, not the pick, was the obstacle — worth remembering before writing a leg
+against this image.
+
+---
+**CONVERGENCE INCIDENT during this item.** At **19:38:16**, while the leg above was running, a bare
+`git cherry-pick` of *this same upstream item* appeared on the Mac clone's `mitaka/backport` (`cd934d93e`), with
+**no `cherry picked from` trailer** — the identical signature to the 10:32:44 event during item 143. Both happened
+while this session was mid-item on the same sha. One correction to my first reading: the committer
+`D-G-Dimitrov` is **this repo's own configured git identity** (all 25 recent commits carry it, including every
+`land.sh` merge), so it identifies nothing external — it is the machine's git config, not a third party.
+
+Converged **without rewriting anyone's commit**: `cd934d93e`'s tree is `b1a8010eccd8dcf22545de42fef56df5207a6372`,
+byte-identical to my legged pick `37de7d8a6`, so the two are interchangeable by content. Their commit was adopted as
+canonical and pushed to origin; jetson was `reset --hard` to it (discarding my duplicate commit — my own, and
+tree-equal, so nothing is lost and the leg evidence applies to exactly this content). Three-way tip assert holds at
+`cd934d93e`. **This landing therefore lacks the `-x` trailer that every other entry in this ledger has** — that is
+deliberate, not an omission, and it is why the landing sha is not a `pick.sh` output.
+
+*Rollback:* `git revert cd934d93e`.
+
+`tip 3110ecd5e -> cd934d93e`.
