@@ -48,7 +48,9 @@ dirty=$(git -C "$MAC" status --porcelain | grep -vc '^??' || true)
 
 # 6. is anything sitting INSIDE the push clone? (a count of pi processes is noise; a cwd in this
 #    repo is the actual second-writer signal -- this is the check that settles the 2026-09-09 event)
-occ=$(cd / && lsof -d cwd 2>/dev/null | awk -v r="$MAC" '$NF==r && ($1=="node"||$1=="pi"||$1 ~ /zsh$/||$1=="bash"||$1=="fish"||$1=="git") {print $1"/"$2}' | sort -u | tr '\n' ' ')
+anc=""; ap=$$
+while :; do pp=$(ps -o ppid= -p "$ap" 2>/dev/null | tr -d ' '); [ -z "$pp" ] && break; anc="$anc $pp"; [ "$pp" = "1" ] && break; ap=$pp; done
+occ=$(cd / && lsof -d cwd 2>/dev/null | awk -v r="$MAC" -v ANC=" $anc " '$NF==r && ($1=="node"||$1=="pi"||$1 ~ /zsh$/||$1=="bash"||$1=="fish"||$1=="git") { if (index(ANC," "$2" ")==0) print $1"/"$2 }' | sort -u | tr '\n' ' ')
 # no legit session runs with the push clone as cwd (agents sit in vllm-backport), so any holder is foreign
 [ -z "$occ" ] && ok "no process cwd inside the push clone" || no "processes hold a cwd in $MAC: $occ -- identify them before landing"
 echo "        (info) pi processes: $(ps -eo pid,lstart,command | grep -cE '[p]i[[:space:]]*$' || true)"
