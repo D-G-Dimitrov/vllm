@@ -3,9 +3,10 @@
 # Exists because on 2026-09-09 the ledger SRC directory was deleted mid-session and nothing in the
 # pipeline noticed until an unrelated `scp` failed. Every check is an assert, not a print.
 set -uo pipefail
-MAC=/Users/mitaka/Projects/PyCharm/vllm-mitaka
+cd / || exit 1   # own cwd must be neutral: the second-writer check below would otherwise match THIS script
+MAC=${MAC:-/Users/mitaka/Projects/PyCharm/vllm-mitaka}
 SCR=$MAC/.scratch/official-port-sweep-1
-LTX=/Users/mitaka/Projects/PyCharm/vllm-ledger
+LTX=${LTX:-/Users/mitaka/Projects/PyCharm/vllm-ledger}
 rc=0
 ok() { echo "  ok    $*"; }
 no() { echo "  FAIL  $*"; rc=1; }
@@ -45,9 +46,12 @@ esac
 dirty=$(git -C "$MAC" status --porcelain | grep -vc '^??' || true)
 [ "$dirty" = "0" ] && ok "Mac tracked-dirty=0" || no "Mac tracked-dirty=$dirty (second writer?)"
 
-# 6. another live pi session that could be operating here
-p=$(ps -eo pid,command | grep -c '[p]i$' || true)
-[ "$p" -le 2 ] && ok "pi sessions on box: $p" || no "$p pi processes -- identify them before landing (ps -eo pid,lstart,command | grep '[p]i$')"
+# 6. is anything sitting INSIDE the push clone? (a count of pi processes is noise; a cwd in this
+#    repo is the actual second-writer signal -- this is the check that settles the 2026-09-09 event)
+occ=$(cd / && lsof -d cwd 2>/dev/null | awk -v r="$MAC" '$NF==r && ($1=="node"||$1=="pi"||$1 ~ /zsh$/||$1=="bash"||$1=="fish"||$1=="git") {print $1"/"$2}' | sort -u | tr '\n' ' ')
+# no legit session runs with the push clone as cwd (agents sit in vllm-backport), so any holder is foreign
+[ -z "$occ" ] && ok "no process cwd inside the push clone" || no "processes hold a cwd in $MAC: $occ -- identify them before landing"
+echo "        (info) pi processes: $(ps -eo pid,lstart,command | grep -cE '[p]i[[:space:]]*$' || true)"
 
 # 7. jetson work box state
 read -r jd ju <<<"$(ssh -o ConnectTimeout=10 jetson-222 'cd ~/dev/vllm && echo "$(git status --porcelain | grep -vc "^??") $(git ls-files -u | wc -l)"' 2>/dev/null)"
