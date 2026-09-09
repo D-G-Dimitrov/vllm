@@ -1,0 +1,41 @@
+item 145  upstream 30dd1a7954ff91ae0359806ec56b22b6be0c529f  landing b5debfaf245303d5a5663700c317ad7709a7dcfd
+[DecodeBenchConnector] Fix HMA cache-group mapping (#54647)   base 04ae2431c
+author: Jeff (Junze) Ma;  upstream itself co-authored by OpenAI Codex
+
+== 0. start ==
+  HEAD=04ae2431c dirty=0 unmerged=0 seq=0  health_before=200
+== 1. pick ==
+  2 files changed, 128 insertions(+), 34 deletions(-)
+  rc=0 HEAD=b5debfaf2 ahead=1 dirty=0
+== 2. faithfulness ==
+  file sets identical (2)
+  test_decode_bench_connector.py: blob EQ  delta_vs_upstream IDENTICAL
+  decode_bench_connector.py:      blob EQ  delta_vs_upstream IDENTICAL
+  numstat ours: tests/.../test_decode_bench_connector.py +101/-4
+                vllm/.../decode_bench_connector.py +27/-30
+  numstat up:   identical on both files
+  patch-id EQUAL (aae3754fe38e4a05f65ee332b511bde2db9073a4) [same changed-lines only; trust blob EQ]
+== 3. swap collision + state ==
+  collisions: []
+  health_after=200 HEAD=b5debfaf2 dirty=0 unmerged=0 seq=0
+
+== blast radius of the signature change ==
+Both constructors changed arity:
+  DecodeBenchConnectorScheduler(vllm_config) -> (vllm_config, kv_cache_config)
+  DecodeBenchConnectorWorker(vllm_config)    -> (vllm_config, kv_cache_config)
+Searched the whole fork tree for external callers:
+  grep -rn "DecodeBenchConnectorScheduler(\|DecodeBenchConnectorWorker(" --include=*.py . \
+    | grep -v decode_bench_connector.py:      -> NO MATCHES
+So the only call sites are inside the same file (updated by this pick) -- the arity change is self-contained.
+Both files are blob EQ, i.e. the fork had never touched either one.
+
+== what the fix actually does ==
+Scheduler: replaces the single `cache_config.block_size` with a per-group
+  `group_block_sizes = tuple(g.kv_cache_spec.block_size for g in kv_cache_config.kv_cache_groups)`
+and slices each group with `cdiv(num_external_tokens, group_block_size)`, `zip(..., strict=True)`.
+Worker: `group_to_layers` is built from `kv_cache_config.kv_cache_groups` at construction instead of
+  `register_kv_caches` hardcoding `{0: all layers}`.
+=> Before: every layer was attributed to group 0, so `group_to_layers.get(group_idx, [])` returned [] for
+   every group index >= 1 and the fill loop silently filled ONLY group 0 of a multi-group (HMA) layout,
+   while block counts were computed with one global block size. Bench-only connector: the defect corrupted
+   *decode benchmark* fidelity, not serving.

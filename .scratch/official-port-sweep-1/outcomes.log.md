@@ -1103,3 +1103,43 @@ mounted source tree has no build artifacts; irrelevant here since the oracle und
 *Rollback:* `git revert 04ae2431c`.
 
 `tip 0750a253a -> 04ae2431c`.
+
+### 145. `30dd1a7954` -> `b5debfaf2` — [DecodeBenchConnector] Fix HMA cache-group mapping (#54647)
+
+*Full depth (hybrid): connector fix + CPU unit-test differential (new tests fail on base code exactly where intended).* **Full depth (hybrid): production-code change + CPU unit-test differential.**
+2 files, +128/−34: the connector (+27/−30) and its unit tests (+101/−4). Both `blob EQ` — the fork had never
+touched either file — and numstat matches upstream exactly on both (`logs/i145-faithfulness.txt`).
+
+*What it fixes.* Scheduler: the single `cache_config.block_size` becomes per-group
+`tuple(g.kv_cache_spec.block_size for g in kv_cache_config.kv_cache_groups)`, each group sliced with
+`cdiv(num_external_tokens, group_block_size)` under `zip(..., strict=True)`. Worker: `group_to_layers` is built
+from `kv_cache_config` instead of `register_kv_caches` hardcoding `{0: all layers}`. So previously
+`group_to_layers.get(group_idx, [])` returned `[]` for every group ≥ 1 and the fill loop **silently filled only
+group 0** of a multi-group layout, with block counts computed from one global block size. This is a bench-only
+connector (active only when `kv_connector=DecodeBenchConnector`), so the defect cost *decode-benchmark* fidelity,
+never serving correctness — but the fork's Qwen3-Next-family models are exactly the multi-group HMA case, so the
+fix is squarely fork-relevant for benchmarking work.
+
+*Blast radius of the arity change* (both constructors gained a `kv_cache_config` arg): searched the whole fork —
+`grep -rn "DecodeBenchConnectorScheduler(\|DecodeBenchConnectorWorker(" --include=*.py . | grep -v
+decode_bench_connector.py:` → **no matches**. The only call sites are in the same file and are updated by this
+pick, so nothing else in the fork can break on the new signature.
+
+*Leg* (CPU, production image, GPU masked, `:8000` 200 before/after) in `logs/i145-decode-bench-hma-leg.txt` —
+**the cleanest differential of the sweep so far**: new code + new tests **10 passed**; base code + the same new
+tests **exactly 2 failed** (`fills_each_hma_group`, `uses_per_group_block_sizes`) with the other 8 passing; base
+code + base tests **8 passed**. So the two new tests pin precisely this fix and nothing else regressed in either
+direction. Method: the tests are relative-import modules (`from .utils import ...`) and the mounted worktrees have
+no build artifacts, so each leg **overlaid exactly one tree's connector module into the image's installed package**
+(marker `group_block_sizes` = 2 vs 0 proves the swap) and ran pytest with `--import-mode=importlib` from `cwd=/`,
+which resolves the `tests.v1.kv_connector.unit` package without shadowing the built `vllm`. An earlier attempt that
+copied the test file to a neutral dir failed collection on that relative import — kept out of the evidence file,
+recorded here so the next agent doesn't repeat it.
+
+*Caveat kept honest:* surrounding modules come from the image build (`0.1.dev20073+g8e685d198`), not the fork tip;
+the module under test is exact because it is overlaid file-for-file. No GPU leg: nothing here reaches a kernel, and
+the fill path is exercised by the unit tests through mocks.
+
+*Rollback:* `git revert b5debfaf2`.
+
+`tip 04ae2431c -> b5debfaf2`.

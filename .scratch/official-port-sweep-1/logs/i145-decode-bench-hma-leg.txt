@@ -1,0 +1,43 @@
+===== item 145 / 30dd1a7954  [DecodeBenchConnector] Fix HMA cache-group mapping (#54647) =====
+vllm package under test: /usr/local/lib/python3.12/dist-packages/vllm (0.1.dev20073+g8e685d198)
+each leg OVERLAYS exactly one tree's connector module into the image package
+
+----- LEG A  NEW connector + NEW tests (expect all pass) -----
+  overlay marker group_block_sizes=2 (2 = new code loaded)
+PASSED w/tests/v1/kv_connector/unit/test_decode_bench_connector.py::test_decode_bench_connector_basic
+PASSED w/tests/v1/kv_connector/unit/test_decode_bench_connector.py::test_decode_bench_connector_fills_each_hma_group
+PASSED w/tests/v1/kv_connector/unit/test_decode_bench_connector.py::test_decode_bench_connector_uses_per_group_block_sizes
+PASSED w/tests/v1/kv_connector/unit/test_decode_bench_connector.py::test_decode_bench_connector_no_refill
+PASSED w/tests/v1/kv_connector/unit/test_decode_bench_connector.py::test_decode_bench_connector_single_token
+PASSED w/tests/v1/kv_connector/unit/test_decode_bench_connector.py::test_decode_bench_connector_two_tokens
+PASSED w/tests/v1/kv_connector/unit/test_decode_bench_connector.py::test_decode_bench_connector_large_context
+PASSED w/tests/v1/kv_connector/unit/test_decode_bench_connector.py::test_decode_bench_connector_multiple_requests
+PASSED w/tests/v1/kv_connector/unit/test_decode_bench_connector.py::test_decode_bench_connector_partial_block
+PASSED w/tests/v1/kv_connector/unit/test_decode_bench_connector.py::test_decode_bench_connector_concurrent_requests
+10 passed, 15 warnings in 70.48s (0:01:10)
+
+----- LEG B  BASE connector + NEW tests (the HMA tests must FAIL = they pin the fix) -----
+  overlay marker group_block_sizes=0 (0 = base code loaded)
+PASSED w/tests/v1/kv_connector/unit/test_decode_bench_connector.py::test_decode_bench_connector_basic
+PASSED w/tests/v1/kv_connector/unit/test_decode_bench_connector.py::test_decode_bench_connector_no_refill
+PASSED w/tests/v1/kv_connector/unit/test_decode_bench_connector.py::test_decode_bench_connector_single_token
+PASSED w/tests/v1/kv_connector/unit/test_decode_bench_connector.py::test_decode_bench_connector_two_tokens
+PASSED w/tests/v1/kv_connector/unit/test_decode_bench_connector.py::test_decode_bench_connector_large_context
+PASSED w/tests/v1/kv_connector/unit/test_decode_bench_connector.py::test_decode_bench_connector_multiple_requests
+PASSED w/tests/v1/kv_connector/unit/test_decode_bench_connector.py::test_decode_bench_connector_partial_block
+PASSED w/tests/v1/kv_connector/unit/test_decode_bench_connector.py::test_decode_bench_connector_concurrent_requests
+FAILED w/tests/v1/kv_connector/unit/test_decode_bench_connector.py::test_decode_bench_connector_fills_each_hma_group
+FAILED w/tests/v1/kv_connector/unit/test_decode_bench_connector.py::test_decode_bench_connector_uses_per_group_block_sizes
+2 failed, 8 passed, 15 warnings in 37.18s
+
+----- LEG C  BASE connector + BASE tests (pre-existing health) -----
+PASSED b/tests/v1/kv_connector/unit/test_decode_bench_connector.py::test_decode_bench_connector_basic
+PASSED b/tests/v1/kv_connector/unit/test_decode_bench_connector.py::test_decode_bench_connector_no_refill
+PASSED b/tests/v1/kv_connector/unit/test_decode_bench_connector.py::test_decode_bench_connector_single_token
+PASSED b/tests/v1/kv_connector/unit/test_decode_bench_connector.py::test_decode_bench_connector_two_tokens
+PASSED b/tests/v1/kv_connector/unit/test_decode_bench_connector.py::test_decode_bench_connector_large_context
+PASSED b/tests/v1/kv_connector/unit/test_decode_bench_connector.py::test_decode_bench_connector_multiple_requests
+PASSED b/tests/v1/kv_connector/unit/test_decode_bench_connector.py::test_decode_bench_connector_partial_block
+PASSED b/tests/v1/kv_connector/unit/test_decode_bench_connector.py::test_decode_bench_connector_concurrent_requests
+8 passed, 15 warnings in 36.54s
+----- EVIDENCE-COMPLETE -----
