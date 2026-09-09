@@ -1435,3 +1435,31 @@ watching on future picks. Consumers of `prompt_token_offsets`: `entrypoints/scal
 *Rollback:* `git revert 6c9f98f11`.
 
 `tip da87294a4 -> 6c9f98f11`.
+
+### 153. `ce7391712b` -> `e0e9a021d` — [Bugfix][Security] Bound embedding densification before to_dense() (#54632)
+
+*Full depth: CPU differential leg (new 18 passed / base ImportError), 2 user-visible behavior notes.* **Full depth (CPU differential leg). 8 files, +226/−18, seven `blob EQ`, `envs.py` `blob NE` (fork-only divergence, `delta_vs_upstream IDENTICAL`), patch-id EQUAL, zero collisions.**
+
+Security fix for a memory-exhaustion DoS: 6 bare `tensor.to_dense()` calls (`renderers/embed_utils.py:36`,
+`multimodal/media/{image,audio,video}.py`) become `safe_to_dense(tensor, parameter=...)`
+(`vllm/utils/sparse_utils.py:38-73`), which bounds `numel() * element_size()` on the **declared** shape before
+allocating. New env var `VLLM_MAX_EMBED_DECODE_BYTES`, **default 2 GiB**, `0` disables.
+
+*Leg (CPU, production image, GPU masked, `:8000` 200),* `logs/batch-ABD-leg.txt`: 6 modules overlaid — including the
+**fork's** `envs.py` (the 327-extra-line version), which imported cleanly, marker `_MAX_EMBED_DECODE_BYTES`=4.
+**NEW: 18 passed** (`TestEmbeddingDecodeSizeLimit`; pure-CPU `torch.sparse_coo_tensor` + monkeypatched 4096-byte cap,
+no HF, no GPU; the file deliberately avoids its own 4 TiB `BOMB_SHAPE` so a regressed guard cannot OOM the runner).
+**BASE: collection ImportError** — `safe_to_dense` does not exist at `da87294a4`, so this is a
+*presence* differential rather than a numeric one: the tests cannot run at all without the fix.
+
+*Two behavior changes this ledger must carry, both intentional upstream but user-visible in this fork:*
+1. The bound applies to **plain dense payloads too**, not only sparse ones — a legitimate >2 GiB `prompt_embeds`
+   upload now gets a 4xx where it previously densified. Raise `VLLM_MAX_EMBED_DECODE_BYTES` (or set 0) to restore.
+2. `envs.py` adds the var to `compile_factors()`, whose only consumers are `compilation/backends.py:1031` and
+   `compilation/caching.py:577` → **one-time compiled-artifact/env-hash invalidation** on upgrade for every fork user.
+3. `safe_load_prompt_embeds` lost its inline `isinstance(tensor, torch.Tensor)` check into `safe_to_dense`; the 3
+   media-IO paths gain that check, so a non-tensor payload now returns 4xx instead of `AttributeError`→500.
+
+*Rollback:* `git revert e0e9a021d`.
+
+`tip 6c9f98f11 -> e0e9a021d`.

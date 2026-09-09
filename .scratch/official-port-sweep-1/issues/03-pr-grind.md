@@ -205,7 +205,7 @@ Work every official PR from the wtdcode fork point through the sweep cutoff, **o
 - [ ] 63988f3c2d [Quantization][Refactor][1/N] Adopt `QuantKey` in `QuarkConfig` and methods, relying on `weight_quant_key`, `act_quant_key` for quant method dispatch (#52958)
 - [x] b65af5e339 [CI][ROCm] Expand weight loading test coverage on AMD and cap its KV cache (#54037)
 - [x] 8905633687 [Bugfix][Frontend] Preserve token offset origins after left text pre-trimming (#54692)
-- [ ] ce7391712b [Bugfix][Security] Bound embedding densification before to_dense() (#54632)
+- [x] ce7391712b [Bugfix][Security] Bound embedding densification before to_dense() (#54632)
 - [ ] 5414b4e694 [XPU][TEST] Add entrypoints test in Intel GPU CI (#53980)
 - [ ] 4707679cd2 [Bugfix][MiniCPM-V] Route video_embeds to the shared vision parser (#54633)
 - [ ] c35551f892 [Bugfix][KV Offload] Isolate tiering shutdown failures (#52290)
