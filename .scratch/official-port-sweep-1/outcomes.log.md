@@ -1463,3 +1463,26 @@ no HF, no GPU; the file deliberately avoids its own 4 TiB `BOMB_SHAPE` so a regr
 *Rollback:* `git revert e0e9a021d`.
 
 `tip 6c9f98f11 -> e0e9a021d`.
+
+### 154. `5414b4e694` -> `67ffa8aa7` — [XPU][TEST] Add entrypoints test in Intel GPU CI (#53980)
+
+*Minimum gate: Intel XPU CI yaml only, fork CI is GitHub Actions, no CPU-discriminable test for a YAML change.* **Minimum gate (CI-only, inert in this fork, untestable here). 1 file, +185/−0, `blob EQ`, patch-id EQUAL, zero collisions.**
+
+Adds `.buildkite/intel_jobs/entrypoints_intel.yaml` — 7 Intel XPU entrypoint jobs. Nothing under `vllm/` or `tests/`
+changes, so no server code executes it.
+
+*Why minimum-gate (judgment, not laziness).* The file lands in a **live upstream job dir** (`.buildkite/ci_config_intel.yaml`
+globs `.buildkite/intel_jobs`, 15 sibling `*_intel.yaml` already there), but the fork's CI is GitHub Actions only
+(`.github/workflows/{docker-publish,pr-title}`) and never reads `.buildkite/`; the jobs need Intel BMG agents
+(`device: intel_gpu`) this box does not have. Every one of the 7 jobs shells out to
+`.buildkite/scripts/hardware_ci/run-intel-test.sh`, which runs inside the Intel XPU container against served models —
+no CPU-discriminable test exists for a YAML-only change.
+*Inspection checks that did pass:* DAG key `image-build-xpu` resolves
+(`.buildkite/hardware_tests/intel_xpu_ci/test-intel.yaml:7`); all 7 referenced test paths exist at fork base; no
+Buildkite `key:` collisions with any other `.buildkite/**` file.
+*Noted, not fixed (upstream's inconsistency):* one job runs `PYTHONPATH=/workspace/vllm pytest … entrypoints/serve/dev/rpc`
+while `run-intel-test.sh:20` exports `PYTHONPATH=".."` — two different spellings of the workspace path.
+
+*Rollback:* `git revert 67ffa8aa7`.
+
+`tip e0e9a021d -> 67ffa8aa7`.
