@@ -195,7 +195,7 @@ Work every official PR from the wtdcode fork point through the sweep cutoff, **o
 - [ ] dc9114b201 [ROCm][MoE] Split AITER CK and Triton MXFP4 W4A16 into separate backends (#50622)
 - [x] ce2e343be1 [ROCm] Keep GLM-5.2 on MRV1 and disable default breakable cudagraph (#53155)
 - [ ] 7c5dc571cb [Attention][DSA] Enable W4A16 DSA (#51724)
-- [ ] 40b2f62061 [ROCm][CI] Stabilize the sqrt-softplus top-k tie oracle (#54403)
+- [x] 40b2f62061 [ROCm][CI] Stabilize the sqrt-softplus top-k tie oracle (#54403)
 - [ ] 30dd1a7954 [DecodeBenchConnector] Fix HMA cache-group mapping (#54647)
 - [ ] ff0c3cb03c [Bugfix][Frontend] Truncate the assistant tokens mask with the prompt (#54539)
 - [ ] ec32f669bb [Feature][MM_UUIDs] Allow empty video URLs when using multi-modal UUIDs (#54220)

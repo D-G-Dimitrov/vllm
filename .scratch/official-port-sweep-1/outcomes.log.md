@@ -1062,3 +1062,44 @@ pushed), Mac branch reset to `4ca9852ed`, then this commit landed from jetson an
 `git revert 0750a253a`.
 
 `tip 4ca9852ed -> 0750a253a`.
+
+### 144. `40b2f62061` -> `04ae2431c` — [ROCm][CI] Stabilize the sqrt-softplus top-k tie oracle (#54403)
+
+*Minimum gate (test-only) + CPU leg: base/new outcome-identical; topk tie-break measured on this torch.* **Minimum gate + CPU leg (test-only, but DSV4 routing is fork-relevant, so the oracle was measured rather than assumed).**
+One file, `tests/kernels/moe/test_topk_softplus_sqrt.py`, +19/−1. The reference oracle's non-hash branch swaps
+`torch.topk(..., sorted=True)[1]` for `torch.argsort(..., descending=True, stable=True)[:, :topk]`, plus a 9-line
+test pinning `[[2,1,1,0]]`, topk=2 → `[[0,1]]`. **No production code, no tolerance touched** (GPU legs remain
+`atol=0, rtol=0` on ids before and after).
+
+*Faithfulness* (`logs/i144-faithfulness.txt`): file sets identical, `blob EQ`, `delta_vs_upstream IDENTICAL`,
+numstat equal both sides, no swap collisions. Full patch read — the change is confined to how the oracle breaks
+ties at the k-th boundary.
+
+*Direction — this change is STRICTER, not weaker, which is the whole reason it is safe to take.* The file's CUDA
+legs compare **`sorted` ids at `atol=0, rtol=0`**: sorting kills order-sensitivity but **not membership**-
+sensitivity, so a tie that picks a different expert fails hard. `torch.topk` leaves the k-th-boundary tie
+unspecified; `argsort(stable=True)` fully specifies it (value desc, then ascending expert id) — the tie-break the
+fused kernel is documented to follow. If upstream's claim about the kernel were wrong, the result is a **loud CUDA
+test failure, never a silent pass**. That is the opposite of the triton-bf16-class picks where tolerations got
+loosened, so no numerical-blindness risk is being imported.
+
+*Leg* (CPU, production image, GPU masked, `:8000` 200 before/after) in `logs/i144-topk-tie-oracle-cpu-leg.txt`:
+**base and new are byte-for-byte equivalent in outcome — 1659 failed / 2 passed on BOTH trees.** Those failures are
+the masked-GPU environment (`test_fused_topk_softplus_sqrt_padding[...]` needs `device="cuda"`; the
+`is_cuda_alike` skipif does not fire inside this image even with `CUDA_VISIBLE_DEVICES=""`), they are **pre-existing
+on base**, and they prove the pick changes nothing observable here. The two CPU-runnable tests pass on the new tree.
+
+*Honest finding:* upstream's new unit test is **not discriminative on this build** — run against the BASE oracle it
+still **PASSES** (LEG B), because for that one input both `topk` and `argsort` return `[0,1]`. It pins the contract;
+it does not by itself catch the flake. The mechanism was measured directly instead (LEG D, `logs/…-cpu-leg.txt`):
+on this image's `torch 2.13.0+cu130`, over 3000 engineered heavy-tie draws, `torch.topk` violates
+(value desc, ascending id) **membership** in **~2350/3000** cases while `argsort(stable=True)` violates it in
+**0/3000**. Caveat kept honest: those draws are tie-rich by construction; the file's GPU legs feed `randn`, where
+exact ties are rare in fp32 and common only once scores are quantized — so the probe establishes the mechanism and
+the arbitrary tie-break, not the field flake rate. `stable=` exists on this torch, so there is no API-version risk.
+Note the vllm under test was the image build (`0.1.dev20073+g8e685d198`) rather than the fork tip, because the
+mounted source tree has no build artifacts; irrelevant here since the oracle under test lives in the test file.
+
+*Rollback:* `git revert 04ae2431c`.
+
+`tip 0750a253a -> 04ae2431c`.

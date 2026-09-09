@@ -1,0 +1,59 @@
+===== item 144 / 40b2f62061  [ROCm][CI] stabilize sqrt-softplus top-k tie oracle =====
+vllm under test (production image build): 0.1.dev20073+g8e685d198 2.13.0+cu130
+the oracle under test is defined IN the test file: /tmp/t_new = new oracle, /tmp/t_base = base oracle
+(test files copied to neutral dirs so pytest cannot put the unbuilt source tree on sys.path)
+
+----- LEG A  NEW oracle: whole file, per-test outcome (CUDA legs must SKIP, GPU untouched) -----
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-256-True-False-False-False]
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-256-True-False-False-True]
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-256-True-False-True-False]
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-256-True-False-True-True]
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-256-True-True-False-False]
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-256-True-True-False-True]
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-256-True-True-True-False]
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-256-True-True-True-True]
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-384-False-False-False-False]
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-384-False-False-False-True]
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-384-False-False-True-False]
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-384-False-False-True-True]
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-384-False-True-False-False]
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-384-False-True-False-True]
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-384-False-True-True-False]
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-384-False-True-True-True]
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-384-True-False-False-False]
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-384-True-False-False-True]
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-384-True-False-True-False]
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-384-True-False-True-True]
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-384-True-True-False-False]
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-384-True-True-False-True]
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-384-True-True-True-False]
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-384-True-True-True-True]
+1659 failed, 2 passed, 14 warnings in 92.43s (0:01:32)
+
+----- LEG B  DIFFERENTIAL: upstream's new tie test executed against the BASE oracle -----
+     PASS here = the added unit test does NOT discriminate on this build; FAIL = it pins the fix
+PASSED test_topk_softplus_sqrt.py::test_torch_topk_softplus_sqrt_breaks_ties_by_expert_id
+1 passed, 1660 deselected, 14 warnings in 14.05s
+
+----- LEG C  BASE oracle's own file, full (pre-existing health of this suite) -----
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-384-False-True-False-True]
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-384-False-True-True-False]
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-384-False-True-True-True]
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-384-True-False-False-False]
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-384-True-False-False-True]
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-384-True-False-True-False]
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-384-True-False-True-True]
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-384-True-True-False-False]
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-384-True-True-False-True]
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-384-True-True-True-False]
+FAILED test_topk_softplus_sqrt.py::test_fused_topk_softplus_sqrt_padding[dtype2-384-True-True-True-True]
+1659 failed, 2 passed, 14 warnings in 80.06s (0:01:20)
+
+----- LEG D  is the flake real on THIS build? membership = what the atol=0 sorted-id compare sees -----
+torch 2.13.0+cu130 | stable-sort kwarg supported: True
+tie-at-boundary  topk        -> [[0, 1]]
+tie-at-boundary  argsort(st) -> [[0, 1]]  (lower expert id wins)
+membership mismatch topk vs argsort(stable): 2201/3000  <- flake source on this build
+topk violates (value desc, id asc) membership: 2350/3000
+argsort(stable) obeys it:                     3000/3000
+----- EVIDENCE-COMPLETE -----

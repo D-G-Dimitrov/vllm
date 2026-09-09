@@ -1,0 +1,36 @@
+item 144  upstream 40b2f62061575905aaac8bc360eaea62a4baeb67  landing 04ae2431c36ac75b27954bec5712272f5aa1ce1f
+[ROCm][CI] Stabilize the sqrt-softplus top-k tie oracle (#54403)   base 0750a253a
+author: Andreas Karatzas <akaratza@amd.com>  (AMD / ROCm CI)
+
+== 0. start ==
+  HEAD=0750a253a dirty=0 unmerged=0 seq=0  health_before=200
+== 1. pick ==
+  1 file changed, 19 insertions(+), 1 deletion(-)
+  rc=0 HEAD=04ae2431c ahead=1 dirty=0
+== 2. faithfulness ==
+  file sets identical (1)
+  test_topk_softplus_sqrt.py: blob EQ  delta_vs_upstream IDENTICAL
+  numstat ours: tests/kernels/moe/test_topk_softplus_sqrt.py +19/-1
+  numstat up:   tests/kernels/moe/test_topk_softplus_sqrt.py +19/-1
+  patch-id EQUAL (eff9fcd3fd0e41cad6243a472c1e2f712588bdf7) [same changed-lines only; does NOT imply
+    byte-identity -- trust blob EQ]
+== 3. swap collision + state ==
+  collisions: []
+  health_after=200 HEAD=04ae2431c dirty=0 unmerged=0 seq=0
+
+== diff read (whole patch, 19/-1) ==
+Only the `else` (non-hash-kernels) branch of the *reference oracle* `_torch_topk_softplus_sqrt` changes:
+    - topk_ids = torch.topk(scores_for_choice, k=topk, dim=-1, sorted=True)[1]
+    + topk_ids = torch.argsort(scores_for_choice, dim=-1, descending=True, stable=True)[:, :topk]
+plus a new 9-line unit test pinning [[2,1,1,0]] topk=2 -> [[0, 1]].
+NO production code touched. NO tolerance changed anywhere in the file (GPU legs stay atol=0/rtol=0 on ids,
+2e-2/1e-2 on weights, before and after). The hash-kernel branch, the weight-gather and the renormalise
+path are untouched. The change is confined to how the *oracle* breaks ties at the k-th boundary.
+
+== direction of the change: STRICTER, not weaker ==
+The file's CUDA legs compare `sorted_ref_ids` vs `sorted_ids` at atol=0, rtol=0 -- sorting the ids removes
+order sensitivity but NOT membership sensitivity, so a tie that selects a *different expert* fails hard.
+`torch.topk` leaves the k-th-boundary tie unspecified; `argsort(..., stable=True)` fully specifies it
+(value desc, then ascending expert id), which is the tie-break the fused kernel is documented to follow.
+So the pick removes a source of nondeterminism. Its failure mode if upstream's claim about the kernel were
+wrong is a loud test FAILURE on CUDA, never a silent pass -- the safe direction for the fork.
