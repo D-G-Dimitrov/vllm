@@ -1562,3 +1562,13 @@ Measured instead of assumed (`logs/i157-M2b-import-leg.txt`, run against the **r
 Skipped: no AMD/zentorch hardware and no GPU under the never-touch-GPU rule, so the new kernel itself was never executed — the numerical path is untested here; what is proven is importability, guard behavior, and mapper inertness. Revisit trigger: if we ever serve Mixtral/Mistral-MoE, re-check the `orig_to_new_substr` vs `FusedMoE.make_expert_params_mapping` interaction for a checkpoint that carries **both** native `w1` and `gate_proj` names (a child flagged this as possible for FP8 block-quantized checkpoints; I did not reproduce it and Mixtral is not a fork-served family). Revert: `git revert aeb034d72`.
 
 `tip 9be6d2171 -> aeb034d72`.
+
+### 158. `504bb8b0c3` -> `6409a24fd` — [CI] Add repository-local OTel tracing helpers (#52851)
+
+*Minimum gate (hybrid): CI/build-only, no runtime import path.* CI-only item: 5 files, all **`blob EQ`** — four new files under `.buildkite/scripts/ci-otel/` (`ci_otel.py` +650, `ci_otel.sh` +133, `ci_pytest.sh` +42, `tests/test_ci_otel.py` +788) plus `image_build.sh` +48/-1. Nothing under `vllm/` changes, so there is no import path from the serving process into any of it. No swap collision; clean-tree/sequencer state asserted.
+
+Minimum gate still meant reading the one non-new file: `record_buildkit_trace()` opens with `if [[ "${BUILDKITE:-}" != "true" || ! -f "${helper}" ]] ... return 0`, so it is inert outside Buildkite, and the bake call was rewritten to capture `BUILD_STATUS` and still `exit "${BUILD_STATUS}"` afterwards — i.e. the failure semantics of the build step are preserved rather than swallowed by the new tracing. We build images with our own tooling, not `.buildkite/image_build/image_build.sh`, so no leg applies.
+
+Skipped deliberately: the 788-line new test file was not executed — it tests CI span emission and cannot exercise anything we serve. Revert: `git revert 6409a24fd`.
+
+`tip aeb034d72 -> 6409a24fd`.

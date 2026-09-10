@@ -210,7 +210,7 @@ Work every official PR from the wtdcode fork point through the sweep cutoff, **o
 - [x] 4707679cd2 [Bugfix][MiniCPM-V] Route video_embeds to the shared vision parser (#54633)
 - [x] c35551f892 [Bugfix][KV Offload] Isolate tiering shutdown failures (#52290)
 - [x] 8f03625b3d [CPU][Zen] Route Int8 MoE inference through zentorch on AMD (#44834)
-- [ ] 504bb8b0c3 [CI] Add repository-local OTel tracing helpers (#52851)
+- [x] 504bb8b0c3 [CI] Add repository-local OTel tracing helpers (#52851)
 - [ ] 754d5e1f65 [CI/Build] Fix entrypoints coverage (#54750)
 - [ ] 92ccd2c306 [Bugifx][INC] Fix INC quantization method selection for non-quantized layers (#47237)
 - [ ] 9e905f7450 [Bugfix] Account for client queue time in serve benchmarks (#54136)
