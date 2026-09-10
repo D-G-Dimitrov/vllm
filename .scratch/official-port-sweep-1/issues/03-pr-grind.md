@@ -216,7 +216,7 @@ Work every official PR from the wtdcode fork point through the sweep cutoff, **o
 - [x] 9e905f7450 [Bugfix] Account for client queue time in serve benchmarks (#54136)
 - [ ] 481839ad9e [Feature][Spec] Support disabling trailing prefix-cache block dropping (#53388)
 - [ ] 191cecd51e [Kernel][Qwen] Add Hopper LL-GEMM tuning table for Qwen4Exp (#54560)
-- [ ] 40824284bc [Doc] Document FP8 GEMM kernel selection and Blackwell support (#49936)
+- [x] 40824284bc [Doc] Document FP8 GEMM kernel selection and Blackwell support (#49936)
 - [ ] 55aa766dc8 [Bugfix][Model] Fix GraniteMoeHybrid per-expert quantized weight loading (#54052)
 - [ ] 1f1f628859 [Feat][MM Hashing]  include media_io_kwargs in multi-modal hashes (#54241)
 - [ ] 25efcfa788 [Attention] Enable adaptive verification for FLASHINFER_MLA_SPARSE_DSV4 (#52724)

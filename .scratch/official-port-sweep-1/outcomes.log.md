@@ -1611,3 +1611,13 @@ Consequence worth recording for us rather than dismissing as "just benchmarks": 
 Skipped: no leg — this is measurement code, so executing it would only re-measure without proving anything about correctness.
 
 `tip 3952a84d5 -> dd4798719`.
+
+### 162. `40824284bc` -> `485ba34b0` — [Doc] Document FP8 GEMM kernel selection and Blackwell support (#49936)
+
+*Minimum gate (hybrid): doc-only + CODEOWNERS (verified not relocated in this fork).* Doc-only item: 2 files, both `blob EQ` with identical deltas, no swap collision. `.github/CODEOWNERS` + `docs/features/quantization/llm_compressor/fp8.md` (FP8 GEMM kernel selection / Blackwell documentation).
+
+Checked the one thing that could have bitten here: this fork relocates some `.github` content (`workflows/` -> `workflows.disabled/`) to keep Actions off, and a prior round's checker was fooled into reporting `blob NE` by diffing a path the tree no longer has. Verified `git ls-tree .github/` shows **`CODEOWNERS` is NOT relocated** here, so upstream's path is our path and the pick applied where intended. Nothing under `vllm/` changes; Blackwell/SM100 prose is documentation only and does not touch the SM 8.7 path.
+
+Skipped: no leg (no code). Revert: `git revert 485ba34b0`.
+
+`tip dd4798719 -> 485ba34b0`.
