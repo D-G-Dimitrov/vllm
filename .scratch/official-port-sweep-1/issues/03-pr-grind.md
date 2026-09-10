@@ -232,7 +232,7 @@ Work every official PR from the wtdcode fork point through the sweep cutoff, **o
 - [ ] 514c7314a0 [Perf][Kernel] Initialize NVFP4 padding in quant kernel (#53568)
 - [ ] 2fe5cef35e [Fix] Fix FSE compatibility detection for Quark-produced models (#54573)
 - [x] c866ba9d11 [KV Connector] Support heterogeneous TP sharing in Mooncake Store Connector (#53129)
-- [ ] 2f01039666 [Misc] Share Buildkite CI failure skill across agents (#54806)
+- [x] 2f01039666 [Misc] Share Buildkite CI failure skill across agents (#54806)
 - [ ] e7cf4730d6 [Bugfix] Drop incomplete tool-call markup in non-streaming to match streaming (#47562)
 - [ ] d1c15e589d [CI] Speed up quantization test group (#53291)
 - [ ] 0ad5652a52 [Bugfix][Frontend] Restore the chat template content format mismatch warning (#54622)

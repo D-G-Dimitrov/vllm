@@ -1753,3 +1753,13 @@ Coherence is the part that could have broken silently, since upstream rewrote th
 Leg (CPU, differential, in-image with the 8 mooncake store modules overlaid — reachability is doubly nil here: the serving process passes no `--kv-transfer-config`, and the `mooncake` package is absent from the serving image (`import mooncake` -> ModuleNotFoundError, `find_spec` False), so the connector cannot be constructed on :8000 either way; the tests pass without it because they mock the store): NEW (post-pick modules) `test_mooncake_store_layout.py` + `test_mooncake_store_connector.py` = 48 passed. BASE (pre-pick modules, same test files) = layout suite fails at collection with `ImportError: cannot import name 'LBHNCStoreLayout'`, connector suite 8 failed / 31 passed, and the 8 failures are exactly the replica/striping guards (`test_gqa_store_events_follow_tp_replica_striping`, `test_mqa_store_events_require_one_replica`, `test_store_events_require_every_non_replicated_worker`, `test_store_events_reject_incomplete_replica_coverage`, `test_store_events_use_each_groups_replication_factor`, `test_store_events_persist_across_polls`, and 2 kv-event ones). So the pick is behavioural, its guard tests are named, and our tree satisfies them. Logs: `logs/i171-N1-leg-newarm.txt`, `logs/i171-N1-leg-basearm.txt`, `logs/i171-N1-leg-basearm-connector.txt`.
 
 `tip faabf99af -> 894eb2c1b`.
+
+### 172. `2f01039666` -> `6b7d3d68c` — [Misc] Share Buildkite CI failure skill across agents
+
+*Minimum gate (hybrid).* Minimum gate — agent-skill housekeeping, nothing under `vllm/` or `tests/` changed. Moves `.claude/skills/ci-fails-buildkite/SKILL.md` to the shared `.agents/skills/` path (rename 100%, no content change) and replaces the vacated path with a mode-120000 symlink to `../../.agents/skills/ci-fails-buildkite`.
+
+The only real risk was a path collision: our tree carried a *directory* at `.claude/skills/ci-fails-buildkite` (an earlier pick landed upstream's original file layout there), and git cannot hold a file and a directory at one path. It resolved cleanly — the rename empties the directory, git prunes it, and the symlink lands in its place. Verified after the pick: tree hash of the moved skill is byte-identical to the old one (5f06e41c042a), both blobs EQ, patch-id EQUAL, `SKILL.md` readable through both the symlink and the target, no stale empty directory left on disk, and no tracked file references the old path. `.claude/skills/debug-ima` and `.claude/skills/kernel-microbenchmark` were already symlinks of this shape, so the fork's skill layout is now uniform.
+
+Serving process untouched (health 200 after the pick; no runtime module in the diff).
+
+`tip 894eb2c1b -> 6b7d3d68c`.
