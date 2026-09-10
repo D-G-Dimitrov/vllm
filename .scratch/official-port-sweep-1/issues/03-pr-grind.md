@@ -227,7 +227,7 @@ Work every official PR from the wtdcode fork point through the sweep cutoff, **o
 - [x] 76f3249fbd [Mypy] Fix typing for M models (#54262)
 - [ ] a232e29e9d [Bugfix] Gate sm_100-only kernel tests on the capability family, not >= (#54306)
 - [ ] 82b7d49a6e [MoE] Generalize masked activation for padded layouts (#51217)
-- [ ] f1e5fdd7f2 [Transformers backend] Replace vocab embeddings in `recursive_replace` (#54760)
+- [x] f1e5fdd7f2 [Transformers backend] Replace vocab embeddings in `recursive_replace` (#54760)
 - [ ] cdefd9d499 [Bugfix] Support Sentence Transformers 5.4+ serialized configs (#54533)
 - [ ] 514c7314a0 [Perf][Kernel] Initialize NVFP4 padding in quant kernel (#53568)
 - [ ] 2fe5cef35e [Fix] Fix FSE compatibility detection for Quark-produced models (#54573)
