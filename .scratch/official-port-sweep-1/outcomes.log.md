@@ -1572,3 +1572,13 @@ Minimum gate still meant reading the one non-new file: `record_buildkit_trace()`
 Skipped deliberately: the 788-line new test file was not executed — it tests CI span emission and cannot exercise anything we serve. Revert: `git revert 6409a24fd`.
 
 `tip aeb034d72 -> 6409a24fd`.
+
+### 159. `754d5e1f65` -> `0735b3004` — [CI/Build] Fix entrypoints coverage (#54750)
+
+*Minimum gate (hybrid): CI yaml + R100 test relocation.* CI-only + a test relocation: 4 files, all **`blob EQ`**. The Python change is a **100 %-similarity rename** (`R100`, zero content bytes moved): old `tests/entrypoints/test_offline_utils.py` is absent from the result, new `tests/entrypoints/unit_tests/test_offline_utils.py` has blob `39f77672a` which **equals upstream's result blob**, and the destination directory already carried `__init__.py` in our tree, so the move needed no hand-edit and did not conflict. No swap collision; clean-tree/sequencer state asserted.
+
+Read the three `.buildkite` yaml hunks anyway (minimum gate is no-leg, never no-reading) and checked them against **our** tree rather than assuming upstream's layout, because a CI-only edit can still break a job on a divergent tree: the added step target `tests/entrypoints/cohere` exists here, and the four deleted `tests/entrypoints/test_chat_utils` dependency lines pointed at a path that does **not** exist in our tree (the file lives at `tests/entrypoints/unit_tests/test_chat_utils.py`), so the pick removes dangling references. `entrypoints_intel.yaml`/`test-amd.yaml` also reorder the `anthropic`/`generate` dependency lines and add `cohere` — numstat `4/-2` and `2/-4` reflect that, it is not a pure addition.
+
+No new flag, function, enum or config field. Nothing under `vllm/` changed, so no CPU leg can observe a before/after difference — the only observable delta is filesystem layout (`git ls-files tests/entrypoints/unit_tests/`). Skipped: executing the moved test (byte-identical content; running it would prove nothing about this pick). Revert: `git revert 0735b3004`.
+
+`tip 6409a24fd -> 0735b3004`.
