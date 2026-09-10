@@ -1599,3 +1599,15 @@ So the pick is provably behavioral, the behavioral delta is exactly the two inte
 Harness faults hit and fixed during this leg, recorded so the next agent does not misread them: (a) `git archive` inside the container died on `detected dubious ownership in repository at '/w'`, producing `tar: This does not look like a tar archive` and a vacuous `collected 0 items` — that is a harness failure, not a base-arm result; fixed by preparing the base tree on the host before mounting. (b) the failed attempt left root-owned `.so` files that host `rm` could not remove; cleared with `docker run --rm --entrypoint bash -v ~/dev:/x <img> -c 'rm -rf /x/MN1/b2'`. Revert: `git revert 3952a84d5`.
 
 `tip 0735b3004 -> 3952a84d5`.
+
+### 161. `9e905f7450` -> `dd4798719` — [Bugfix] Account for client queue time in serve benchmarks (#54136)
+
+*Minimum gate (hybrid): benchmark client only, server never imports vllm.benchmarks.* All 3 files `blob EQ` (`serve.py`, `endpoint_request_func.py`, `docs/benchmarking/cli.md` were byte-identical to upstream's parent), deltas identical, no swap collision, clean-tree/sequencer state asserted.
+
+Scope confirmed rather than assumed: the change is in the benchmark **client**. `vllm/benchmarks/*` is imported by `vllm/entrypoints/cli/benchmark/serve.py:5` (`from vllm.benchmarks.serve import add_cli_args, main`) and its siblings — i.e. only when running `vllm bench ...`. A grep for `from vllm.benchmarks|import vllm.benchmarks` across `vllm/entrypoints/` and `vllm/v1/` returns nothing outside those `cli/benchmark/` shims, so `vllm serve` never imports it and serving behavior cannot change. Mechanically: `RequestFuncOutput` gains `client_queue_time: float = 0.0`, and `limited_request_func` now takes `request_arrival_time` (captured with `time.perf_counter()` before task creation) and records `output.start_time - request_arrival_time` **outside** the semaphore, deliberately preserving `start_time` for throughput math.
+
+Consequence worth recording for us rather than dismissing as "just benchmarks": once this is in, any `vllm bench serve` run on the cluster where concurrency saturates the client semaphore will report latency metrics that **exclude** client-side queue time, so TTFT/ITL figures taken after this landing are not directly comparable with baselines taken before it. Revert: `git revert dd4798719`.
+
+Skipped: no leg — this is measurement code, so executing it would only re-measure without proving anything about correctness.
+
+`tip 3952a84d5 -> dd4798719`.
