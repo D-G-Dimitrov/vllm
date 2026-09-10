@@ -223,7 +223,7 @@ Work every official PR from the wtdcode fork point through the sweep cutoff, **o
 - [ ] adebc41b7e [Mamba] Add FlashInfer ReplaySSM backend (#52506)
 - [x] 0d4ad47981 [Kernel] Add B12X causal paged attention backend (#52017)
 - [x] 339e16cbb6 [Bugfix] Support MCP SDK 2.x tool input schemas (#53870)
-- [ ] d9eb4e344f [Bugfix] Reject tokenless chat and audio streams (#54708)
+- [x] d9eb4e344f [Bugfix] Reject tokenless chat and audio streams (#54708)
 - [ ] 76f3249fbd [Mypy] Fix typing for M models (#54262)
 - [ ] a232e29e9d [Bugfix] Gate sm_100-only kernel tests on the capability family, not >= (#54306)
 - [ ] 82b7d49a6e [MoE] Generalize masked activation for padded layouts (#51217)

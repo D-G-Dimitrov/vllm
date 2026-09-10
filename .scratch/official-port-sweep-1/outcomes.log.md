@@ -1703,3 +1703,13 @@ The leg probes `post_process_tools_description` directly rather than collecting 
 Scope of behavior change: the opt-in MCP tool server only (`vllm/entrypoints/mcp/tool_server.py`), reached when a request configures MCP servers; the plain text path on `:8000` does not import it. Revert: `git revert 969a3e60b` — note that reverting re-breaks the MCP path against the mcp 2.1.1 that is installed in the serving image.
 
 `tip 954d036d4 -> 969a3e60b`.
+
+### 168. `d9eb4e344f` -> `cf024a842` — [Bugfix] Reject tokenless chat and audio streams (#54708)
+
+*Minimum gate (hybrid).* One-file change to the **benchmark client** (`vllm/benchmarks/lib/endpoint_request_func.py`): the chat and audio request funcs replace the `ttft = 0.0` sentinel with an explicit `first_chunk_received` flag and now mark a stream `output.success = False` with `"Never received a valid chunk to calculate TTFT."` instead of reporting success for an empty 200 response.
+
+Faithfulness: the file was byte-identical to upstream's parent before the pick; after it, `result_blob EQ`, changed-line delta IDENTICAL, numstat `+24/-10` equal, patch-id equal, file set identical (1), swap collisions empty, jetson clean, `:8000`=200 before and after.
+
+No leg, by the hybrid depth rule: this is the load-generator side of `vllm bench`, not the serving path — nothing in `vllm/serve`/engine imports it, so it cannot move model behavior on the box. Read the diff anyway per the depth rule: the only semantic additions are (a) `output.success` now requires at least one parsed chunk, and (b) `output.ttft` is set on the first chunk rather than on the first non-zero timestamp, which also removes the (pre-existing) edge case where a chunk arriving at exactly `t == st` counted as "no token yet". Effect is confined to benchmark accounting: streams that produced no token are now counted as failures instead of silently inflating throughput. Owners comparing old and new benchmark runs should expect a small success-rate shift when the server drops streams. Revert: `git revert cf024a842`.
+
+`tip 969a3e60b -> cf024a842`.
