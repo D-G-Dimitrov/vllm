@@ -1,0 +1,8 @@
+OVERLAID /i/base.py
+TREE vllm: /opt/venv/lib/python3.12/site-packages/vllm/__init__.py
+TREE tool_server: /opt/venv/lib/python3.12/site-packages/vllm/entrypoints/mcp/tool_server.py
+mcp version: 2.0.0
+MARKER snake input_schema: 0 | MARKER camel inputSchema: 3
+Tool fields: ['annotations', 'description', 'execution', 'icons', 'input_schema', 'meta', 'name', 'output_schema', 'title']
+post_process RAISED: AttributeError : 'Tool' object has no attribute 'inputSchema'
+LEG_DONE

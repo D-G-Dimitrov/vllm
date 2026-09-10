@@ -1682,3 +1682,24 @@ Skipped deliberately: no GPU leg (never-touch-GPU rule), so `tests/v1/attention/
 Revert: `git revert 954d036d4` (re-adds no fork lines; the resolution is a one-line addition, so revert is clean).
 
 `tip d84010b26 -> 954d036d4`.
+
+### 167. `339e16cbb6` -> `969a3e60b` — [Bugfix] Support MCP SDK 2.x tool input schemas (#53870)
+
+*Full depth (hybrid): CPU differential leg on the changed function; lands as a fix against the mcp 2.1.1 already installed in the serving image.* MCP SDK 2.x snake_case migration: `tool.inputSchema -> tool.input_schema`, `initialize_response.serverInfo -> .server_info`, and `getattr(tool.annotations, "include_in_prompt", True) -> (tool.meta or {}).get("include_in_prompt", True)`, plus `requirements/common.txt` `mcp` -> `mcp >= 2.0.0, < 3.0.0` and the test pins to `mcp==2.1.1` / `mcp-types==2.1.1`.
+
+Faithfulness: 7/7 files byte-identical to upstream's parent before the pick, 7/7 `result_blob EQ` after, every changed-line delta IDENTICAL, numstat equal, patch-id equal, file sets identical, swap collisions empty, jetson clean (dirty=0 unmerged=0 seq=0), `:8000`=200 before and after. No fork-local surface: a tip-wide grep showed the only camelCase MCP attribute uses in the repo are the three lines this commit changes (no fork-authored caller left behind).
+
+Landed as a FIX, not a risk — measured in the images we actually run: `vllm/vllm-openai:qwen38-flash-next` (the container serving `:8000`) ships **mcp 2.1.1**, whose `mcp.types.Tool` model fields are `['annotations','description','execution','icons','input_schema','meta','name','output_schema','title']` with **no** `inputSchema` attribute; the leg image ships mcp 2.0.0 (also snake_case). So the pre-pick code raised on the MCP path in our shipped environment, and this pick repairs it. `requirements/common.txt`'s new `>=2.0.0,<3.0.0` matches both images, so no rebuild is implied.
+
+Differential leg (two containers, one per arm, single-module overlay of `vllm/entrypoints/mcp/tool_server.py` onto the image package; markers prove which version loaded — snake 3 / camel 0 for NEW, camel 3 / snake 0 for BASE; logs `logs/i167-N1-leg-newarm.txt`, `logs/i167-N1-leg-basearm.txt`):
+
+| arm | result |
+|---|---|
+| NEW (post-pick) | `post_process OK; schema replaced: True` and `meta opt-out honored -> ['included']` |
+| BASE (pre-pick) | `post_process RAISED: AttributeError: 'Tool' object has no attribute 'inputSchema'` |
+
+The leg probes `post_process_tools_description` directly rather than collecting `tests/entrypoints/openai/responses/test_mcp_tools.py`: that module imports `tests.utils.RemoteOpenAIServer` and `from .conftest import ...`, so collecting it drags in the server harness and image-vs-tip symbol skew. The probe reproduces the two tests upstream added (monkeypatched `trim_schema` identity check; `meta={"include_in_prompt": False}` opt-out) with the same `mcp.types` construction.
+
+Scope of behavior change: the opt-in MCP tool server only (`vllm/entrypoints/mcp/tool_server.py`), reached when a request configures MCP servers; the plain text path on `:8000` does not import it. Revert: `git revert 969a3e60b` — note that reverting re-breaks the MCP path against the mcp 2.1.1 that is installed in the serving image.
+
+`tip 954d036d4 -> 969a3e60b`.
