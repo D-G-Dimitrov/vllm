@@ -1,0 +1,19 @@
+OVERLAID_base_parser_tree+tool_parsers_utils
+W0910 17:51:40.749000 72 torch/utils/cpp_extension.py:178] No CUDA runtime is found, using CUDA_HOME='/usr/local/cuda'
+MARKER skip_reasoning_parsing: 0
+W0910 17:52:08.056000 122 torch/utils/cpp_extension.py:178] No CUDA runtime is found, using CUDA_HOME='/usr/local/cuda'
+MARKER engine_based drop: 0
+FAILED tests/parser/engine/test_parser_engine.py::TestTruncatedToolOpenerStreamParity::test_content_around_unpromoted_tool_block_stays_ordered
+FAILED tests/parser/engine/test_parser_engine.py::TestThinkMarkupWithoutReasoningParser::test_think_block_passes_through_both_paths[qwen3_coder]
+FAILED tests/parser/engine/test_parser_engine.py::TestThinkMarkupWithoutReasoningParser::test_think_block_passes_through_both_paths[deepseek_v4]
+FAILED tests/parser/engine/test_parser_engine.py::TestThinkMarkupWithoutReasoningParser::test_think_block_preserved_alongside_tool_call
+FAILED tests/parser/engine/test_inkling.py::TestToolParserWithoutReasoningParser::test_plain_text_non_streaming
+FAILED tests/parser/engine/test_inkling.py::TestToolParserWithoutReasoningParser::test_thinking_then_text_keeps_structure
+FAILED tests/parser/engine/test_deepseek_v4.py::TestThinkingModeConfig::test_parser_thinking_mode_matches_tokenizer_default[chat_template_kwargs0-REASONING]
+FAILED tests/parser/engine/test_deepseek_v4.py::TestThinkingModeConfig::test_parser_thinking_mode_matches_tokenizer_default[chat_template_kwargs1-REASONING]
+FAILED tests/parser/engine/test_deepseek_v4.py::TestThinkingModeConfig::test_parser_thinking_mode_matches_tokenizer_default[chat_template_kwargs2-REASONING]
+FAILED tests/parser/engine/test_deepseek_v4.py::TestThinkingModeConfig::test_parser_thinking_mode_matches_tokenizer_default[chat_template_kwargs3-REASONING]
+FAILED tests/parser/engine/test_deepseek_v4.py::TestThinkingModeConfig::test_parser_thinking_mode_matches_tokenizer_default[chat_template_kwargs4-CONTENT]
+FAILED tests/parser/engine/test_deepseek_v4.py::TestThinkingModeConfig::test_parser_thinking_mode_matches_tokenizer_default[chat_template_kwargs5-CONTENT]
+FAILED tests/parser/engine/test_deepseek_v4.py::TestThinkingModeConfig::test_parser_thinking_mode_matches_tokenizer_default[chat_template_kwargs6-CONTENT]
+18 failed, 368 passed in 3.83s

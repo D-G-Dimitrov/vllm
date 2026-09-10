@@ -1,0 +1,19 @@
+OVERLAID_new_parser_tree+tool_parsers_utils
+W0910 17:48:30.337000 72 torch/utils/cpp_extension.py:178] No CUDA runtime is found, using CUDA_HOME='/usr/local/cuda'
+MARKER skip_reasoning_parsing: 3
+W0910 17:48:57.736000 122 torch/utils/cpp_extension.py:178] No CUDA runtime is found, using CUDA_HOME='/usr/local/cuda'
+MARKER engine_based drop: 1
+>       assert p.parser_engine_config.initial_state.name == "REASONING"
+               ^
+E       NameError: name 'p' is not defined
+
+tests/parser/engine/test_deepseek_v4.py:1086: NameError
+=========================== short test summary info ============================
+FAILED tests/parser/engine/test_deepseek_v4.py::TestThinkingModeConfig::test_parser_thinking_mode_matches_tokenizer_default[chat_template_kwargs0-REASONING]
+FAILED tests/parser/engine/test_deepseek_v4.py::TestThinkingModeConfig::test_parser_thinking_mode_matches_tokenizer_default[chat_template_kwargs1-REASONING]
+FAILED tests/parser/engine/test_deepseek_v4.py::TestThinkingModeConfig::test_parser_thinking_mode_matches_tokenizer_default[chat_template_kwargs2-REASONING]
+FAILED tests/parser/engine/test_deepseek_v4.py::TestThinkingModeConfig::test_parser_thinking_mode_matches_tokenizer_default[chat_template_kwargs3-REASONING]
+FAILED tests/parser/engine/test_deepseek_v4.py::TestThinkingModeConfig::test_parser_thinking_mode_matches_tokenizer_default[chat_template_kwargs4-CONTENT]
+FAILED tests/parser/engine/test_deepseek_v4.py::TestThinkingModeConfig::test_parser_thinking_mode_matches_tokenizer_default[chat_template_kwargs5-CONTENT]
+FAILED tests/parser/engine/test_deepseek_v4.py::TestThinkingModeConfig::test_parser_thinking_mode_matches_tokenizer_default[chat_template_kwargs6-CONTENT]
+7 failed, 379 passed in 3.56s
