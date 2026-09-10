@@ -1633,3 +1633,13 @@ Scope: no guard needed because nothing outside the GraniteMoeHybrid class change
 Skipped: no leg — exercising it requires a GraniteMoeHybrid checkpoint, and there is no CPU-discriminable path without weights. Revert: `git revert b6ba8c780`.
 
 `tip 485ba34b0 -> b6ba8c780`.
+
+### 164. `1f1f628859` -> `148854380` — [Feat][MM Hashing] include media_io_kwargs in multi-modal hashes (#54241)
+
+*Minimum gate (hybrid): MM-only hash derivation, unreachable for the text-only models we serve; serving-path line read, not tested.* Faithful clean pick, no leg. All 6 touched files at our tip were byte-identical to upstream's parent (5 blobs equal, `tests/renderers/test_multimodal_hashes.py` new in both trees); post-pick every file is `blob EQ` with upstream and every changed-line delta `IDENTICAL`, patch-id equal, swap collisions empty, jetson clean (dirty=0 unmerged=0 seq=0), `:8000`=200 before and after.
+
+No leg: the change is multi-modal-only and the models we serve are text-only (`:8000` reports `nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4`; the gate models DSV4 / qwen4_exp / GLM-5.3-Flash are text). It does add one line that runs on every chat request, so the diff was read rather than tested: `render_chat`/`render_chat_async` now set `prompt_extras["media_io_kwargs"] = chat_params.media_io_kwargs or {}` and `_apply_prompt_extras` only does `target_prompt.update(prompt_extras)` (no key validation), while the value is read solely inside `_process_multimodal`, i.e. behind `if multi_modal_data := prompt.get("multi_modal_data")` in `_process_tokens`/`_process_tokens_async`. `ChatParams.media_io_kwargs` already exists in our tree (`vllm/renderers/params.py:96`), so the new attribute access resolves, and no subclass overrides `_process_multimodal` (only `_process_multimodal_inputs` in `minicpmv`/`minicpmo`, a different method), so the widened signature breaks nothing.
+
+Owner-facing note: upstream now passes hash factors *nested* (`hash_kwargs(..., media_io_kwargs=..., mm_processor_kwargs=...)`) instead of spreading `hf_processor_mm_kwargs`, so MM cache keys change for any request that supplies `mm_processor_kwargs` — intended upstream invalidation, and unchanged when neither factor is set. Revert: `git revert 148854380`.
+
+`tip b6ba8c780 -> 148854380`.
