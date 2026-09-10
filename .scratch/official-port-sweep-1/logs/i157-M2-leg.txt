@@ -1,0 +1,38 @@
+===== M2 8f03625b3d -> aeb034d72 mixtral weight-name map =====
+image vllm version: 0.29.0.dev0+commit.d4d703c
+
+----- ARM NEW (marker .gate_proj. present expect 1) -----
+  marker count=1
+TREE_VLLM_FILE: /opt/venv/lib/python3.12/site-packages/vllm/__init__.py
+MARKER_substr_map_present: True
+STACKED_KEYS: ['.k_proj', '.q_proj', '.v_proj']
+MAP model.layers.0.block_sparse_moe.experts.3.w1.weight            -> model.layers.0.block_sparse_moe.experts.3.w1.weight
+MAP model.layers.0.block_sparse_moe.experts.3.w2.weight            -> model.layers.0.block_sparse_moe.experts.3.w2.weight
+MAP model.layers.0.block_sparse_moe.experts.3.w3.weight            -> model.layers.0.block_sparse_moe.experts.3.w3.weight
+MAP model.layers.0.block_sparse_moe.experts.3.gate_proj.weight     -> model.layers.0.block_sparse_moe.experts.3.w1.weight
+MAP model.layers.0.block_sparse_moe.experts.3.up_proj.weight       -> model.layers.0.block_sparse_moe.experts.3.w3.weight
+MAP model.layers.0.block_sparse_moe.experts.3.down_proj.weight     -> model.layers.0.block_sparse_moe.experts.3.w2.weight
+MAP model.layers.0.self_attn.q_proj.weight                         -> model.layers.0.self_attn.qkv_proj.weight
+MAP model.layers.0.self_attn.k_proj.weight                         -> model.layers.0.self_attn.qkv_proj.weight
+MAP model.layers.0.input_layernorm.weight                          -> model.layers.0.input_layernorm.weight
+MAP model.embed_tokens.weight                                      -> model.embed_tokens.weight
+PROBE_DONE
+
+----- ARM BASE (marker .gate_proj. present expect 0) -----
+  marker count=0
+TREE_VLLM_FILE: /opt/venv/lib/python3.12/site-packages/vllm/__init__.py
+MARKER_substr_map_present: False
+STACKED_KEYS: ['.k_proj', '.q_proj', '.v_proj']
+MAP model.layers.0.block_sparse_moe.experts.3.w1.weight            -> model.layers.0.block_sparse_moe.experts.3.w1.weight
+MAP model.layers.0.block_sparse_moe.experts.3.w2.weight            -> model.layers.0.block_sparse_moe.experts.3.w2.weight
+MAP model.layers.0.block_sparse_moe.experts.3.w3.weight            -> model.layers.0.block_sparse_moe.experts.3.w3.weight
+MAP model.layers.0.block_sparse_moe.experts.3.gate_proj.weight     -> model.layers.0.block_sparse_moe.experts.3.gate_proj.weight
+MAP model.layers.0.block_sparse_moe.experts.3.up_proj.weight       -> model.layers.0.block_sparse_moe.experts.3.up_proj.weight
+MAP model.layers.0.block_sparse_moe.experts.3.down_proj.weight     -> model.layers.0.block_sparse_moe.experts.3.down_proj.weight
+MAP model.layers.0.self_attn.q_proj.weight                         -> model.layers.0.self_attn.qkv_proj.weight
+MAP model.layers.0.self_attn.k_proj.weight                         -> model.layers.0.self_attn.qkv_proj.weight
+MAP model.layers.0.input_layernorm.weight                          -> model.layers.0.input_layernorm.weight
+MAP model.embed_tokens.weight                                      -> model.embed_tokens.weight
+PROBE_DONE
+----- EVIDENCE-COMPLETE -----
+LEG_EXIT=0

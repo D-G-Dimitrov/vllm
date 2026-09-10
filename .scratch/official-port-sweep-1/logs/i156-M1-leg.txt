@@ -1,0 +1,46 @@
+===== M1 c35551f892 -> 9be6d2171 tiering shutdown =====
+image package: /opt/venv/lib/python3.12/site-packages/vllm
+image vllm version: 0.29.0.dev0+commit.d4d703c
+
+----- ARM NEW (module from 9be6d2171) -----
+  marker(new-code) count=4 (expect >=1)
+TREE_VLLM_FILE: /opt/venv/lib/python3.12/site-packages/vllm/__init__.py
+MARKER_shutdown_error_count: 4
+MARKER_tier_attempts_all: True
+SCENARIO_happy : tier1_called=True tier2_called=True primary_called=True err=None
+ERROR 09-10 06:23:10 [manager.py:1049] Failed to shut down secondary tier #0 (tier_type=stub, impl_class=StubTier)
+ERROR 09-10 06:23:10 [manager.py:1049] Traceback (most recent call last):
+ERROR 09-10 06:23:10 [manager.py:1049]   File "/opt/venv/lib/python3.12/site-packages/vllm/v1/kv_offload/tiering/manager.py", line 1046, in shutdown
+ERROR 09-10 06:23:10 [manager.py:1049]     tier.shutdown()
+ERROR 09-10 06:23:10 [manager.py:1049]   File "/m/probe/m1_probe.py", line 23, in shutdown
+ERROR 09-10 06:23:10 [manager.py:1049]     raise RuntimeError("boom-%d" % self.i)
+ERROR 09-10 06:23:10 [manager.py:1049] RuntimeError: boom-1
+SCENARIO_fail1 : tier1_called=True tier2_called=True primary_called=False err=boom-1
+ERROR 09-10 06:23:10 [manager.py:1049] Failed to shut down secondary tier #0 (tier_type=stub, impl_class=StubTier)
+ERROR 09-10 06:23:10 [manager.py:1049] Traceback (most recent call last):
+ERROR 09-10 06:23:10 [manager.py:1049]   File "/opt/venv/lib/python3.12/site-packages/vllm/v1/kv_offload/tiering/manager.py", line 1046, in shutdown
+ERROR 09-10 06:23:10 [manager.py:1049]     tier.shutdown()
+ERROR 09-10 06:23:10 [manager.py:1049]   File "/m/probe/m1_probe.py", line 23, in shutdown
+ERROR 09-10 06:23:10 [manager.py:1049]     raise RuntimeError("boom-%d" % self.i)
+ERROR 09-10 06:23:10 [manager.py:1049] RuntimeError: boom-1
+ERROR 09-10 06:23:10 [manager.py:1049] Failed to shut down secondary tier #1 (tier_type=stub, impl_class=StubTier)
+ERROR 09-10 06:23:10 [manager.py:1049] Traceback (most recent call last):
+ERROR 09-10 06:23:10 [manager.py:1049]   File "/opt/venv/lib/python3.12/site-packages/vllm/v1/kv_offload/tiering/manager.py", line 1046, in shutdown
+ERROR 09-10 06:23:10 [manager.py:1049]     tier.shutdown()
+ERROR 09-10 06:23:10 [manager.py:1049]   File "/m/probe/m1_probe.py", line 23, in shutdown
+ERROR 09-10 06:23:10 [manager.py:1049]     raise RuntimeError("boom-%d" % self.i)
+ERROR 09-10 06:23:10 [manager.py:1049] RuntimeError: boom-2
+SCENARIO_fail12: tier1_called=True tier2_called=True primary_called=False err=boom-2
+PROBE_DONE
+
+----- ARM BASE (module from 9be6d2171^) -----
+  marker(new-code) count=0 (expect 0)
+TREE_VLLM_FILE: /opt/venv/lib/python3.12/site-packages/vllm/__init__.py
+MARKER_shutdown_error_count: 0
+MARKER_tier_attempts_all: False
+SCENARIO_happy : tier1_called=True tier2_called=True primary_called=True err=None
+SCENARIO_fail1 : tier1_called=True tier2_called=False primary_called=False err=boom-1
+SCENARIO_fail12: tier1_called=True tier2_called=False primary_called=False err=boom-1
+PROBE_DONE
+----- EVIDENCE-COMPLETE -----
+LEG_EXIT=0

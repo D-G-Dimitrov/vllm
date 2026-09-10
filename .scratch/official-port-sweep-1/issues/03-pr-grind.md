@@ -208,7 +208,7 @@ Work every official PR from the wtdcode fork point through the sweep cutoff, **o
 - [x] ce7391712b [Bugfix][Security] Bound embedding densification before to_dense() (#54632)
 - [x] 5414b4e694 [XPU][TEST] Add entrypoints test in Intel GPU CI (#53980)
 - [x] 4707679cd2 [Bugfix][MiniCPM-V] Route video_embeds to the shared vision parser (#54633)
-- [ ] c35551f892 [Bugfix][KV Offload] Isolate tiering shutdown failures (#52290)
+- [x] c35551f892 [Bugfix][KV Offload] Isolate tiering shutdown failures (#52290)
 - [ ] 8f03625b3d [CPU][Zen] Route Int8 MoE inference through zentorch on AMD (#44834)
 - [ ] 504bb8b0c3 [CI] Add repository-local OTel tracing helpers (#52851)
 - [ ] 754d5e1f65 [CI/Build] Fix entrypoints coverage (#54750)
