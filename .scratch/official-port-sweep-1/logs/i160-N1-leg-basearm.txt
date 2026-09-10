@@ -1,0 +1,14 @@
+BASE_ARM parent=3952a84d5^
+PASSED tests/quantization/test_auto_round.py::test_inc_get_quant_method_unquantized_parallel_lm_head_returns_unquantized
+PASSED tests/quantization/test_auto_round.py::test_inc_get_quant_method_unquantized_layer_with_model_prefix[LinearBase]
+PASSED tests/quantization/test_auto_round.py::test_inc_get_quant_method_unquantized_layer_with_model_prefix[ParallelLMHead]
+PASSED tests/quantization/test_auto_round.py::test_inc_get_quant_method_unquantized_routed_experts_with_model_prefix
+PASSED tests/quantization/test_auto_round.py::test_inc_get_quant_method_resolves_mtp_prefix_via_checkpoint_name
+PASSED tests/quantization/test_auto_round.py::test_inc_get_quant_method_unquantized_linear_returns_unquantized
+PASSED tests/quantization/test_auto_round.py::test_inc_get_quant_method_unquantized_moe_returns_unquantized
+PASSED tests/quantization/test_auto_round.py::test_inc_get_quant_method_linear_uses_resolved_scheme
+PASSED tests/quantization/test_auto_round.py::test_inc_get_quant_method_lm_head_uses_suffix_match
+PASSED tests/quantization/test_auto_round.py::test_inc_get_quant_method_moe_uses_resolved_scheme
+FAILED tests/quantization/test_auto_round.py::test_inc_get_quant_method_unquantized_unknown_layer_returns_none
+FAILED tests/quantization/test_auto_round.py::test_inc_get_quant_method_unknown_layer_with_model_prefix_returns_none
+=========== 2 failed, 10 passed, 96 deselected, 15 warnings in 9.39s ===========

@@ -212,7 +212,7 @@ Work every official PR from the wtdcode fork point through the sweep cutoff, **o
 - [x] 8f03625b3d [CPU][Zen] Route Int8 MoE inference through zentorch on AMD (#44834)
 - [x] 504bb8b0c3 [CI] Add repository-local OTel tracing helpers (#52851)
 - [x] 754d5e1f65 [CI/Build] Fix entrypoints coverage (#54750)
-- [ ] 92ccd2c306 [Bugifx][INC] Fix INC quantization method selection for non-quantized layers (#47237)
+- [x] 92ccd2c306 [Bugifx][INC] Fix INC quantization method selection for non-quantized layers (#47237)
 - [ ] 9e905f7450 [Bugfix] Account for client queue time in serve benchmarks (#54136)
 - [ ] 481839ad9e [Feature][Spec] Support disabling trailing prefix-cache block dropping (#53388)
 - [ ] 191cecd51e [Kernel][Qwen] Add Hopper LL-GEMM tuning table for Qwen4Exp (#54560)

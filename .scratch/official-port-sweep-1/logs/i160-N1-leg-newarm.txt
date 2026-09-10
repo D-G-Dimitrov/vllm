@@ -1,0 +1,56 @@
+===== N1 92ccd2c306 -> 3952a84d5 : INC get_quant_method regression tests =====
+----- ARM NEW (tip tree, /w) -----
+platform linux -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
+rootdir: /w
+configfile: pyproject.toml
+plugins: asyncio-1.4.0, anyio-4.14.2
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 108 items / 96 deselected / 12 selected
+tests/quantization/test_auto_round.py ............                       [100%]
+=============================== warnings summary ===============================
+vllm/__init__.py:7
+  No module named 'vllm._version'
+    from .version import __version__, __version_tuple__  # isort:skip
+../opt/venv/lib/python3.12/site-packages/torch/jit/_script.py:365: 14 warnings
+  /opt/venv/lib/python3.12/site-packages/torch/jit/_script.py:365: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+==================================== PASSES ====================================
+=========================== short test summary info ============================
+PASSED tests/quantization/test_auto_round.py::test_inc_get_quant_method_unquantized_parallel_lm_head_returns_unquantized
+PASSED tests/quantization/test_auto_round.py::test_inc_get_quant_method_unquantized_unknown_layer_returns_none
+PASSED tests/quantization/test_auto_round.py::test_inc_get_quant_method_unquantized_layer_with_model_prefix[LinearBase]
+PASSED tests/quantization/test_auto_round.py::test_inc_get_quant_method_unquantized_layer_with_model_prefix[ParallelLMHead]
+PASSED tests/quantization/test_auto_round.py::test_inc_get_quant_method_unquantized_routed_experts_with_model_prefix
+PASSED tests/quantization/test_auto_round.py::test_inc_get_quant_method_unknown_layer_with_model_prefix_returns_none
+PASSED tests/quantization/test_auto_round.py::test_inc_get_quant_method_resolves_mtp_prefix_via_checkpoint_name
+PASSED tests/quantization/test_auto_round.py::test_inc_get_quant_method_unquantized_linear_returns_unquantized
+PASSED tests/quantization/test_auto_round.py::test_inc_get_quant_method_unquantized_moe_returns_unquantized
+PASSED tests/quantization/test_auto_round.py::test_inc_get_quant_method_linear_uses_resolved_scheme
+PASSED tests/quantization/test_auto_round.py::test_inc_get_quant_method_lm_head_uses_suffix_match
+PASSED tests/quantization/test_auto_round.py::test_inc_get_quant_method_moe_uses_resolved_scheme
+================ 12 passed, 96 deselected, 15 warnings in 9.28s ================
+
+----- ARM BASE (parent module + the NEW test file) -----
+fatal: detected dubious ownership in repository at '/w'
+To add an exception for this directory, call:
+
+	git config --global --add safe.directory /w
+tar: This does not look like a tar archive
+tar: Exiting with failure status due to previous errors
+  ABORT: git archive failed
+cp: cannot create regular file '/m/b2/tests/quantization/test_auto_round.py': No such file or directory
+  .so copied: 8 (expect 8, 2 nested in vllm/vllm_flash_attn)
+grep: /m/b2/vllm/model_executor/layers/quantization/inc/inc.py: No such file or directory
+  tree marker (must be BASE: expect 0): return_None=
+grep: /m/b2/tests/quantization/test_auto_round.py: No such file or directory
+  test file present in BASE tree (copied in): 
+============================= test session starts ==============================
+platform linux -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
+rootdir: /m/b2
+plugins: asyncio-1.4.0, anyio-4.14.2
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 0 items
+============================ no tests ran in 0.00s =============================
+ERROR: file or directory not found: tests/quantization/test_auto_round.py
+----- EVIDENCE-COMPLETE -----
