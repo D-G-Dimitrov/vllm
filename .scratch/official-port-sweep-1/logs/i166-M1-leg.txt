@@ -1,0 +1,13 @@
+PKG=/opt/venv/lib/python3.12/site-packages/vllm
+OVERLAID 3 modules from our post-pick tree
+TREE vllm: /opt/venv/lib/python3.12/site-packages/vllm/__init__.py
+TREE module: /opt/venv/lib/python3.12/site-packages/vllm/v1/attention/backends/b12x.py
+MARKER B12x symbols in loaded file: 4
+B12X registry entry resolves -> vllm.v1.attention.backends.b12x.B12xPagedAttentionBackend | B12X
+   supports_compute_capability (8, 7) False
+   supports_compute_capability (9, 0) False
+   supports_compute_capability (10, 0) False
+   supports_compute_capability (12, 0) True
+   supports_compute_capability (12, 1) True
+has_b12x: False | paged_attention module: None
+LEG_RESULT OK

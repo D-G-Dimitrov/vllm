@@ -1663,3 +1663,22 @@ Inert on the hardware we serve: the capability guard was *measured*, not argued 
 Not covered / owner caveat: no GPU leg (never-touch-GPU rule), so cudagraph capture and varlen numerics on Blackwell are untested here. On SM100/SM120 this DOES move cudagraph support UNIFORM_BATCH -> ALWAYS for both the sparse-MLA and SWA groups (that is the point — it enables adaptive verification with mixed prefill-decode capture). Revisit with a GPU run before serving DSV4 on SM100+/SM120, alongside item 139's SM100 caveat. Revert: `git revert d84010b26`.
 
 `tip 148854380 -> d84010b26`.
+
+### 166. `0d4ad47981` -> `954d036d4` — [Kernel] Add B12X causal paged attention backend (#52017)
+
+*Full depth (hybrid): conflict resolved under the resolve-and-note grant + CPU import/selection leg; no GPU leg (never-touch-GPU).* Adds the optional B12X causal paged-attention backend (`vllm/v1/attention/backends/b12x.py`, 1096 new lines), its registry entry, the `b12x==1.2.6 -> 1.3.0` pin in `setup.py` + `.buildkite/test_areas/kernels.yaml`, generated docs rows, and tests (+360 new / +53-3).
+
+Conflict — one hunk, mechanical intersection, resolved per the resolve-and-note grant. Upstream inserts `B12X = "vllm.v1.attention.backends.b12x.B12xPagedAttentionBackend"` between `ROCM_FLASHMLA_SPARSE_DSV4` and `FLASH_ATTN_MLA`; our tip carries fork-added enum members in exactly that slot (`TRITON_MLA_SPARSE_DSV4` from fork commit `915f59b6a17` "port the fork's snapshot-baked-in changes", plus `FLASHINFER_MLA_SPARSE_SM90` from `933876c388f` "feat: add GLM-5.3-Flash support"). Both sides are purely additive enum entries.
+- Taken: `git show <base>:registry.py` verbatim, with upstream's line inserted (extracted programmatically from the commit's own `+` line, never retyped) after the fork's `TRITON_MLA_SPARSE_DSV4` block.
+- Rejected: `--theirs` / `--strategy-option theirs` on this file — it would have deleted the fork's SM90 / Triton / Ampere-DSV4 (Jetson default) registry entries quietly.
+- Driver refused unless: the pick conflicted (a clean apply aborts so this record cannot be bypassed), the conflict set was exactly `{registry.py}`, upstream's hunk was exactly one added line and zero deletions, and the base file matched the expected anchor shape (anchor unique, body is the ampere_sparse path, following line is `FLASH_ATTN_MLA`).
+
+Proof of faithfulness: 8/8 files match upstream's file set; every changed-line delta IDENTICAL and numstat equal (`+1/-0` for registry.py, i.e. pure addition); 5 files `result_blob EQ`, the 3 fork-diverged ones (`registry.py`, `setup.py`, `kernels.yaml`) `blob NE` with **gap invariance** proven — fork delta before vs after the pick is IDENTICAL with no hunk shift on all three; silent-loss symbol scan empty; AST enum check on the resolved file: members 40 -> 41, added exactly `[B12X -> vllm.v1.attention.backends.b12x.B12xPagedAttentionBackend]`, removed none, **no duplicate values (so no enum alias was created)**, base member order preserved as a subsequence, all three fork entries still present.
+
+Leg (CPU, `logs/i166-M1-leg.txt`; 3-module overlay of our post-pick `registry.py` + `utils/b12x.py` + `v1/attention/backends/b12x.py` onto the image package, marker 4 proves the overlay loaded): the new backend module **imports cleanly with the `b12x` package absent** (`has_b12x: False`, `get_b12x_paged_attention() -> None`; package absence also measured directly via `importlib.util.find_spec("b12x") is None`), `AttentionBackendEnum.B12X.get_class()` resolves to `B12xPagedAttentionBackend`, and `supports_compute_capability` is **False on SM 8.7 / 9.0 / 10.0, True only on 12.0 / 12.1** — so the backend cannot be selected on the hardware we serve, and the new registry path cannot break import or backend selection here.
+
+Skipped deliberately: no GPU leg (never-touch-GPU rule), so `tests/v1/attention/test_b12x.py` and the `test_attention_backends.py` changes were not executed — they self-skip off SM120/SM121 (`_require_b12x_paged_attention`). The `b12x==1.3.0` asset was not fetched: the extra is not installed here and is not part of any image we build or run, so the pin is inert until someone opts into `pip install vllm[b12x]`.
+
+Revert: `git revert 954d036d4` (re-adds no fork lines; the resolution is a one-line addition, so revert is clean).
+
+`tip d84010b26 -> 954d036d4`.
