@@ -1643,3 +1643,23 @@ No leg: the change is multi-modal-only and the models we serve are text-only (`:
 Owner-facing note: upstream now passes hash factors *nested* (`hash_kwargs(..., media_io_kwargs=..., mm_processor_kwargs=...)`) instead of spreading `hf_processor_mm_kwargs`, so MM cache keys change for any request that supplies `mm_processor_kwargs` — intended upstream invalidation, and unchanged when neither factor is set. Revert: `git revert 148854380`.
 
 `tip b6ba8c780 -> 148854380`.
+
+### 165. `25efcfa788` -> `d84010b26` — [Attention] Enable adaptive verification for FLASHINFER_MLA_SPARSE_DSV4 (#52724)
+
+*Full depth (hybrid): DSV4 + cudagraph/spec-decode capability change — CPU differential leg plus gap-invariance proofs on a fork-diverged file.* DSV4 by name, so treated at full depth rather than on its subject line. Clean apply into a fork-diverged file; the pick adds varlen-capable metadata builders (`_cudagraph_support = AttentionCGSupport.ALWAYS`) for `FLASHINFER_MLA_SPARSE_DSV4` and sets `swa_backend_cls = DeepseekSparseSWAFlashInferBackend` on both `DeepseekV4FlashInferMLAAttention` and `DeepseekV4FlashInferSM120Attention`.
+
+Faithfulness (blob NE is expected here — the file carries a fork hunk): upstream numstat +30/-1 reproduced exactly, changed-line delta IDENTICAL, patch-id equal. Fork delta proven intact by gap invariance — `diff <(diff up^ base) <(diff up HEAD)` differs ONLY in the hunk header (`756a757,762` -> `785a786,791`, the +29 net lines upstream inserted above it); 6/6 fork-added lines present verbatim, 0 fork lines removed, symbol silent-loss scan empty, `ast.parse` OK. The fork hunk is the SM120 TVM-FFI contiguity guard (`extra_sparse_indices`/`swa_indices` `.contiguous()`), far from every upstream hunk.
+
+Differential leg (CPU, one container per arm, single-module overlay of our file onto the image's installed package, logs `logs/i165-N1-leg-newarm.txt` + `logs/i165-N1-leg-basearm.txt`; marker `DeepseekSparseSWAFlashInferBackend` count proves which version loaded: 3 new / 0 base):
+
+| | base arm | new arm |
+|---|---|---|
+| sparse-MLA builder | `DeepseekV4SparseMLAMetadataBuilder`, UNIFORM_BATCH | `DeepseekV4FlashInferSparseMLAMetadataBuilder`, ALWAYS |
+| `swa_backend_cls` (both DSV4 FlashInfer attn classes) | `None` (=> default `DeepseekSparseSWABackend`) | `DeepseekSparseSWAFlashInferBackend` -> `DeepseekSparseSWAFlashInferMetadataBuilder`, ALWAYS |
+| `supports_compute_capability` SM 8.7 / 10 / 12 | False / True / True | False / True / True (unchanged by the pick) |
+
+Inert on the hardware we serve: the capability guard was *measured*, not argued — SM 8.7 is False on both arms, and on SM8x the DSV4 selector raises ("use TRITON_MLA_SPARSE_DSV4 (default)") and returns `DeepseekV4AmpereMLAAttention`, which this commit does not touch. The fork's SM8x/ROCm SWA dispatch also stays intact: it lives in the DEFAULT `DeepseekSparseSWABackend.get_builder_cls()` (returns `DeepseekV4ROCMAiterSparseSWAMetadataBuilder` on ROCm and CUDA < SM90), whereas the new FlashInfer SWA backend pins the CUDA varlen builder and is only reachable behind the SM10x/SM120 guard.
+
+Not covered / owner caveat: no GPU leg (never-touch-GPU rule), so cudagraph capture and varlen numerics on Blackwell are untested here. On SM100/SM120 this DOES move cudagraph support UNIFORM_BATCH -> ALWAYS for both the sparse-MLA and SWA groups (that is the point — it enables adaptive verification with mixed prefill-decode capture). Revisit with a GPU run before serving DSV4 on SM100+/SM120, alongside item 139's SM100 caveat. Revert: `git revert d84010b26`.
+
+`tip 148854380 -> d84010b26`.

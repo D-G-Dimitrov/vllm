@@ -219,7 +219,7 @@ Work every official PR from the wtdcode fork point through the sweep cutoff, **o
 - [x] 40824284bc [Doc] Document FP8 GEMM kernel selection and Blackwell support (#49936)
 - [x] 55aa766dc8 [Bugfix][Model] Fix GraniteMoeHybrid per-expert quantized weight loading (#54052)
 - [x] 1f1f628859 [Feat][MM Hashing]  include media_io_kwargs in multi-modal hashes (#54241)
-- [ ] 25efcfa788 [Attention] Enable adaptive verification for FLASHINFER_MLA_SPARSE_DSV4 (#52724)
+- [x] 25efcfa788 [Attention] Enable adaptive verification for FLASHINFER_MLA_SPARSE_DSV4 (#52724)
 - [ ] adebc41b7e [Mamba] Add FlashInfer ReplaySSM backend (#52506)
 - [ ] 0d4ad47981 [Kernel] Add B12X causal paged attention backend (#52017)
 - [ ] 339e16cbb6 [Bugfix] Support MCP SDK 2.x tool input schemas (#53870)

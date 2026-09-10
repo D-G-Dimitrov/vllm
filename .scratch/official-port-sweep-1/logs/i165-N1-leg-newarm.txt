@@ -1,0 +1,12 @@
+OVERLAID_FROM /i/new.py
+W0910 16:10:10.816000 72 torch/utils/cpp_extension.py:178] No CUDA runtime is found, using CUDA_HOME='/usr/local/cuda'
+TREE vllm: /opt/venv/lib/python3.12/site-packages/vllm/__init__.py
+TREE module: /opt/venv/lib/python3.12/site-packages/vllm/models/deepseek_v4/nvidia/flashinfer_sparse.py
+MARKER swa_flashinfer_lines: 3
+MAIN builder: DeepseekV4FlashInferSparseMLAMetadataBuilder cudagraph: AttentionCGSupport.ALWAYS ALWAYS? True
+SWA DeepseekV4FlashInferMLAAttention -> <class 'vllm.models.deepseek_v4.nvidia.flashinfer_sparse.DeepseekSparseSWAFlashInferBackend'>
+   SWA builder: DeepseekSparseSWAFlashInferMetadataBuilder cudagraph: AttentionCGSupport.ALWAYS ALWAYS? True
+SWA DeepseekV4FlashInferSM120Attention -> <class 'vllm.models.deepseek_v4.nvidia.flashinfer_sparse.DeepseekSparseSWAFlashInferBackend'>
+   SWA builder: DeepseekSparseSWAFlashInferMetadataBuilder cudagraph: AttentionCGSupport.ALWAYS ALWAYS? True
+REACHABLE sm87: False | sm100: True | sm120: True
+LEG_RESULT OK
