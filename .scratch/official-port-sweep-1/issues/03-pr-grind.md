@@ -231,7 +231,7 @@ Work every official PR from the wtdcode fork point through the sweep cutoff, **o
 - [ ] cdefd9d499 [Bugfix] Support Sentence Transformers 5.4+ serialized configs (#54533)
 - [ ] 514c7314a0 [Perf][Kernel] Initialize NVFP4 padding in quant kernel (#53568)
 - [ ] 2fe5cef35e [Fix] Fix FSE compatibility detection for Quark-produced models (#54573)
-- [ ] c866ba9d11 [KV Connector] Support heterogeneous TP sharing in Mooncake Store Connector (#53129)
+- [x] c866ba9d11 [KV Connector] Support heterogeneous TP sharing in Mooncake Store Connector (#53129)
 - [ ] 2f01039666 [Misc] Share Buildkite CI failure skill across agents (#54806)
 - [ ] e7cf4730d6 [Bugfix] Drop incomplete tool-call markup in non-streaming to match streaming (#47562)
 - [ ] d1c15e589d [CI] Speed up quantization test group (#53291)
