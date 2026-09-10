@@ -1621,3 +1621,15 @@ Checked the one thing that could have bitten here: this fork relocates some `.gi
 Skipped: no leg (no code). Revert: `git revert 485ba34b0`.
 
 `tip dd4798719 -> 485ba34b0`.
+
+### 163. `55aa766dc8` -> `b6ba8c780` — [Bugfix][Model] Fix GraniteMoeHybrid per-expert quantized weight loading (#54052)
+
+*Minimum gate (hybrid): single model file, new import symbol verified present at tip.* Single file, `blob EQ` (our `granitemoehybrid.py` was byte-identical to upstream's parent), identical delta, no swap collision. Change is confined to `GraniteMoeHybridModel.load_weights`: the mapped name is now passed through `maybe_remap_moe_expert_param_name(name_mapped, params_dict)` before the PP-missing / weight-loader lookup, so per-expert quantized parameter names resolve the same way other MoE models already do.
+
+Checked the N1-class trap explicitly rather than assuming it: the newly imported symbol **exists at our tip** — `vllm/model_executor/model_loader/weight_utils.py:1484`, added upstream by `dc68bd8c41` ([MoE Refactor] FusedMoE/MoERunner inversion) and already used by `llama4.py` and `mllama4.py`. Had it not landed here, the pick would have applied cleanly and then failed at import time for anyone importing this model module — which blob/delta identity would never reveal.
+
+Scope: no guard needed because nothing outside the GraniteMoeHybrid class changes, and GraniteMoeHybrid is not a fork-served family (DSV4 / qwen38-flash-next / GLM-5.3-Flash).
+
+Skipped: no leg — exercising it requires a GraniteMoeHybrid checkpoint, and there is no CPU-discriminable path without weights. Revert: `git revert b6ba8c780`.
+
+`tip 485ba34b0 -> b6ba8c780`.
